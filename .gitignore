@@ -1,0 +1,9 @@
+/target/
+**/*.rs.bk
+# Flutter (Phase 4)
+/app/.dart_tool/
+/app/build/
+/app/.flutter-plugins
+/app/.flutter-plugins-dependencies
+# Local corpora must never be committed (may contain live malware).
+/corpus/

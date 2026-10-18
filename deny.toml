@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# cargo-deny policy: `cargo deny check all`. See docs/ARCHITECTURE.md §7.
+
+[graph]
+targets = [
+    "wasm32-unknown-unknown",
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "x86_64-unknown-linux-gnu",
+]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Every license must be compatible with AGPL-3.0-only distribution.
+allow = [
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "0BSD",
+    "Zlib",
+    "Unlicense",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+# The core must not compile or link C/C++ code.
+deny = [
+    { crate = "cc", reason = "no C/C++ in the trust base" },
+    { crate = "cmake", reason = "no C/C++ in the trust base" },
+    { crate = "bindgen", reason = "no C/C++ in the trust base" },
+    { crate = "pkg-config", reason = "no system libraries" },
+    { crate = "vcpkg", reason = "no system libraries" },
+    { crate = "openssl-sys", reason = "no C crypto; the core does no networking" },
+    { crate = "libz-sys", reason = "miniz_oxide is used instead" },
+    { crate = "wasmtime", reason = "JIT runtimes need W^X exceptions iOS does not grant; wasmi is used" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

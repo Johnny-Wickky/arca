@@ -1,0 +1,30 @@
+# Fork attribution — Additive Fork Attribution (LICENSE_ADDITIONAL_TERMS.md, section 2.3).
+#
+# The original Arca project ships this file WITHOUT any table: that means
+# "this build is the original". If you publish a modified version, uncomment
+# and fill in the tables below (see fork_attribution.example.toml). Your card
+# «Команда поддержки модификации / Форка (Поддержать)» will then be shown next
+# to — never instead of — «Создатели оригинального ядра Arca (Поддержать)».
+#
+# The file is validated at build time by crates/arca-attribution/build.rs:
+#   * only the keys shown below are accepted, all values are quoted strings;
+#   * URLs must be https:// without credentials;
+#   * the fork must use its own name (not the original project or authors);
+#   * at least one maintainer, at most 8 donation links;
+#   * release builds (ARCA_RELEASE=1) reject placeholder domains
+#     (.invalid, .example, .test, example.com …).
+# A different file can be used with ARCA_FORK_ATTRIBUTION=/path/to/file.toml.
+#
+# [fork]
+# name = "YourFork"
+# homepage = "https://yourfork.org"
+# source = "https://git.yourfork.org/yourfork"     # Corresponding Source (AGPLv3 §13)
+# modifications = "What you changed, in one sentence"
+#
+# [[fork.maintainers]]
+# name = "Your Team"
+# url = "https://yourfork.org/team"
+#
+# [[fork.donations]]
+# label = "Liberapay"
+# url = "https://liberapay.com/yourfork"

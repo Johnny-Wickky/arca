@@ -1,0 +1,18 @@
+[package]
+name = "arca-sandbox"
+description = "Ephemeral, zero-import WebAssembly sandbox with fuel and memory metering for Arca parser guests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arca-abi.workspace = true
+arca-digest.workspace = true
+wasmi.workspace = true
+wasmi_core.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

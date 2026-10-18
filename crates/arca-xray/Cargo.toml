@@ -1,0 +1,20 @@
+[package]
+name = "arca-xray"
+description = "Threat X-Ray: format identification, active-content detection, forensic metadata and sterilisation for office documents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Like arca-container this crate is I/O-free and compiles for the
+# wasm32-unknown-unknown guest that runs it inside arca-sandbox.
+[dependencies]
+arca-abi.workspace = true
+arca-container.workspace = true
+arca-digest.workspace = true
+miniz_oxide.workspace = true
+quick-xml.workspace = true
+
+[lints]
+workspace = true

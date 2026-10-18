@@ -1,0 +1,18 @@
+[package]
+name = "arca-container"
+description = "Hardened, allocation-bounded readers for ZIP (OPC/ODF), OLE2 Compound File and XML containers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No I/O, no threads, no clocks: this crate compiles unchanged for the
+# `wasm32-unknown-unknown` parser guests and for the native host.
+[dependencies]
+arca-digest.workspace = true
+quick-xml.workspace = true
+miniz_oxide.workspace = true
+
+[lints]
+workspace = true

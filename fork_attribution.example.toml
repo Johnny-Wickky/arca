@@ -1,0 +1,21 @@
+# Example of a filled-in fork attribution. Copy the tables into
+# fork_attribution.toml (workspace root) in your modified version.
+# The domains below are reserved example names; release builds reject them.
+
+[fork]
+name = "SuperDocs"
+homepage = "https://superdocs.example"
+source = "https://git.superdocs.example/superdocs"
+modifications = "Adds on-device OCR for scanned PDF files"
+
+[[fork.maintainers]]
+name = "SuperDocs Maintainers"
+url = "https://superdocs.example/team"
+
+[[fork.donations]]
+label = "Open Collective"
+url = "https://opencollective.example/superdocs"
+
+[[fork.donations]]
+label = "Liberapay"
+url = "https://liberapay.example/superdocs"

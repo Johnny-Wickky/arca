@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# CI for the Rust core. Third-party actions are pinned to full commit SHAs.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+  # `--locked` once Cargo.lock is committed (see docs/ARCHITECTURE.md §7).
+  LOCKED: ${{ hashFiles('Cargo.lock') != '' && '--locked' || '' }}
+
+jobs:
+  policy:
+    name: policy (no unsafe, no placeholders, no C)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash tools/check-unsafe.sh
+
+  core:
+    name: fmt · clippy · test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets $LOCKED
+      - run: cargo test --workspace $LOCKED
+      - name: fork attribution path (example file)
+        run: ARCA_FORK_ATTRIBUTION="$PWD/fork_attribution.example.toml" cargo test -p arca-attribution $LOCKED
+      - name: release gate
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: ARCA_RELEASE=1 cargo build -p arca-attribution --release $LOCKED
+
+  guest:
+    name: wasm guest in the sandbox (end to end)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: build guest
+        run: cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest $LOCKED
+      - name: guest must import nothing
+        run: |
+          wasm=target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm
+          sha256sum "$wasm"
+          # Import section id 2 must be absent (the sandbox also enforces this).
+          python3 - "$wasm" <<'EOF'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          assert data[:8] == b"\0asm\x01\0\0\0", "not a wasm v1 module"
+          pos = 8
+          def leb(p):
+              r = s = 0
+              while True:
+                  b = data[p]; p += 1; r |= (b & 0x7F) << s; s += 7
+                  if b < 0x80: return r, p
+          while pos < len(data):
+              sid = data[pos]; size, pos = leb(pos + 1)
+              assert sid != 2, "guest module has an import section"
+              pos += size
+          print("zero imports")
+          EOF
+      - name: end-to-end tests
+        run: |
+          ARCA_GUEST_XRAY_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm" \
+            cargo test -p arca-guest-xray --test e2e_sandbox $LOCKED -- --nocapture
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arca_guest_xray.wasm
+          path: target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm
+
+  supply-chain:
+    name: cargo-deny (licenses, advisories, bans, sources)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check all

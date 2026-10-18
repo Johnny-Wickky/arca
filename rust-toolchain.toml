@@ -1,0 +1,13 @@
+# Pinned for reproducible builds of the security-critical core.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+targets = [
+    "wasm32-unknown-unknown",   # parser guests executed inside arca-sandbox
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+]
+profile = "minimal"

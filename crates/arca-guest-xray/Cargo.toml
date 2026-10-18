@@ -1,0 +1,53 @@
+[package]
+name = "arca-guest-xray"
+description = "Threat X-Ray compiled as a zero-import WebAssembly guest for arca-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# cdylib: the .wasm guest (cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest)
+# rlib:   host-side decoding helpers and native tests of the ABI logic.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arca-abi.workspace = true
+arca-xray.workspace = true
+
+[dev-dependencies]
+arca-container.workspace = true
+arca-sandbox.workspace = true
+
+# This crate cannot inherit `unsafe_code = "forbid"`: exporting a symbol from
+# a Wasm module requires `#[unsafe(no_mangle)]`, which the lint classifies as
+# unsafe. The crate therefore uses `deny`, and allows it on exactly the five
+# ABI export functions (no `unsafe` blocks anywhere). Every other lint is
+# identical to the workspace table; `tools/check-unsafe.sh` enforces this.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_must_use = "deny"
+unused_qualifications = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+mem_forget = "deny"
+exit = "deny"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+cast_lossless = "warn"
+string_slice = "warn"
+get_unwrap = "deny"
