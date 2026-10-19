@@ -189,8 +189,9 @@ Arca бесплатна и без рекламы. Проект живёт на �
 ```sh
 cargo test --workspace
 cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest
-# сквозные тесты гостя в песочнице (в release: интерпретатор в разы быстрее)
-ARCA_GUEST_XRAY_WASM=target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm \
+# сквозные тесты гостя в песочнице (в release: интерпретатор в разы быстрее);
+# путь к модулю обязательно абсолютный: тесты стартуют из каталога крейта
+ARCA_GUEST_XRAY_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm" \
     cargo test --release -p arca-guest-xray --test e2e_sandbox
 cargo run -p arca-xray --example xray -- scan file.docx
 # фаззинг: ARCA_FUZZ_ITERS=30000 cargo test --release -p arca-xray mutation_fuzz,
