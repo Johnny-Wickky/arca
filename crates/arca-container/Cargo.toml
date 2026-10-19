@@ -4,6 +4,7 @@ description = "Hardened, allocation-bounded readers for ZIP (OPC/ODF), OLE2 Comp
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 publish.workspace = true
 

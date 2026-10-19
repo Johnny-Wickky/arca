@@ -4,6 +4,7 @@ description = "Upstream Creator Attribution & Patronage Notice (AGPLv3 §7(b)) w
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 publish.workspace = true
 build = "build.rs"

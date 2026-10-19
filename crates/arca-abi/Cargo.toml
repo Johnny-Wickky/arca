@@ -4,6 +4,7 @@ description = "Arca Wasm guest ABI v1: export names, status codes and a bounded 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 publish.workspace = true
 

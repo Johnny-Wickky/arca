@@ -185,6 +185,40 @@ fn errors_display_human_readable_text() {
     );
 }
 
+#[test]
+fn authors_file_and_manifest_match_the_upstream_constants() {
+    let authors_file = include_str!("../../../AUTHORS");
+    let manifest_authors: Vec<&str> = env!("CARGO_PKG_AUTHORS").split(':').collect();
+    for a in UPSTREAM_AUTHORS {
+        assert!(authors_file.contains(a.name), "AUTHORS lacks {}", a.name);
+        if let Some(url) = a.url {
+            assert!(authors_file.contains(url), "AUTHORS lacks {url}");
+        }
+        assert!(manifest_authors.contains(&a.name), "Cargo.toml `authors` lacks {}", a.name);
+    }
+}
+
+#[test]
+fn english_translation_follows_the_russian_original() {
+    let headings = |t: &str| t.lines().filter(|l| l.starts_with("### ")).count();
+    let clauses = |t: &str| {
+        t.lines()
+            .filter(|l| {
+                let l = l.trim_start();
+                l.split_once(". ")
+                    .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            })
+            .count()
+    };
+    assert_eq!(headings(ADDITIONAL_TERMS_TEXT), headings(ADDITIONAL_TERMS_TRANSLATION_EN));
+    assert_eq!(clauses(ADDITIONAL_TERMS_TEXT), clauses(ADDITIONAL_TERMS_TRANSLATION_EN));
+    // The translation must say which text is binding, and keep the legal anchors.
+    assert!(ADDITIONAL_TERMS_TRANSLATION_EN.contains("the Russian original prevails"));
+    for anchor in ["Section 7(b)", "Section 8", "Additive Fork Attribution"] {
+        assert!(ADDITIONAL_TERMS_TRANSLATION_EN.contains(anchor), "{anchor}");
+    }
+}
+
 // ---------------------------------------------------------------- screen
 
 #[test]

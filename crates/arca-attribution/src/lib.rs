@@ -50,6 +50,11 @@ pub const LICENSE_TEXT: &str = include_str!("../../../LICENSE");
 /// `LICENSE_ADDITIONAL_TERMS.md` (the additional terms), for the in-app "Licenses" screen.
 pub const ADDITIONAL_TERMS_TEXT: &str = include_str!("../../../LICENSE_ADDITIONAL_TERMS.md");
 
+/// `LICENSE_ADDITIONAL_TERMS.en.md`: a courtesy English translation of the additional terms.
+/// The Russian original ([`ADDITIONAL_TERMS_TEXT`]) is the binding text and prevails.
+pub const ADDITIONAL_TERMS_TRANSLATION_EN: &str =
+    include_str!("../../../LICENSE_ADDITIONAL_TERMS.en.md");
+
 mod generated {
     // Written by build.rs: `FORK_ATTRIBUTION_TOML` and `UPSTREAM_FINGERPRINT_PIN`.
     include!(concat!(env!("OUT_DIR"), "/attribution_config.rs"));

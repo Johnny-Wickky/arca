@@ -4,6 +4,7 @@ description = "Dependency-free SHA-256 and CRC-32 for Arca (module pinning, ZIP 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 publish.workspace = true
 
