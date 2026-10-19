@@ -7,3 +7,8 @@
 /app/.flutter-plugins-dependencies
 # Local corpora must never be committed (may contain live malware).
 /corpus/
+# cargo-fuzz (fuzz/ is a separate, nightly-only crate)
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/Cargo.lock

@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Coverage-guided fuzz targets (libFuzzer via cargo-fuzz). This crate is
+# deliberately NOT a member of the root workspace: it needs a nightly
+# toolchain and sanitizer runtimes, and nothing in it ships.
+#
+#     cargo install cargo-fuzz --version 0.12.0 --locked
+#     cargo +nightly fuzz run scan -- -max_total_time=60
+#
+# See fuzz/README.md.
+[package]
+name = "arca-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arca-abi = { path = "../crates/arca-abi" }
+arca-container = { path = "../crates/arca-container" }
+arca-xray = { path = "../crates/arca-xray" }
+
+# Detach from the root workspace.
+[workspace]
+
+# Same arithmetic policy as the shipped binaries: overflow is a finding.
+[profile.release]
+overflow-checks = true
+debug = 1
+
+[[bin]]
+name = "scan"
+path = "fuzz_targets/scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sanitize"
+path = "fuzz_targets/sanitize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire"
+path = "fuzz_targets/wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zip"
+path = "fuzz_targets/zip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cfb"
+path = "fuzz_targets/cfb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml"
+path = "fuzz_targets/xml.rs"
+test = false
+doc = false
+bench = false
