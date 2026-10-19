@@ -62,6 +62,7 @@ pub mod op {
     /// `i32.load offset=0 align=2`
     pub const I32_LOAD: [u8; 3] = [0x28, 0x02, 0x00];
     pub const I32_ADD: u8 = 0x6A;
+    pub const I32_SUB: u8 = 0x6B;
     pub const I32_GT_U: u8 = 0x4B;
     pub const DROP: u8 = 0x1A;
     pub const UNREACHABLE: u8 = 0x00;
@@ -69,6 +70,7 @@ pub mod op {
     pub const LOOP_EMPTY: [u8; 2] = [0x03, 0x40];
     pub const IF_EMPTY: [u8; 2] = [0x04, 0x40];
     pub const BR0: [u8; 2] = [0x0C, 0x00];
+    pub const BR_IF0: [u8; 2] = [0x0D, 0x00];
     pub const RETURN: u8 = 0x0F;
     pub const END: u8 = 0x0B;
 }
@@ -223,6 +225,9 @@ pub enum RunBody {
     Echo,
     /// Loops forever.
     InfiniteLoop,
+    /// Runs a counted loop of the given number of iterations, then behaves
+    /// like [`RunBody::Echo`].
+    Burn(i32),
     /// Grows memory until refused.
     MemoryHog,
     /// Executes `unreachable`.
@@ -238,6 +243,27 @@ pub enum RunBody {
 /// `[INPUT-12 .. INPUT+len)`; the reserved length is stored at `LEN_SLOT`.
 pub const INPUT: i32 = 1024;
 pub const LEN_SLOT: i32 = 8;
+/// Scratch cell of the counted-loop guest.
+pub const COUNTER_SLOT: i32 = 16;
+
+/// The echo `arca_run` body: writes the envelope header and returns 0.
+fn echo_body() -> Vec<u8> {
+    code(&[
+        // magic "ARCA"
+        &op::i32_const(INPUT - 12),
+        &op::i32_const(i32::from_le_bytes(*b"ARCA")),
+        &op::I32_STORE,
+        // version 1, kind 1 (X-ray report)
+        &op::i32_const(INPUT - 8),
+        &op::i32_const(0x0001_0001),
+        &op::I32_STORE,
+        // payload length = reserved length (parameter 0)
+        &op::i32_const(INPUT - 4),
+        &op::local_get(0),
+        &op::I32_STORE,
+        &op::i32_const(0),
+    ])
+}
 
 /// Builds an ABI-conformant guest with a configurable `arca_run`.
 pub fn guest(
@@ -271,21 +297,27 @@ pub fn guest(
     // Function indices: 0 abi_version, 1 input_reserve, 2 run, 3 output_ptr, 4 output_len.
     let run_idx = 2u32;
     let run_body = match run {
-        RunBody::Echo => code(&[
-            // magic "ARCA"
-            &op::i32_const(INPUT - 12),
-            &op::i32_const(i32::from_le_bytes(*b"ARCA")),
-            &op::I32_STORE,
-            // version 1, kind 1 (X-ray report)
-            &op::i32_const(INPUT - 8),
-            &op::i32_const(0x0001_0001),
-            &op::I32_STORE,
-            // payload length = reserved length
-            &op::i32_const(INPUT - 4),
-            &op::local_get(0),
-            &op::I32_STORE,
-            &op::i32_const(0),
-        ]),
+        RunBody::Echo => echo_body(),
+        RunBody::Burn(iterations) => {
+            // mem[COUNTER_SLOT] = iterations; do { mem[COUNTER_SLOT] -= 1 } while mem[COUNTER_SLOT] != 0
+            let counter = |tail: &[u8]| code(&[&op::i32_const(COUNTER_SLOT), tail]);
+            code(&[
+                &counter(&op::i32_const(iterations.max(1))),
+                &op::I32_STORE,
+                &op::LOOP_EMPTY,
+                &counter(&code(&[
+                    &op::i32_const(COUNTER_SLOT),
+                    &op::I32_LOAD,
+                    &op::i32_const(1),
+                    &[op::I32_SUB],
+                ])),
+                &op::I32_STORE,
+                &counter(&op::I32_LOAD),
+                &op::BR_IF0,
+                &[op::END],
+                &echo_body(),
+            ])
+        }
         RunBody::InfiniteLoop => code(&[&op::LOOP_EMPTY, &op::BR0, &[op::END], &op::i32_const(0)]),
         RunBody::MemoryHog => code(&[
             &op::LOOP_EMPTY,

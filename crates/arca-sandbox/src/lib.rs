@@ -14,7 +14,9 @@
 //! | **no system access** | modules with *any* import are refused before instantiation; WebAssembly has no ambient authority, so a zero-import module cannot reach the network, file system, clock, randomness or IPC |
 //! | **no code injection** | only modules whose SHA-256 is on the allow-list ([`ModulePin`]) are executed; validation is always on; `start` functions and non-essential proposals are disabled |
 //! | **bounded CPU** | fuel metering: every instruction costs fuel; budget = `base + per_byte × input` capped at `max` ([`FuelPolicy`]); exhaustion traps deterministically |
-//! | **bounded memory** | a [`wasmi::ResourceLimiter`] caps linear memory (128 MiB by default) and table growth; exceeding it traps immediately |
+//! | **bounded wall-clock time** | the budget is handed to the guest in slices ([`SandboxPolicy::slice_fuel`]); between slices the host checks a monotonic deadline ([`SandboxPolicy::max_wall_time`], [`RunOptions::deadline`]) — a slow device cannot turn a large fuel budget into an unbounded wait |
+//! | **cancellable** | a [`CancelToken`] is polled at every slice boundary, so the UI can abandon a document within one slice (milliseconds) without killing the process |
+//! | **bounded memory** | a [`wasmi::ResourceLimiter`] caps linear memory and table growth; the cap is proportional to the document (`base + factor × input`, never above a hard ceiling — [`SandboxPolicy::memory_limit_for`]); exceeding it traps immediately |
 //! | **bounded stack** | interpreter recursion depth and value-stack height limits |
 //! | **bounded I/O** | input and output sizes are capped; the output region is bounds-checked against the guest memory before it is copied |
 //! | **ephemeral** | engine, store and memory exist only for one call; the guest memory is zeroised before it is released, and returned buffers are [`zeroize::Zeroizing`] |
@@ -28,13 +30,15 @@
 
 use core::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use arca_abi::envelope::{self, PayloadKind};
 use arca_abi::{ABI_VERSION, exports};
 use arca_digest::Digest;
 use wasmi::{
     CompilationMode, Config, EnforcedLimits, Engine, ExternType, Instance, Linker, Memory, Module,
-    Store, TrapCode, TypedFunc, ValType,
+    Store, TrapCode, TypedFunc, TypedResumableCall, ValType, WasmResults,
 };
 use wasmi_core::{LimiterError, ResourceLimiter};
 use zeroize::{Zeroize, Zeroizing};
@@ -51,6 +55,23 @@ pub struct FuelPolicy {
 }
 
 impl FuelPolicy {
+    /// The default budget, calibrated against measurements of the real guest
+    /// (`cargo run --release -p arca-guest-xray --example measure`):
+    ///
+    /// | document | input bytes | fuel per input byte |
+    /// |---|---|---|
+    /// | word-processing text, 10:1 deflate | 750 KB | ≈ 4 500 |
+    /// | spreadsheet, 5:1 deflate (random numbers) | 0.1 – 2 MB | ≈ 6 000 |
+    /// | spreadsheet, 10:1 deflate (repetitive cells) | 650 KB | ≈ 15 000 |
+    ///
+    /// Spreadsheets are the worst case (many tiny elements, ≈ 1 400 fuel per
+    /// XML byte). `32 000` per input byte therefore admits tables compressing
+    /// up to roughly 20:1 and still stops a runaway guest after seconds, not
+    /// minutes; the wall-clock deadline ([`SandboxPolicy::max_wall_time`]) and
+    /// the cancel token bound the *time* regardless of the device speed.
+    pub const DEFAULT: Self =
+        Self { base: 2_000_000_000, per_input_byte: 32_000, max: 400_000_000_000 };
+
     /// Fuel granted for an input of `len` bytes.
     #[must_use]
     pub fn for_input(&self, len: usize) -> u64 {
@@ -62,8 +83,15 @@ impl FuelPolicy {
 /// Resource policy of the sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SandboxPolicy {
-    /// Maximum size of the guest's linear memory.
+    /// Hard ceiling of the guest's linear memory, whatever the input size.
     pub max_memory_bytes: usize,
+    /// Linear memory every run may use regardless of input size (the guest's
+    /// own code, stack and allocator metadata).
+    pub memory_base_bytes: usize,
+    /// Additional linear memory per input byte: the guest holds a copy of the
+    /// document plus its decompressed parts and parse state, so a document of
+    /// `n` bytes legitimately needs a small multiple of `n`.
+    pub memory_per_input_byte: usize,
     /// Maximum number of table elements.
     pub max_table_elements: usize,
     /// CPU budget.
@@ -82,14 +110,45 @@ pub struct SandboxPolicy {
     pub worker_stack_bytes: usize,
     /// Apply [`EnforcedLimits::strict`] to module compilation.
     pub strict_module_limits: bool,
+    /// Fuel handed to the guest per slice. The host checks cancellation, the
+    /// deadline and reports progress at every slice boundary, so this is the
+    /// responsiveness granularity (smaller = more responsive, slightly more
+    /// overhead). Clamped to at least [`MIN_SLICE_FUEL`]. It never changes
+    /// *how much* the guest may compute — only how often the host looks.
+    pub slice_fuel: u64,
+    /// Absolute wall-clock ceiling of one run, measured from the start of
+    /// [`Sandbox::run_with`] (module hashing and compilation included).
+    /// `None` disables it, leaving fuel as the only CPU bound.
+    pub max_wall_time: Option<Duration>,
+}
+
+/// Smallest fuel slice the sandbox will use (see [`SandboxPolicy::slice_fuel`]).
+pub const MIN_SLICE_FUEL: u64 = 10_000;
+
+impl SandboxPolicy {
+    /// Linear-memory limit for an input of `len` bytes:
+    /// `min(max_memory_bytes, memory_base_bytes + memory_per_input_byte × len)`.
+    ///
+    /// Scaling the limit with the document keeps the cap tight for the common
+    /// small file (a hostile 100 KiB document cannot take hundreds of MiB)
+    /// while a legitimately large file is not refused for a fixed, arbitrary
+    /// number.
+    #[must_use]
+    pub fn memory_limit_for(&self, len: usize) -> usize {
+        self.memory_base_bytes
+            .saturating_add(self.memory_per_input_byte.saturating_mul(len))
+            .min(self.max_memory_bytes)
+    }
 }
 
 impl Default for SandboxPolicy {
     fn default() -> Self {
         Self {
-            max_memory_bytes: 128 << 20,
+            max_memory_bytes: 1 << 30,
+            memory_base_bytes: 96 << 20,
+            memory_per_input_byte: 4,
             max_table_elements: 100_000,
-            fuel: FuelPolicy { base: 2_000_000_000, per_input_byte: 4_000, max: 400_000_000_000 },
+            fuel: FuelPolicy::DEFAULT,
             max_input_bytes: 512 << 20,
             max_output_bytes: 64 << 20,
             max_module_bytes: 32 << 20,
@@ -97,6 +156,8 @@ impl Default for SandboxPolicy {
             max_stack_height: 8 << 20,
             worker_stack_bytes: 8 << 20,
             strict_module_limits: false,
+            slice_fuel: 25_000_000,
+            max_wall_time: Some(Duration::from_secs(300)),
         }
     }
 }
@@ -186,6 +247,13 @@ pub enum SandboxError {
         /// Fuel granted for this run.
         limit: u64,
     },
+    /// The run was abandoned through its [`CancelToken`].
+    Cancelled,
+    /// The wall-clock deadline passed before the guest finished.
+    DeadlineExceeded {
+        /// The deadline that was in force.
+        limit: Duration,
+    },
     /// The guest tried to exceed its memory or table limit.
     MemoryLimitExceeded,
     /// The guest exceeded its call depth / stack.
@@ -224,6 +292,10 @@ impl fmt::Display for SandboxError {
                 write!(f, "guest implements ABI version {v}, host expects {ABI_VERSION}")
             }
             Self::FuelExhausted { limit } => write!(f, "CPU budget of {limit} fuel exhausted"),
+            Self::Cancelled => f.write_str("run cancelled"),
+            Self::DeadlineExceeded { limit } => {
+                write!(f, "wall-clock deadline of {} ms exceeded", limit.as_millis())
+            }
             Self::MemoryLimitExceeded => f.write_str("guest exceeded its memory limit"),
             Self::StackOverflow => f.write_str("guest exceeded its call stack"),
             Self::GuestTrap(t) => write!(f, "guest trapped: {t}"),
@@ -249,6 +321,10 @@ pub struct ExecutionStats {
     pub fuel_consumed: u64,
     /// Peak linear-memory size in bytes.
     pub peak_memory_bytes: usize,
+    /// Number of fuel slices the guest needed (1 = it finished in the first).
+    pub slices: u64,
+    /// Wall-clock time of the whole run.
+    pub wall_time: Duration,
 }
 
 /// A successful run.
@@ -262,6 +338,183 @@ pub struct GuestOutput {
     pub payload: Zeroizing<Vec<u8>>,
     /// Resource accounting.
     pub stats: ExecutionStats,
+}
+
+/// A cloneable flag that abandons a run from another thread.
+///
+/// The guest cannot observe or influence it: the host polls it at every fuel
+/// slice boundary and then drops the whole store.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    /// A fresh, un-cancelled token.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Requests cancellation; idempotent and safe from any thread.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Whether [`cancel`](Self::cancel) was called on any clone of this token.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// A snapshot of a running guest, delivered at fuel slice boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    /// Fuel consumed so far.
+    pub fuel_consumed: u64,
+    /// Fuel granted for the whole run (an upper bound, not a forecast: most
+    /// documents finish well below it).
+    pub fuel_limit: u64,
+    /// Wall-clock time since the run started.
+    pub elapsed: Duration,
+}
+
+type ProgressFn = Arc<dyn Fn(Progress) + Send + Sync>;
+
+/// Per-run controls: cancellation, a tighter deadline, progress reporting.
+///
+/// Options can only make a run *stricter* than the [`SandboxPolicy`]; the
+/// policy ceilings always apply.
+#[derive(Clone, Default)]
+pub struct RunOptions {
+    cancel: Option<CancelToken>,
+    deadline: Option<Duration>,
+    progress: Option<ProgressFn>,
+}
+
+impl fmt::Debug for RunOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RunOptions")
+            .field("cancel", &self.cancel)
+            .field("deadline", &self.deadline)
+            .field("progress", &self.progress.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
+}
+
+impl RunOptions {
+    /// No cancellation, no extra deadline, no progress callback.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Abandon the run when `token` is cancelled.
+    #[must_use]
+    pub fn cancel_token(mut self, token: CancelToken) -> Self {
+        self.cancel = Some(token);
+        self
+    }
+
+    /// Fail with [`SandboxError::DeadlineExceeded`] after `limit` of wall-clock
+    /// time (never longer than [`SandboxPolicy::max_wall_time`]).
+    #[must_use]
+    pub fn deadline(mut self, limit: Duration) -> Self {
+        self.deadline = Some(limit);
+        self
+    }
+
+    /// Call `callback` at every slice boundary, on the sandbox worker thread.
+    /// Keep it cheap and non-blocking; a panic inside it is contained like any
+    /// other worker fault.
+    #[must_use]
+    pub fn on_progress(mut self, callback: impl Fn(Progress) + Send + Sync + 'static) -> Self {
+        self.progress = Some(Arc::new(callback));
+        self
+    }
+}
+
+/// Hands the fuel budget to the guest slice by slice and watches the clock.
+///
+/// Invariants: `consumed + (slice_grant - remaining)` is the exact fuel the
+/// guest has used; it never exceeds `total`; each slice grants at least the
+/// fuel the pending instruction requires, so every slice consumes at least one
+/// unit and the run ends after at most `total` slices.
+struct Meter<'a> {
+    total: u64,
+    /// Fuel consumed in slices that have already ended.
+    consumed: u64,
+    /// Fuel placed in the store for the current slice.
+    slice_grant: u64,
+    slice: u64,
+    slices: u64,
+    started: Instant,
+    deadline: Option<(Instant, Duration)>,
+    cancel: Option<&'a CancelToken>,
+    progress: Option<&'a ProgressFn>,
+}
+
+impl<'a> Meter<'a> {
+    fn new(policy: &SandboxPolicy, options: &'a RunOptions, total: u64, started: Instant) -> Self {
+        let limit = match (policy.max_wall_time, options.deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        Self {
+            total,
+            consumed: 0,
+            slice_grant: 0,
+            slice: policy.slice_fuel.max(MIN_SLICE_FUEL),
+            slices: 0,
+            started,
+            deadline: limit.and_then(|d| started.checked_add(d).map(|at| (at, d))),
+            cancel: options.cancel.as_ref(),
+            progress: options.progress.as_ref(),
+        }
+    }
+
+    /// Fails if the run was cancelled or its deadline has passed.
+    fn check(&self) -> Result<(), SandboxError> {
+        if self.cancel.is_some_and(CancelToken::is_cancelled) {
+            return Err(SandboxError::Cancelled);
+        }
+        match self.deadline {
+            Some((at, limit)) if Instant::now() >= at => {
+                Err(SandboxError::DeadlineExceeded { limit })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Fuel used so far, given the fuel still in the store.
+    fn used(&self, store: &Store<Guard>) -> u64 {
+        let remaining = store.get_fuel().unwrap_or(0);
+        self.consumed.saturating_add(self.slice_grant.saturating_sub(remaining))
+    }
+
+    /// Loads the next slice into the store.
+    ///
+    /// `required` is the fuel the instruction that ran dry needs; the slice is
+    /// never smaller, so that instruction (e.g. a large `memory.fill`) can run.
+    fn refill(&mut self, store: &mut Store<Guard>, required: u64) -> Result<(), SandboxError> {
+        self.consumed = self.used(store);
+        self.check()?;
+        let left = self.total.saturating_sub(self.consumed);
+        if required > left {
+            return Err(SandboxError::FuelExhausted { limit: self.total });
+        }
+        if let Some(report) = self.progress {
+            report(Progress {
+                fuel_consumed: self.consumed,
+                fuel_limit: self.total,
+                elapsed: self.started.elapsed(),
+            });
+        }
+        let grant = self.slice.max(required).min(left);
+        store.set_fuel(grant).map_err(|e| SandboxError::Internal(e.to_string()))?;
+        self.slice_grant = grant;
+        self.slices = self.slices.saturating_add(1);
+        Ok(())
+    }
 }
 
 /// Store data: the resource limiter and its observations.
@@ -336,14 +589,34 @@ impl Sandbox {
 
     /// Runs `module` over `input` on a dedicated worker thread.
     ///
+    /// Equivalent to [`run_with`](Self::run_with) with default [`RunOptions`].
+    ///
     /// # Errors
     /// See [`SandboxError`]; every failure is contained.
     pub fn run(&self, module: &GuestModule, input: &[u8]) -> Result<GuestOutput, SandboxError> {
+        self.run_with(module, input, &RunOptions::default())
+    }
+
+    /// Runs `module` over `input` on a dedicated worker thread, honouring the
+    /// cancellation token, deadline and progress callback in `options`.
+    ///
+    /// # Errors
+    /// See [`SandboxError`]; every failure is contained. Cancellation and
+    /// deadline expiry surface as [`SandboxError::Cancelled`] and
+    /// [`SandboxError::DeadlineExceeded`]; in both cases the guest memory is
+    /// wiped exactly as after a normal run.
+    pub fn run_with(
+        &self,
+        module: &GuestModule,
+        input: &[u8],
+        options: &RunOptions,
+    ) -> Result<GuestOutput, SandboxError> {
+        let started = Instant::now();
         std::thread::scope(|scope| {
             let handle = std::thread::Builder::new()
                 .name(String::from("arca-sandbox"))
                 .stack_size(self.policy.worker_stack_bytes)
-                .spawn_scoped(scope, || self.execute(module, input))
+                .spawn_scoped(scope, || self.execute(module, input, options, started))
                 .map_err(|e| SandboxError::WorkerSpawn(e.to_string()))?;
             handle.join().map_err(|_| SandboxError::WorkerPanicked)?
         })
@@ -358,7 +631,7 @@ impl Sandbox {
         module: &GuestModule,
         input: &[u8],
     ) -> Result<GuestOutput, SandboxError> {
-        self.execute(module, input)
+        self.execute(module, input, &RunOptions::default(), Instant::now())
     }
 
     fn engine(&self) -> Engine {
@@ -384,7 +657,13 @@ impl Sandbox {
         Engine::new(&config)
     }
 
-    fn execute(&self, module: &GuestModule, input: &[u8]) -> Result<GuestOutput, SandboxError> {
+    fn execute(
+        &self,
+        module: &GuestModule,
+        input: &[u8],
+        options: &RunOptions,
+        started: Instant,
+    ) -> Result<GuestOutput, SandboxError> {
         let p = &self.policy;
         if input.len() > p.max_input_bytes {
             return Err(SandboxError::InputTooLarge(input.len()));
@@ -400,6 +679,11 @@ impl Sandbox {
         let input_len =
             i32::try_from(input.len()).map_err(|_| SandboxError::InputTooLarge(input.len()))?;
 
+        let fuel = p.fuel.for_input(input.len());
+        let mut meter = Meter::new(p, options, fuel, started);
+        // A run that is already cancelled never pays for compilation.
+        meter.check()?;
+
         let engine = self.engine();
         let wasm = Module::new(&engine, &*module.bytes)
             .map_err(|e| SandboxError::ModuleInvalid(e.to_string()))?;
@@ -410,17 +694,17 @@ impl Sandbox {
             });
         }
         check_exports(&wasm)?;
+        meter.check()?;
 
-        let fuel = p.fuel.for_input(input.len());
         let guard = Guard {
-            max_memory: p.max_memory_bytes,
+            max_memory: p.memory_limit_for(input.len()),
             max_table: p.max_table_elements,
             memory_denied: false,
             peak_memory: 0,
         };
         let mut store = Store::new(&engine, guard);
         store.limiter(|g| g as &mut dyn ResourceLimiter);
-        store.set_fuel(fuel).map_err(|e| SandboxError::Internal(e.to_string()))?;
+        meter.refill(&mut store, 0)?;
 
         let linker: Linker<Guard> = Linker::new(&engine);
         let instance = linker
@@ -430,7 +714,7 @@ impl Sandbox {
             .get_memory(&store, exports::MEMORY)
             .ok_or(SandboxError::MissingExport(exports::MEMORY))?;
 
-        let result = protocol(&mut store, &instance, memory, input, input_len, p, fuel);
+        let result = protocol(&mut store, &instance, memory, input, input_len, p, &mut meter);
 
         // Wipe the guest memory (input copy, intermediate parse state) before
         // the store is dropped, whatever the outcome.
@@ -480,12 +764,37 @@ fn classify(e: &wasmi::Error, guard: &Guard, fuel: u64) -> SandboxError {
     }
 }
 
-fn typed<P: wasmi::WasmParams, R: wasmi::WasmResults>(
+fn typed<P: wasmi::WasmParams, R: WasmResults>(
     store: &Store<Guard>,
     instance: &Instance,
     name: &'static str,
 ) -> Result<TypedFunc<P, R>, SandboxError> {
     instance.get_typed_func::<P, R>(store, name).map_err(|_| SandboxError::ExportSignature(name))
+}
+
+/// Runs one guest export to completion, refilling fuel slice by slice.
+fn drive<R: WasmResults>(
+    store: &mut Store<Guard>,
+    meter: &mut Meter<'_>,
+    start: impl FnOnce(&mut Store<Guard>) -> Result<TypedResumableCall<R>, wasmi::Error>,
+) -> Result<R, SandboxError> {
+    let mut step = start(store).map_err(|e| classify(&e, store.data(), meter.total))?;
+    loop {
+        match step {
+            TypedResumableCall::Finished(result) => return Ok(result),
+            // The sandbox links no host functions, so a host trap is impossible;
+            // refuse to continue if it ever happens.
+            TypedResumableCall::HostTrap(_) => {
+                return Err(SandboxError::Internal(String::from("unexpected host trap")));
+            }
+            TypedResumableCall::OutOfFuel(pending) => {
+                meter.refill(store, pending.required_fuel())?;
+                step = pending
+                    .resume(&mut *store)
+                    .map_err(|e| classify(&e, store.data(), meter.total))?;
+            }
+        }
+    }
 }
 
 fn protocol(
@@ -495,7 +804,7 @@ fn protocol(
     input: &[u8],
     input_len: i32,
     policy: &SandboxPolicy,
-    fuel: u64,
+    meter: &mut Meter<'_>,
 ) -> Result<GuestOutput, SandboxError> {
     let version: TypedFunc<(), i32> = typed(store, instance, exports::ABI_VERSION)?;
     let reserve: TypedFunc<i32, i32> = typed(store, instance, exports::INPUT_RESERVE)?;
@@ -503,21 +812,22 @@ fn protocol(
     let out_ptr: TypedFunc<(), i32> = typed(store, instance, exports::OUTPUT_PTR)?;
     let out_len: TypedFunc<(), i32> = typed(store, instance, exports::OUTPUT_LEN)?;
 
-    let v = version.call(&mut *store, ()).map_err(|e| classify(&e, store.data(), fuel))?;
+    let v = drive(store, meter, |s| version.call_resumable(s, ()))?;
     if v != ABI_VERSION {
         return Err(SandboxError::AbiMismatch(v));
     }
-    let ptr = reserve.call(&mut *store, input_len).map_err(|e| classify(&e, store.data(), fuel))?;
+    let ptr = drive(store, meter, |s| reserve.call_resumable(s, input_len))?;
     let ptr = usize::try_from(ptr).map_err(|_| SandboxError::GuestAllocationFailed)?;
     if ptr == 0 && !input.is_empty() {
         return Err(SandboxError::GuestAllocationFailed);
     }
     memory.write(&mut *store, ptr, input).map_err(|_| SandboxError::GuestAllocationFailed)?;
+    meter.check()?;
 
-    let status = run.call(&mut *store, input_len).map_err(|e| classify(&e, store.data(), fuel))?;
+    let status = drive(store, meter, |s| run.call_resumable(s, input_len))?;
 
-    let optr = out_ptr.call(&mut *store, ()).map_err(|e| classify(&e, store.data(), fuel))?;
-    let olen = out_len.call(&mut *store, ()).map_err(|e| classify(&e, store.data(), fuel))?;
+    let optr = drive(store, meter, |s| out_ptr.call_resumable(s, ()))?;
+    let olen = drive(store, meter, |s| out_len.call_resumable(s, ()))?;
     let optr = usize::try_from(optr)
         .map_err(|_| SandboxError::OutputInvalid("negative output pointer"))?;
     let olen =
@@ -542,11 +852,12 @@ fn protocol(
         return Err(SandboxError::GuestStatus(status));
     }
 
-    let remaining = store.get_fuel().unwrap_or(0);
     let stats = ExecutionStats {
-        fuel_limit: fuel,
-        fuel_consumed: fuel.saturating_sub(remaining),
+        fuel_limit: meter.total,
+        fuel_consumed: meter.used(store),
         peak_memory_bytes: store.data().peak_memory.max(memory.data_size(&*store)),
+        slices: meter.slices,
+        wall_time: meter.started.elapsed(),
     };
     Ok(GuestOutput { status, kind, payload, stats })
 }

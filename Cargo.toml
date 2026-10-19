@@ -86,6 +86,15 @@ get_unwrap = "deny"
 [profile.dev]
 overflow-checks = true
 
+# NOTE: do not raise the optimisation level of `wasmi` in this profile. wasmi
+# selects tail-call dispatch for optimised builds, and with that combination
+# (dev profile: debug assertions on, 256 codegen units, no LTO) the sandbox
+# worker's native stack was observed to overflow even at 16 MiB, while the
+# default dev build (portable loop dispatch) and the release build (tail calls
+# compiled to jumps) both run in constant stack. The guest end-to-end tests are
+# run with `cargo test --release` in CI, where the interpreter is ~40 % faster
+# than with portable dispatch (measured: 675 ms vs 1100 ms on a 500 kB sheet).
+
 [profile.release]
 overflow-checks = true
 debug-assertions = false
@@ -97,5 +106,8 @@ strip = "symbols"
 [profile.guest]
 inherits = "release"
 panic = "abort"
-opt-level = "s"
+# The guest runs in an interpreter, where speed matters more than size: the
+# size-optimised build (`"s"`) was ~35 % slower on real spreadsheets for a
+# ~12 % smaller module (measured with `arca-guest-xray --example measure`).
+opt-level = 3
 lto = "fat"
