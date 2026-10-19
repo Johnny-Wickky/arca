@@ -27,6 +27,9 @@ use std::borrow::Cow;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
+/// Attribute names tracked on the stack by the duplicate check.
+const INLINE_ATTRS: usize = 16;
+
 /// Limits for one XML document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XmlLimits {
@@ -310,13 +313,31 @@ impl<'a> SecureXmlReader<'a> {
         if e.name().as_ref().len() > self.limits.max_name_len {
             return Err(XmlError::NameTooLong);
         }
+        // Duplicate detection is done here, allocation-free for the common case
+        // (the parser's own `with_checks` allocates a vector per element, which
+        // dominated the cost of large spreadsheet parts).
+        let mut inline: [&str; INLINE_ATTRS] = [""; INLINE_ATTRS];
+        let mut spill: Vec<&str> = Vec::new();
         let mut count = 0usize;
         let mut attrs = e.attributes();
-        attrs.with_checks(true);
+        attrs.with_checks(false);
         for attr in attrs {
             let attr = attr.map_err(|err| XmlError::Malformed(err.to_string()))?;
-            if attr.key.as_ref().len() > self.limits.max_name_len {
+            let key: &str = attr.key.into_inner();
+            if key.len() > self.limits.max_name_len {
                 return Err(XmlError::NameTooLong);
+            }
+            let seen_inline = inline.get(..count.min(INLINE_ATTRS)).unwrap_or(&[]);
+            if seen_inline.contains(&key) || spill.contains(&key) {
+                return Err(XmlError::Malformed(format!(
+                    "duplicate attribute {}",
+                    crate::text::display_safe(key, 64)
+                )));
+            }
+            if let Some(slot) = inline.get_mut(count) {
+                *slot = key;
+            } else {
+                spill.push(key);
             }
             // Resolving the value enforces the entity policy inside attributes:
             // only the predefined entities and character references succeed.
@@ -346,26 +367,38 @@ pub fn validate_document(src: &str, limits: XmlLimits) -> Result<u64, XmlError> 
 #[must_use]
 pub fn local_name<'b>(e: &'b BytesStart<'_>) -> &'b str {
     let full: &str = e.name().into_inner();
-    match full.rsplit_once(':') {
-        Some((_, local)) => local,
-        None => full,
-    }
+    // Element names are short: a plain reverse scan beats a substring searcher.
+    // `:` is ASCII, so the byte after it is a character boundary.
+    full.bytes().rposition(|b| b == b':').and_then(|i| full.get(i + 1..)).unwrap_or(full)
 }
 
 /// Splits a qualified name into `(prefix, local)`.
 #[must_use]
 pub fn split_qname(name: &str) -> (Option<&str>, &str) {
-    match name.split_once(':') {
-        Some((p, l)) => (Some(p), l),
+    match name.bytes().position(|b| b == b':') {
+        Some(i) => (name.get(..i), name.get(i + 1..).unwrap_or_default()),
         None => (None, name),
     }
+}
+
+/// Well-formed attributes of `e`, without the parser's duplicate bookkeeping.
+///
+/// Elements reach callers only through [`SecureXmlReader`], whose
+/// `check_element` has already rejected duplicates and malformed attributes,
+/// so lookups can skip the per-call allocation of the checking iterator.
+fn lookup<'e, 'a>(
+    e: &'e BytesStart<'a>,
+) -> impl Iterator<Item = quick_xml::events::attributes::Attribute<'e>> {
+    let mut attrs = e.attributes();
+    attrs.with_checks(false);
+    attrs.flatten()
 }
 
 /// Returns the unescaped value of the first attribute whose *local* name is
 /// `local` (prefix ignored). Malformed attributes yield `None`.
 #[must_use]
 pub fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
-    for a in e.attributes().flatten() {
+    for a in lookup(e) {
         let key: &str = a.key.into_inner();
         if split_qname(key).1 == local {
             return a.normalized_value(XmlVersion::Implicit1_0).ok().map(Cow::into_owned);
@@ -377,7 +410,7 @@ pub fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
 /// Returns the unescaped value of the attribute with exactly this qualified name.
 #[must_use]
 pub fn attr_q(e: &BytesStart<'_>, qname: &str) -> Option<String> {
-    for a in e.attributes().flatten() {
+    for a in lookup(e) {
         if a.key.into_inner() == qname {
             return a.normalized_value(XmlVersion::Implicit1_0).ok().map(Cow::into_owned);
         }
@@ -388,8 +421,7 @@ pub fn attr_q(e: &BytesStart<'_>, qname: &str) -> Option<String> {
 /// All attributes as `(qualified name, unescaped value)` pairs.
 #[must_use]
 pub fn attrs(e: &BytesStart<'_>) -> Vec<(String, String)> {
-    e.attributes()
-        .flatten()
+    lookup(e)
         .filter_map(|a| {
             let k = a.key.into_inner().to_owned();
             a.normalized_value(XmlVersion::Implicit1_0).ok().map(|v| (k, v.into_owned()))

@@ -229,6 +229,35 @@ fn lying_uncompressed_size_is_detected() {
 }
 
 #[test]
+fn overstated_uncompressed_size_is_detected() {
+    // The header promises more bytes than the stream delivers.
+    let mut m = Raw::deflated(b"short.xml", &[b'z'; 100]);
+    m.usize_ = 4096;
+    let bytes = build(&[], &[m], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    assert!(matches!(zip.read(&zip.entries()[0], &mut budget()), Err(ZipError::SizeMismatch(_))));
+}
+
+#[test]
+fn truncated_deflate_stream_is_corrupt_not_a_size_error() {
+    let noise: Vec<u8> =
+        (0..2048u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+    let mut m = Raw::deflated(b"cut.xml", &noise);
+    let cut = m.payload.len() / 2;
+    m.payload.truncate(cut);
+    let bytes = build(&[], &[m], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    assert!(matches!(zip.read(&zip.entries()[0], &mut budget()), Err(ZipError::Inflate(_))));
+}
+
+#[test]
+fn empty_deflated_member_is_readable() {
+    let bytes = build(&[], &[Raw::deflated(b"empty.xml", b"")], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    assert!(zip.read(&zip.entries()[0], &mut budget()).unwrap().is_empty());
+}
+
+#[test]
 fn crc_mismatch_is_detected() {
     let mut m = Raw::stored(b"a.xml", b"hello");
     m.crc ^= 1;

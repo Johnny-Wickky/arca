@@ -21,7 +21,8 @@ pub mod writer;
 use core::fmt;
 use std::collections::BTreeMap;
 
-use miniz_oxide::inflate::{TINFLStatus, decompress_to_vec_with_limit};
+use miniz_oxide::inflate::TINFLStatus;
+use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
 
 use crate::budget::{BudgetExceeded, InflateBudget};
 use crate::bytes::{slice, to_usize, u16_le, u32_le, u64_le};
@@ -461,14 +462,14 @@ impl<'a> ZipArchive<'a> {
                 }
                 raw.to_vec()
             }
-            METHOD_DEFLATE => match decompress_to_vec_with_limit(raw, expected) {
-                Ok(v) => v,
-                Err(e) if e.status == TINFLStatus::HasMoreOutput => {
-                    // The stream produces more than the header admits: refuse.
-                    return Err(ZipError::SizeMismatch(name()));
+            METHOD_DEFLATE => inflate_exact(raw, expected).map_err(|e| match e {
+                InflateFailure::Memory => {
+                    ZipError::EntryTooLarge { name: name(), size: entry.uncompressed_size }
                 }
-                Err(_) => return Err(ZipError::Inflate(name())),
-            },
+                // The stream produces more (or fewer) bytes than the header admits.
+                InflateFailure::Size => ZipError::SizeMismatch(name()),
+                InflateFailure::Corrupt => ZipError::Inflate(name()),
+            })?,
             method => return Err(ZipError::UnsupportedCompression { name: name(), method }),
         };
         if out.len() != expected {
@@ -493,6 +494,43 @@ impl<'a> ZipArchive<'a> {
             Some(e) => self.read(e, budget).map(Some),
             None => Ok(None),
         }
+    }
+}
+
+/// Why [`inflate_exact`] failed.
+enum InflateFailure {
+    /// The output buffer could not be allocated.
+    Memory,
+    /// The stream does not decompress to exactly the declared size.
+    Size,
+    /// The stream is truncated or not valid DEFLATE.
+    Corrupt,
+}
+
+/// Inflates a raw DEFLATE stream into a buffer of *exactly* `expected` bytes.
+///
+/// The declared size has already been validated against the entry, ratio and
+/// archive budgets, so the whole output buffer is allocated once, up front.
+/// This avoids the grow-and-copy cycle of an incrementally resized vector
+/// (which doubles peak memory and, inside the interpreter, the fuel spent on
+/// zero-filling and copying), and lets an over-long stream fail the moment it
+/// writes its `expected + 1`-th byte.
+fn inflate_exact(raw: &[u8], expected: usize) -> Result<Vec<u8>, InflateFailure> {
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(expected).map_err(|_| InflateFailure::Memory)?;
+    out.resize(expected, 0);
+    let mut state = Box::<DecompressorOxide>::default();
+    let (status, _consumed, written) = decompress(
+        &mut state,
+        raw,
+        &mut out,
+        0,
+        inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+    );
+    match status {
+        TINFLStatus::Done if written == expected => Ok(out),
+        TINFLStatus::Done | TINFLStatus::HasMoreOutput => Err(InflateFailure::Size),
+        _ => Err(InflateFailure::Corrupt),
     }
 }
 

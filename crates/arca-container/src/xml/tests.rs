@@ -73,6 +73,44 @@ fn attribute_limits_and_duplicates() {
 }
 
 #[test]
+fn duplicate_attributes_are_found_wherever_they_sit() {
+    // Inside the stack-tracked prefix, across the boundary, and in the spill area.
+    for (first, second) in [(0, 1), (0, 15), (15, 16), (3, 40), (20, 500), (16, 17)] {
+        let attrs: String = (0..=second.max(first) + 1)
+            .map(|i| {
+                let name = if i == second { first } else { i };
+                format!(" a{name}=\"1\"")
+            })
+            .collect();
+        assert!(
+            matches!(check(&format!("<r{attrs}/>")), Err(XmlError::Malformed(_))),
+            "duplicate of attribute {first} at position {second} went unnoticed"
+        );
+    }
+    // 17 distinct attributes are fine, and the same names on different elements too.
+    let ok: String = (0..17).map(|i| format!(" a{i}=\"1\"")).collect();
+    assert!(check(&format!("<r{ok}><c{ok}/><c{ok}/></r>")).is_ok());
+    // Prefixed names that differ only by prefix are distinct attributes.
+    assert!(check(r#"<r xmlns:p="u" xmlns:q="v" p:a="1" q:a="2" a="3"/>"#).is_ok());
+}
+
+#[test]
+fn names_are_split_at_the_last_colon() {
+    let mut reader = SecureXmlReader::new(r#"<w:p><a:b:c/></w:p>"#, XmlLimits::default()).unwrap();
+    let mut locals = Vec::new();
+    while let Some(item) = reader.next_item().unwrap() {
+        if let Event::Start(e) | Event::Empty(e) = &item.event {
+            locals.push(local_name(e).to_owned());
+        }
+    }
+    assert_eq!(locals, ["p", "c"]);
+    assert_eq!(split_qname("w:p"), (Some("w"), "p"));
+    assert_eq!(split_qname("plain"), (None, "plain"));
+    assert_eq!(split_qname(":x"), (Some(""), "x"));
+    assert_eq!(split_qname("a:b:c"), (Some("a"), "b:c"));
+}
+
+#[test]
 fn single_root_rule() {
     assert_eq!(check("<a/><b/>"), Err(XmlError::ContentAfterRoot));
     assert_eq!(check("<a></a><b/>"), Err(XmlError::ContentAfterRoot));
