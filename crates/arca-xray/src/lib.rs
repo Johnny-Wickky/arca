@@ -60,7 +60,9 @@ pub use report::{
 use format::Magic;
 use report::ReportBuilder;
 
-/// Resource limits for one scan. Defaults suit a 128 MiB sandbox.
+/// Resource limits for one scan. The defaults are sized for the sandbox's
+/// input-proportional memory limit (`arca_sandbox::SandboxPolicy::memory_limit_for`);
+/// a part that would not fit there ends the run with a resource error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanPolicy {
     /// Largest accepted input.
@@ -285,10 +287,13 @@ pub fn scan(data: &[u8], policy: &ScanPolicy) -> XRayReport {
         }
     };
     if ctx.report.truncated {
+        let dropped = ctx.report.dropped;
         ctx.report.add(
             ThreatKind::ScanLimitReached,
             "",
-            "finding limit reached; the report is incomplete",
+            format!(
+                "report limit reached: {dropped} item(s) are counted in the verdict but not listed"
+            ),
         );
     }
     finish(ctx, format, rejection, sha256)
@@ -309,14 +314,9 @@ fn finish(
             | FileFormat::Msi
             | FileFormat::Empty
     );
-    // Critical remote content (remote template injection, URL-moniker OLE
-    // links, abusable protocol handlers) is an attack payload, not a tracker.
-    let active = ctx.report.has_category(Category::ActiveContent, Severity::Medium)
-        || ctx.report.has_category(Category::RemoteContent, Severity::Critical);
-    let trackers = ctx.report.external_refs.iter().any(|r| r.auto_load && url::is_network(r.class))
-        || ctx.report.has(ThreatKind::RemoteTemplate)
-        || ctx.report.has(ThreatKind::ExternalImage)
-        || ctx.report.has(ThreatKind::ExternalFrame);
+    // The verdict is computed from facts accumulated over *every* observation,
+    // never from the (capped) stored list: see `report::Facts`.
+    let facts = ctx.report.facts();
     let (verdict, reason) = match rejection {
         Some(r) => (Verdict::Rejected, r),
         None if unsupported => {
@@ -331,8 +331,9 @@ fn finish(
             };
             (Verdict::Rejected, why.to_owned())
         }
-        None if active => (Verdict::ActiveContentNeutralized, String::new()),
-        None if trackers => (Verdict::HiddenTrackers, String::new()),
+        None if facts.active => (Verdict::ActiveContentNeutralized, String::new()),
+        None if facts.coverage_gap => (Verdict::Unverified, String::new()),
+        None if facts.tracker => (Verdict::HiddenTrackers, String::new()),
         None => (Verdict::Clean, String::new()),
     };
     let (findings, rest) = ctx.report.into_parts();

@@ -2,7 +2,11 @@
 
 //! End-to-end X-ray tests over synthetic hostile documents.
 
+mod corpus;
 pub(crate) mod fixtures;
+mod mutation;
+mod references;
+mod verdict;
 
 use arca_abi::wire::{self, DecodeLimits};
 use arca_container::cfb::writer::CfbBuilder;
@@ -529,39 +533,6 @@ fn report_survives_the_wire() {
         let bytes = wire::to_bytes(&r).unwrap();
         let back: XRayReport = wire::from_bytes(&bytes, DecodeLimits::default()).unwrap();
         assert_eq!(back, r);
-    }
-}
-
-#[test]
-fn mutation_fuzz_never_panics() {
-    let seeds = [
-        docm_with_macro().build(),
-        xlsm_with_xlm().build(),
-        doc_binary(),
-        rtf_equation_exploit(),
-        pdf_with_js(),
-    ];
-    let mut state = 0x9E37_79B9_7F4A_7C15u64;
-    let mut next = || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
-    for seed in &seeds {
-        for _ in 0..150 {
-            let mut m = seed.clone();
-            let flips = 1 + (next() % 8) as usize;
-            for _ in 0..flips {
-                let i = (next() % m.len() as u64) as usize;
-                m[i] = m[i].wrapping_add(1 + (next() % 255) as u8);
-            }
-            if next() % 4 == 0 {
-                let cut = (next() % m.len() as u64) as usize;
-                m.truncate(cut);
-            }
-            let _ = scan_default(&m);
-        }
     }
 }
 

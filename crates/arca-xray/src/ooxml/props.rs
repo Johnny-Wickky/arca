@@ -7,7 +7,7 @@ use arca_container::xml;
 use quick_xml::events::BytesStart;
 
 use crate::report::{MetaKey, ThreatKind};
-use crate::xmlwalk::{self, Visitor};
+use crate::xmlwalk::{self, Ancestors, Visitor};
 use crate::{Abort, Ctx, url};
 
 /// Collects the text of leaf elements keyed by their local name.
@@ -19,18 +19,18 @@ struct LeafText {
 }
 
 impl Visitor for LeafText {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, empty: bool, anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, empty: bool, anc: &Ancestors) {
         if !empty && anc.len() == 1 {
             self.current = Some(xml::local_name(e).to_owned());
             self.text.clear();
         }
     }
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &Ancestors) {
         if self.current.is_some() && self.text.len() < 4096 {
             self.text.push_str(text);
         }
     }
-    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, anc: &[String]) {
+    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, anc: &Ancestors) {
         if anc.len() == 1
             && let Some(cur) = self.current.take()
             && cur == local
@@ -121,18 +121,18 @@ struct CustomVisitor {
 }
 
 impl Visitor for CustomVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if xml::local_name(e) == "property" {
             self.name = xml::attr(e, "name");
             self.value.clear();
         }
     }
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &Ancestors) {
         if self.name.is_some() && self.value.len() < 4096 {
             self.value.push_str(text);
         }
     }
-    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &[String]) {
+    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &Ancestors) {
         if local == "property"
             && let Some(n) = self.name.take()
             && self.pairs.len() < 512
@@ -163,7 +163,7 @@ pub(crate) fn custom(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), A
 struct LabelVisitor;
 
 impl Visitor for LabelVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if xml::local_name(e) == "label" {
             let id = xml::attr(e, "id").unwrap_or_default();
             let site = xml::attr(e, "siteId").unwrap_or_default();
@@ -195,7 +195,7 @@ struct PeopleVisitor {
 }
 
 impl Visitor for PeopleVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "person" => {
                 if let Some(n) = xml::attr(e, "author").or_else(|| xml::attr(e, "displayName")) {
@@ -244,7 +244,7 @@ struct CommentsVisitor {
 }
 
 impl Visitor for CommentsVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "comment" | "cm" | "threadedComment" => {
                 self.comments += 1;
@@ -264,12 +264,12 @@ impl Visitor for CommentsVisitor {
             _ => {}
         }
     }
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &Ancestors) {
         if self.in_author && self.author_text.len() < 256 {
             self.author_text.push_str(text);
         }
     }
-    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &[String]) {
+    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &Ancestors) {
         if local == "author" && self.in_author {
             self.in_author = false;
             if !self.author_text.trim().is_empty() && self.authors.len() < 256 {

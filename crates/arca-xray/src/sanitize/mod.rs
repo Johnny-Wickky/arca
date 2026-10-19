@@ -169,6 +169,20 @@ pub fn sanitize(
             verification.rejection
         )));
     }
+    // A "sterile" copy that still contains parts the scanner could not read
+    // (encrypted, unparsable, beyond a limit) is not verified sterile.
+    if verification.verdict == Verdict::Unverified {
+        let gaps: Vec<String> = verification
+            .findings
+            .iter()
+            .filter(|f| f.kind.limits_coverage())
+            .map(|f| format!("{:?} at {}", f.kind, f.location))
+            .collect();
+        return Err(SanitizeError::Verification(format!(
+            "rebuilt file could not be fully inspected: {}",
+            gaps.join("; ")
+        )));
+    }
     let residual: Vec<String> = verification
         .findings
         .iter()

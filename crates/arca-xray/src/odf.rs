@@ -6,10 +6,9 @@ use arca_container::zip::ZipArchive;
 use quick_xml::events::BytesStart;
 
 use crate::format::{FileFormat, odf_format_from_mimetype};
-use crate::macro_analysis;
 use crate::report::{MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind};
-use crate::xmlwalk::{self, NoopVisitor, Visitor};
-use crate::{Abort, Ctx, ooxml, url};
+use crate::xmlwalk::{self, Ancestors, NoopVisitor, Visitor};
+use crate::{Abort, Ctx, formulas, macro_analysis, ooxml, url};
 
 /// Scans an ODF package.
 pub(crate) fn scan(
@@ -137,7 +136,7 @@ struct ManifestVisitor {
 }
 
 impl Visitor for ManifestVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "encryption-data" => self.encrypted += 1,
             "file-entry" => {
@@ -177,12 +176,12 @@ struct BasicVisitor {
 }
 
 impl Visitor for BasicVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if xml::local_name(e) == "module" {
             self.name = xml::attr(e, "name").unwrap_or_default();
         }
     }
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &Ancestors) {
         if anc.last().is_some_and(|a| a == "module") && self.source.len() < (16 << 20) {
             self.source.push_str(text);
         }
@@ -210,8 +209,30 @@ struct ContentVisitor {
 }
 
 impl Visitor for ContentVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &Ancestors) {
         let local = xml::local_name(e);
+        if matches!(local, "table-cell" | "covered-table-cell")
+            && let Some(raw) = xml::attr(e, "formula")
+        {
+            let formula = formulas::strip_odf_prefix(&raw);
+            formulas::report(ctx, formula, &self.loc);
+            for doc in formulas::odf_document_refs(formula) {
+                ooxml::record_external(ctx, &doc, RefKind::WorkbookLink, true, &self.loc);
+            }
+        }
+        if matches!(local, "dde-source" | "dde-link" | "dde-connection-decl") {
+            let part = |name| xml::attr(e, name).unwrap_or_default();
+            ctx.report.add(
+                ThreatKind::DdeFormula,
+                &self.loc,
+                format!(
+                    "DDE link: {} | {} | {}",
+                    part("dde-application"),
+                    part("dde-topic"),
+                    part("dde-item")
+                ),
+            );
+        }
         if local == "event-listener" {
             let event = xml::attr(e, "event-name").unwrap_or_default();
             let target =
@@ -230,7 +251,7 @@ impl Visitor for ContentVisitor {
             );
             return;
         }
-        if url::scheme(&href).is_none() && !href.starts_with("\\\\") && !href.starts_with('/') {
+        if !url::leaves_package(&href) && !href.starts_with('/') {
             return;
         }
         let (kind, auto) = match local {
@@ -255,7 +276,7 @@ struct MetaVisitor {
 }
 
 impl Visitor for MetaVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         let local = xml::local_name(e);
         let key = match local {
             "generator" => Some(MetaKey::Generator),
@@ -280,7 +301,7 @@ impl Visitor for MetaVisitor {
             && !href.trim().is_empty()
         {
             ctx.report.meta(MetaKey::Template, "", &href, "meta.xml");
-            if url::scheme(&href).is_some() || href.starts_with("\\\\") || href.starts_with('/') {
+            if url::leaves_package(&href) || href.starts_with('/') {
                 ooxml::record_external(ctx, &href, RefKind::Template, true, "meta.xml");
             }
         }
@@ -294,12 +315,12 @@ impl Visitor for MetaVisitor {
             self.text.clear();
         }
     }
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &Ancestors) {
         if self.current.is_some() && self.text.len() < 4096 {
             self.text.push_str(text);
         }
     }
-    fn end(&mut self, _ctx: &mut Ctx<'_>, _local: &str, _anc: &[String]) {
+    fn end(&mut self, _ctx: &mut Ctx<'_>, _local: &str, _anc: &Ancestors) {
         if let Some((k, name)) = self.current.take()
             && self.found.len() < 512
         {
@@ -383,18 +404,18 @@ struct SettingsVisitor {
 }
 
 impl Visitor for SettingsVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if xml::local_name(e) == "config-item" {
             self.item = xml::attr(e, "name");
             self.text.clear();
         }
     }
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, _anc: &Ancestors) {
         if self.item.is_some() && self.text.len() < 512 {
             self.text.push_str(text);
         }
     }
-    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &[String]) {
+    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &Ancestors) {
         if local == "config-item"
             && let Some(name) = self.item.take()
             && name == "PrinterName"

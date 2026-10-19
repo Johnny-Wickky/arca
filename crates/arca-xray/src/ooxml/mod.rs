@@ -16,7 +16,7 @@ use crate::report::{
     EmbeddedKind, EmbeddedObject, ExternalReference, MetaKey, RefKind, Severity, TargetClass,
     ThreatKind,
 };
-use crate::xmlwalk::{self, NoopVisitor, Visitor};
+use crate::xmlwalk::{self, Ancestors, NoopVisitor, Visitor};
 use crate::{Abort, Ctx, url};
 
 /// One OPC relationship.
@@ -556,8 +556,12 @@ fn inspect_relationship(
     zip: &ZipArchive<'_>,
 ) {
     let suffix = rel.type_suffix();
-    let has_scheme = url::scheme(&rel.target).is_some() || rel.target.starts_with("\\\\");
-    if !rel.external && !has_scheme {
+    // A relationship reaches outside the package if it says so *or* if its
+    // target does: `TargetMode="External"` is an attribute the author controls,
+    // and `//host/share/x.dotm` (an RFC 3986 network-path reference), `\\host\x`,
+    // `C:\x` or `scheme:` targets are not package-internal whatever it says.
+    let reaches_outside = rel.external || url::leaves_package(&rel.target);
+    if !reaches_outside {
         // Internal target: must stay inside the package.
         match resolve_target(source, &rel.target) {
             None => ctx.report.add_with(
@@ -756,7 +760,7 @@ struct ContentTypesVisitor<'a> {
 }
 
 impl Visitor for ContentTypesVisitor<'_> {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "Default" => {
                 if let (Some(ext), Some(ct)) =
@@ -785,7 +789,7 @@ struct RelsVisitor {
 }
 
 impl Visitor for RelsVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if xml::local_name(e) == "Relationship" {
             let external =
                 xml::attr(e, "TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("External"));
@@ -805,7 +809,7 @@ struct VbaDataVisitor {
 }
 
 impl Visitor for VbaDataVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if let Some(m) = xml::attr(e, "macroName")
             && !self.macros.contains(&m)
             && self.macros.len() < 64
@@ -821,7 +825,7 @@ struct RibbonVisitor {
 }
 
 impl Visitor for RibbonVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         for (k, v) in xml::attrs(e) {
             let local = xml::split_qname(&k).1;
             let is_cb = local == "onLoad"
@@ -844,7 +848,7 @@ struct ActiveXVisitor {
 }
 
 impl Visitor for ActiveXVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if self.classid.is_none()
             && let Some(c) = xml::attr(e, "classid")
         {
@@ -858,7 +862,7 @@ struct SvgVisitor {
 }
 
 impl Visitor for SvgVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         let local = xml::local_name(e).to_ascii_lowercase();
         if matches!(local.as_str(), "script" | "foreignobject" | "iframe" | "embed" | "object") {
             ctx.report.add(
@@ -876,7 +880,7 @@ impl Visitor for SvgVisitor {
                     format!("event handler {lk} in SVG"),
                 );
             }
-            if (lk == "href" || lk == "src") && url::scheme(&v).is_some() {
+            if (lk == "href" || lk == "src") && url::leaves_package(&v) {
                 record_external(ctx, &v, RefKind::Image, true, &self.location);
             }
         }

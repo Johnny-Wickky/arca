@@ -68,6 +68,7 @@ fn csv(ctx: &mut Ctx<'_>, text: &str, tabs: bool, loc: &str) {
                 // Negative numbers and similar.
                 continue;
             }
+            formulas::record_urls(ctx, body, loc);
             if formulas::assess(body).is_empty() {
                 plain += 1;
             } else {
@@ -153,7 +154,7 @@ fn html_tags(ctx: &mut Ctx<'_>, text: &str, loc: &str) {
         let tag_end = lower.get(at..).and_then(|t| t.find('>')).map_or(lower.len(), |p| at + p);
         let tag = text.get(at..tag_end).unwrap_or("");
         if let Some(src) = xmlwalk::pseudo_attr(tag, "src")
-            && crate::url::scheme(&src).is_some()
+            && crate::url::leaves_package(&src)
             && count < 256
         {
             count += 1;

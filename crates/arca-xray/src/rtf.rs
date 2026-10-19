@@ -489,7 +489,7 @@ fn scan_object(ctx: &mut Ctx<'_>, obj: &Object, loc: &str) -> Result<(), Abort> 
     if obj.ocx {
         ctx.report.add(ThreatKind::ActiveXControl, loc, format!("ActiveX object {class:?} in RTF"));
     }
-    if obj.link || (!topic.is_empty() && crate::url::scheme(&topic).is_some()) {
+    if obj.link || (!topic.is_empty() && crate::url::leaves_package(&topic)) {
         if !topic.is_empty() {
             ooxml::record_external(ctx, &topic, RefKind::ObjectLink, true, loc);
         }

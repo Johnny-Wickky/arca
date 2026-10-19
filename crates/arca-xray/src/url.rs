@@ -1,5 +1,7 @@
 //! Classification of reference targets found in documents.
 
+use std::borrow::Cow;
+
 use crate::report::TargetClass;
 
 /// Protocol handlers with a history of abuse from documents
@@ -47,10 +49,31 @@ const DANGEROUS_SCHEMES: &[&str] = &[
     "msdt",
 ];
 
+/// Removes ASCII control characters (tab, CR, LF, NUL, ...) anywhere in a
+/// target. URL parsers ignore or truncate at them (`java\tscript:`,
+/// `ht\ntp://`), so a classifier that did not would call a disguised scheme
+/// "relative". Removal can only make a target look *more* like what it is.
+fn canonical(target: &str) -> Cow<'_, str> {
+    if target.chars().any(|c| c.is_ascii_control()) {
+        Cow::Owned(target.chars().filter(|c| !c.is_ascii_control()).collect())
+    } else {
+        Cow::Borrowed(target)
+    }
+}
+
+/// `true` if `target` leaves the package or document: a URI with any scheme,
+/// a UNC or network-path (`//host/..`) reference, or an absolute drive path.
+/// Control characters cannot hide it (see [`canonical`]).
+#[must_use]
+pub fn leaves_package(target: &str) -> bool {
+    classify(target) != TargetClass::Relative
+}
+
 /// Splits off a URI scheme (`scheme:`), if the target has one.
 #[must_use]
 pub fn scheme(target: &str) -> Option<String> {
-    let t = target.trim();
+    let canon = canonical(target);
+    let t = canon.trim();
     let (s, _) = t.split_once(':')?;
     // A single letter before ':' is a drive letter, not a scheme.
     if s.len() < 2 {
@@ -69,7 +92,8 @@ pub fn scheme(target: &str) -> Option<String> {
 /// Classifies a target string.
 #[must_use]
 pub fn classify(target: &str) -> TargetClass {
-    let t = target.trim().trim_matches('"');
+    let canon = canonical(target);
+    let t = canon.trim().trim_matches('"');
     if t.starts_with("\\\\") || t.starts_with("//") {
         return TargetClass::Unc;
     }
@@ -86,22 +110,47 @@ pub fn classify(target: &str) -> TargetClass {
             // WebDAV-over-HTTP to a raw IP or with credentials is still Web.
             TargetClass::Web
         }
-        "file" => {
-            let rest = t.get(5..).unwrap_or("").trim_start_matches('/');
-            // file:///C:/... is local; file://host/share is UNC.
-            let after_slashes = t.get(5..).unwrap_or("");
-            let slash_count = after_slashes.chars().take_while(|c| *c == '/' || *c == '\\').count();
-            let rb = rest.as_bytes();
-            let is_drive = matches!(rb, [d, b':' | b'|', ..] if d.is_ascii_alphabetic());
-            if slash_count >= 3 || is_drive || rest.to_ascii_lowercase().starts_with("localhost/") {
-                TargetClass::LocalFile
-            } else {
-                TargetClass::Unc
-            }
-        }
+        "file" => classify_file(t.get(5..).unwrap_or("")),
         "mailto" => TargetClass::Mail,
         other if DANGEROUS_SCHEMES.contains(&other) => TargetClass::DangerousProtocol,
         _ => TargetClass::OtherScheme,
+    }
+}
+
+/// Classifies the body of a `file:` URI (everything after `file:`).
+///
+/// A `file:` target is remote — and a potential NTLM-leak vector — whenever it
+/// resolves to a host. The counting-slashes heuristic used previously treated
+/// `file:///\\host\share` and `file:////host/share` as local because of the
+/// leading slash run; both actually reach a remote host and leak NTLM. The
+/// rule here keys on *where the host is*, not on the slash count:
+///
+/// * an embedded Windows UNC path after the scheme (`file://\\host`,
+///   `file:///\\host`) is always remote;
+/// * two leading slashes (`file://host/...`) put the host in the authority;
+/// * four or more (`file:////host/...`) are the empty-authority UNC form
+///   Windows resolves as `\\host`;
+/// * only a hostless path — a drive (`file:///C:/x`), one or three slashes with
+///   no host (`file:/x`, `file:///home/u/x`), or `localhost` — is local.
+fn classify_file(body: &str) -> TargetClass {
+    let after_fwd = body.trim_start_matches('/');
+    let fwd = body.len() - after_fwd.len();
+    // An embedded UNC path (`\\host\share`) after the scheme is always remote,
+    // whatever the number of leading forward slashes before it.
+    if after_fwd.starts_with('\\') {
+        return TargetClass::Unc;
+    }
+    if matches!(after_fwd.as_bytes(), [d, b':' | b'|', ..] if d.is_ascii_alphabetic()) {
+        return TargetClass::LocalFile;
+    }
+    let lower = after_fwd.to_ascii_lowercase();
+    if lower == "localhost" || lower.starts_with("localhost/") || lower.starts_with("localhost\\") {
+        return TargetClass::LocalFile;
+    }
+    match fwd {
+        2 => TargetClass::Unc,           // file://host/...
+        n if n >= 4 => TargetClass::Unc, // file:////host/... → //host path = UNC
+        _ => TargetClass::LocalFile,     // file:/x, file:///home/u/x → hostless local path
     }
 }
 
@@ -141,10 +190,13 @@ pub fn profile_user(path: &str) -> Option<String> {
 /// Extracts the host of a UNC or `file://host/` target.
 #[must_use]
 pub fn unc_host(target: &str) -> Option<String> {
-    let t = target.trim();
+    let canon = canonical(target);
+    let t = canon.trim();
     let rest = t.strip_prefix("\\\\").or_else(|| t.strip_prefix("//")).or_else(|| {
         t.get(..7).filter(|p| p.eq_ignore_ascii_case("file://")).and_then(|_| t.get(7..))
     })?;
+    // Skip any leading slash/backslash run (`file:///\\host`, `file:////host`).
+    let rest = rest.trim_start_matches(['\\', '/']);
     let host = rest.split(['\\', '/']).next()?;
     let host = host.split('@').next().unwrap_or(host);
     if host.is_empty() { None } else { Some(host.to_owned()) }
@@ -232,6 +284,17 @@ mod tests {
             TargetClass::LocalFile
         );
         assert_eq!(classify("C:\\Users\\ivan\\Desktop\\a.xlsx"), TargetClass::LocalFile);
+        // Regression (A-2): file: forms that reach a host are UNC, not LocalFile.
+        // Leading-slash runs and embedded backslash UNC paths must not disguise them.
+        assert_eq!(classify(r"file:///\\evil\share\t.dotm"), TargetClass::Unc);
+        assert_eq!(classify("file:////evil/share/t.dotm"), TargetClass::Unc);
+        assert_eq!(classify(r"file://\\evil\share\t.dotm"), TargetClass::Unc);
+        assert_eq!(classify("FILE://EVIL/share/x"), TargetClass::Unc);
+        // Genuinely local file: targets stay local.
+        assert_eq!(classify("file:///home/ivan/x.odt"), TargetClass::LocalFile);
+        assert_eq!(classify("file:/etc/hosts"), TargetClass::LocalFile);
+        assert_eq!(classify("file://localhost/C:/x"), TargetClass::LocalFile);
+        assert_eq!(classify("file:///c|/temp/x"), TargetClass::LocalFile);
         assert_eq!(
             classify("ms-msdt:/id PCWDiagnostic /skip force"),
             TargetClass::DangerousProtocol
@@ -241,6 +304,15 @@ mod tests {
         assert_eq!(classify("media/image1.png"), TargetClass::Relative);
         assert_eq!(classify("../media/image1.png"), TargetClass::Relative);
         assert_eq!(classify("foo:bar"), TargetClass::OtherScheme);
+        // Control characters cannot disguise a scheme or a UNC path (F-4 hardening).
+        assert_eq!(classify("java\tscript:alert(1)"), TargetClass::DangerousProtocol);
+        assert_eq!(classify("ms-ms\ndt:/id x"), TargetClass::DangerousProtocol);
+        assert_eq!(classify("ht\ttp://evil.example/"), TargetClass::Web);
+        assert_eq!(classify("\\\\\u{0}evil\\share\\x"), TargetClass::Unc);
+        assert_eq!(classify("/\t/evil/share/x.dotm"), TargetClass::Unc);
+        // A network-path reference (`//host/...`) is remote even without a scheme.
+        assert_eq!(classify("//host/share/x.dotm"), TargetClass::Unc);
+        assert_eq!(classify("/word/media/image1.png"), TargetClass::Relative);
     }
 
     #[test]

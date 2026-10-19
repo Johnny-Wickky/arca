@@ -5,10 +5,10 @@ use arca_container::xml;
 use quick_xml::events::BytesStart;
 
 use super::Package;
-use crate::formulas::{self, Risk};
+use crate::formulas;
 use crate::macro_analysis;
 use crate::report::{MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind};
-use crate::xmlwalk::{self, Visitor};
+use crate::xmlwalk::{self, Ancestors, Visitor};
 use crate::{Abort, Ctx, url};
 
 fn is_auto_name(name: &str) -> bool {
@@ -26,7 +26,7 @@ struct WorkbookVisitor<'a> {
 }
 
 impl Visitor for WorkbookVisitor<'_> {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "sheet" => {
                 let name = xml::attr(e, "name").unwrap_or_default();
@@ -104,13 +104,13 @@ impl Visitor for WorkbookVisitor<'_> {
         }
     }
 
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &Ancestors) {
         if anc.last().is_some_and(|a| a == "definedName") && self.defined_text.len() < 1024 {
             self.defined_text.push_str(text);
         }
     }
 
-    fn end(&mut self, ctx: &mut Ctx<'_>, local: &str, _anc: &[String]) {
+    fn end(&mut self, ctx: &mut Ctx<'_>, local: &str, _anc: &Ancestors) {
         if local == "definedName"
             && let Some(name) = self.defined_name.take()
             && is_auto_name(&name)
@@ -148,11 +148,13 @@ struct SheetVisitor {
     loc: String,
     hidden_rows: u64,
     hidden_cols: u64,
-    formula: Option<String>,
+    /// Text of the formula being read; the buffer is reused for every cell.
+    formula: String,
+    in_formula: bool,
 }
 
 impl Visitor for SheetVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "row" if xml::attr(e, "hidden").is_some_and(|v| v == "1" || v == "true") => {
                 self.hidden_rows += 1
@@ -164,7 +166,10 @@ impl Visitor for SheetVisitor {
                     .hidden_cols
                     .saturating_add(max.saturating_sub(min).saturating_add(1).min(16_384));
             }
-            "f" => self.formula = Some(String::new()),
+            "f" => {
+                self.formula.clear();
+                self.in_formula = true;
+            }
             "oleObject" => {
                 super::word::ole_object(ctx, e, &self.loc);
                 if xml::attr(e, "oleUpdate")
@@ -190,32 +195,16 @@ impl Visitor for SheetVisitor {
         }
     }
 
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &[String]) {
-        if anc.last().is_some_and(|a| a == "f")
-            && let Some(f) = self.formula.as_mut()
-            && f.len() < 8192
-        {
-            f.push_str(text);
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &Ancestors) {
+        if self.in_formula && anc.last().is_some_and(|a| a == "f") && self.formula.len() < 8192 {
+            self.formula.push_str(text);
         }
     }
 
-    fn end(&mut self, ctx: &mut Ctx<'_>, local: &str, _anc: &[String]) {
-        if local == "f"
-            && let Some(f) = self.formula.take()
-        {
-            report_formula(ctx, &f, &self.loc);
-        }
-    }
-}
-
-/// Records the risks of one formula.
-pub(crate) fn report_formula(ctx: &mut Ctx<'_>, formula: &str, loc: &str) {
-    for risk in formulas::assess(formula) {
-        match risk {
-            Risk::Dde => ctx.report.add(ThreatKind::DdeFormula, loc, format!("={formula}")),
-            Risk::Function(label) => {
-                ctx.report.add(ThreatKind::DangerousFormula, loc, format!("{label}: ={formula}"))
-            }
+    fn end(&mut self, ctx: &mut Ctx<'_>, local: &str, _anc: &Ancestors) {
+        if local == "f" && self.in_formula {
+            self.in_formula = false;
+            formulas::report(ctx, &self.formula, &self.loc);
         }
     }
 }
@@ -245,14 +234,14 @@ struct MacroSheetVisitor {
 }
 
 impl Visitor for MacroSheetVisitor {
-    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "c" => self.cell = xml::attr(e, "r").unwrap_or_default(),
             "f" => self.formula = Some(String::new()),
             _ => {}
         }
     }
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &[String]) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &Ancestors) {
         if anc.last().is_some_and(|a| a == "f")
             && let Some(f) = self.formula.as_mut()
             && f.len() < 8192
@@ -260,7 +249,7 @@ impl Visitor for MacroSheetVisitor {
             f.push_str(text);
         }
     }
-    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &[String]) {
+    fn end(&mut self, _ctx: &mut Ctx<'_>, local: &str, _anc: &Ancestors) {
         if local == "f"
             && let Some(f) = self.formula.take()
         {
@@ -316,7 +305,7 @@ struct ExternalLinkVisitor {
 }
 
 impl Visitor for ExternalLinkVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "ddeLink" => {
                 let service = xml::attr(e, "ddeService").unwrap_or_default();
@@ -355,7 +344,7 @@ struct ConnectionsVisitor {
 }
 
 impl Visitor for ConnectionsVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "connection" => {
                 self.name = xml::attr(e, "name").unwrap_or_default();

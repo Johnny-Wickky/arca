@@ -4,7 +4,7 @@ use arca_container::xml;
 use quick_xml::events::BytesStart;
 
 use crate::report::{Severity, ThreatKind};
-use crate::xmlwalk::{self, Visitor};
+use crate::xmlwalk::{self, Ancestors, Visitor};
 use crate::{Abort, Ctx};
 
 /// PowerPoint action verbs that run something.
@@ -26,7 +26,7 @@ struct SlideVisitor {
 }
 
 impl Visitor for SlideVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &Ancestors) {
         let local = xml::local_name(e);
         if let Some(action) = xml::attr(e, "action")
             && let Some((what, sev)) = action_risk(&action)
@@ -82,7 +82,7 @@ struct PresentationVisitor {
 }
 
 impl Visitor for PresentationVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &Ancestors) {
         if xml::local_name(e) == "font"
             && anc.last().is_some_and(|a| a == "embeddedFont")
             && let Some(face) = xml::attr(e, "typeface")
@@ -131,7 +131,7 @@ struct VisioVisitor {
 }
 
 impl Visitor for VisioVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "Cell" => {
                 let Some(formula) = xml::attr(e, "F") else { return };

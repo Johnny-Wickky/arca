@@ -56,6 +56,9 @@ macro_rules! threat_kinds {
         )* }
 
         impl ThreatKind {
+            /// Every kind, in declaration order (used by the completeness tests).
+            pub const ALL: &'static [ThreatKind] = &[ $( Self::$variant, )* ];
+
             /// Category of the finding.
             #[must_use]
             pub const fn category(self) -> Category {
@@ -195,10 +198,35 @@ pub struct Finding {
 }
 wire_struct!(Finding { kind, severity, location, detail, neutralized });
 
+impl ThreatKind {
+    /// `true` if the finding means that part of the file was **not** (or could
+    /// not be) inspected: encrypted content, skipped members, parts that failed
+    /// to parse, or a scan limit that cut the work short.
+    ///
+    /// Such a file can never be reported as [`Verdict::Clean`]: absence of
+    /// findings in a region the scanner could not read proves nothing, and a
+    /// hostile author controls exactly which regions fail to parse.
+    #[must_use]
+    pub const fn limits_coverage(self) -> bool {
+        matches!(
+            self,
+            Self::MalformedContainer
+                | Self::UnusualCompression
+                | Self::ScanLimitReached
+                | Self::EncryptedDocument
+                | Self::EncryptedMember
+        )
+    }
+}
+
 /// Overall assessment shown as the "safety index".
+///
+/// Precedence when several apply: `Rejected` > `ActiveContentNeutralized` >
+/// `Unverified` > `HiddenTrackers` > `Clean`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Nothing active or remote was found (*Чистый*).
+    /// Nothing active or remote was found, and every part of the file was
+    /// inspected (*Чистый*).
     Clean,
     /// Remote resources that would load automatically were found and blocked
     /// (*Содержит скрытые трекеры*).
@@ -207,8 +235,14 @@ pub enum Verdict {
     ActiveContentNeutralized,
     /// The file is structurally hostile or not a document; it is not opened.
     Rejected,
+    /// No active content was seen, but part of the file could not be inspected
+    /// (encrypted, unreadable or beyond a scan limit), so it cannot be called
+    /// clean (*Не удалось проверить полностью*).
+    Unverified,
 }
-wire_enum!(Verdict { Clean = 0, HiddenTrackers = 1, ActiveContentNeutralized = 2, Rejected = 3 });
+wire_enum!(Verdict {
+    Clean = 0, HiddenTrackers = 1, ActiveContentNeutralized = 2, Rejected = 3, Unverified = 4,
+});
 
 /// Source language of an extracted macro module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,7 +294,7 @@ wire_struct!(MacroModule {
 });
 
 /// What a reference to an outside resource is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RefKind {
     /// Attached / remote template.
     Template,
@@ -291,7 +325,7 @@ wire_enum!(RefKind {
 });
 
 /// Network class of a reference target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TargetClass {
     /// `http://` or `https://`.
     Web,
@@ -311,7 +345,7 @@ pub enum TargetClass {
 wire_enum!(TargetClass { Web = 0, Unc = 1, LocalFile = 2, DangerousProtocol = 3, Mail = 4, OtherScheme = 5, Relative = 6 });
 
 /// A blocked reference to a resource outside the file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExternalReference {
     /// The target as written in the file (display-safe).
     pub target: String,
@@ -526,19 +560,67 @@ impl XRayReport {
     }
 }
 
+/// Inputs of the verdict, accumulated for **every** distinct observation —
+/// whether or not the matching [`Finding`] still fits under the storage cap.
+///
+/// The verdict must never depend on what was *stored*: an attacker who floods
+/// the report with thousands of low-severity findings (hidden rows, comments)
+/// would otherwise push the one decisive finding past the cap and obtain
+/// `Clean` for a malicious file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Facts {
+    /// Executable content or an attack payload was observed.
+    pub(crate) active: bool,
+    /// A resource that office software would fetch without user interaction
+    /// was observed.
+    pub(crate) tracker: bool,
+    /// Part of the file was not (or could not be) inspected.
+    pub(crate) coverage_gap: bool,
+}
+
+impl Facts {
+    fn observe(&mut self, kind: ThreatKind, severity: Severity) {
+        let category = kind.category();
+        // Critical remote content (remote template injection, URL-moniker OLE
+        // links, abusable protocol handlers) is an attack payload, not a tracker.
+        self.active |= (category == Category::ActiveContent && severity >= Severity::Medium)
+            || (category == Category::RemoteContent && severity >= Severity::Critical);
+        // Any remote-content finding of Medium or higher severity (that is not
+        // already an attack payload) means the file reaches out to the network
+        // or to a UNC host; "Clean" would contradict the finding list.
+        self.tracker |= matches!(
+            kind,
+            ThreatKind::RemoteTemplate | ThreatKind::ExternalImage | ThreatKind::ExternalFrame
+        ) || (category == Category::RemoteContent && severity >= Severity::Medium);
+        self.coverage_gap |= kind.limits_coverage();
+    }
+}
+
 /// Accumulates findings with de-duplication and caps.
+///
+/// Storage policy: up to `max_findings` findings are kept in arrival order; in
+/// addition, the **first finding of every `(kind, severity)` class is always
+/// kept** (at most `ThreatKind × Severity` extra entries). A flood of cheap
+/// findings therefore can neither hide the *kind* of a later, more serious
+/// observation from the list nor push out the truncation notice. The verdict
+/// itself is computed from [`Facts`], which no cap can affect.
 #[derive(Debug)]
 pub(crate) struct ReportBuilder {
     findings: Vec<Finding>,
     seen: BTreeSet<(ThreatKind, String, String)>,
+    classes: BTreeSet<(ThreatKind, Severity)>,
     pub(crate) macros: Vec<MacroModule>,
     pub(crate) external_refs: Vec<ExternalReference>,
+    external_seen: BTreeSet<ExternalReference>,
     pub(crate) metadata: Vec<MetadataField>,
     meta_seen: BTreeSet<(MetaKey, String, String)>,
     pub(crate) embedded: Vec<EmbeddedObject>,
     pub(crate) stats: ScanStats,
+    facts: Facts,
     max_findings: usize,
     pub(crate) truncated: bool,
+    /// Distinct observations that were counted in the verdict but not stored.
+    pub(crate) dropped: u64,
 }
 
 impl ReportBuilder {
@@ -546,14 +628,18 @@ impl ReportBuilder {
         Self {
             findings: Vec::new(),
             seen: BTreeSet::new(),
+            classes: BTreeSet::new(),
             macros: Vec::new(),
             external_refs: Vec::new(),
+            external_seen: BTreeSet::new(),
             metadata: Vec::new(),
             meta_seen: BTreeSet::new(),
             embedded: Vec::new(),
             stats: ScanStats::default(),
+            facts: Facts::default(),
             max_findings,
             truncated: false,
+            dropped: 0,
         }
     }
 
@@ -570,15 +656,23 @@ impl ReportBuilder {
         location: &str,
         detail: impl Into<String>,
     ) {
+        // Verdict facts first: independent of de-duplication and of every cap.
+        self.facts.observe(kind, severity);
         let detail = arca_container::text::display_safe(&detail.into(), 512);
         let location = arca_container::text::display_safe(location, 256);
-        if !self.seen.insert((kind, location.clone(), detail.clone())) {
+        let key = (kind, location, detail);
+        if self.seen.contains(&key) {
             return;
         }
-        if self.findings.len() >= self.max_findings {
+        let first_of_class = self.classes.insert((kind, severity));
+        if self.findings.len() >= self.max_findings && !first_of_class {
+            // Not remembered in `seen`: memory stays bounded by what is stored.
             self.truncated = true;
+            self.dropped = self.dropped.saturating_add(1);
             return;
         }
+        let (kind, location, detail) = key;
+        self.seen.insert((kind, location.clone(), detail.clone()));
         let neutralized =
             matches!(kind.category(), Category::ActiveContent | Category::RemoteContent);
         self.findings.push(Finding { kind, severity, location, detail, neutralized });
@@ -590,13 +684,15 @@ impl ReportBuilder {
             return;
         }
         let value = arca_container::text::display_safe(value, 1024);
-        if !self.meta_seen.insert((key, name.to_owned(), value.clone())) {
+        if self.meta_seen.contains(&(key, name.to_owned(), value.clone())) {
             return;
         }
         if self.metadata.len() >= self.max_findings {
             self.truncated = true;
+            self.dropped = self.dropped.saturating_add(1);
             return;
         }
+        self.meta_seen.insert((key, name.to_owned(), value.clone()));
         self.metadata.push(MetadataField {
             key,
             name: arca_container::text::display_safe(name, 256),
@@ -606,19 +702,28 @@ impl ReportBuilder {
     }
 
     pub(crate) fn external(&mut self, r: ExternalReference) {
-        if self.external_refs.len() >= self.max_findings {
-            self.truncated = true;
+        if r.auto_load && crate::url::is_network(r.class) {
+            self.facts.tracker = true;
+        }
+        if self.external_seen.contains(&r) {
             return;
         }
-        if !self.external_refs.contains(&r) {
-            self.external_refs.push(r);
+        if self.external_refs.len() >= self.max_findings {
+            self.truncated = true;
+            self.dropped = self.dropped.saturating_add(1);
+            return;
         }
+        self.external_seen.insert(r.clone());
+        self.external_refs.push(r);
     }
 
-    pub(crate) fn has_category(&self, cat: Category, min: Severity) -> bool {
-        self.findings.iter().any(|f| f.kind.category() == cat && f.severity >= min)
+    /// Verdict inputs; unaffected by any storage cap.
+    pub(crate) const fn facts(&self) -> Facts {
+        self.facts
     }
 
+    /// `true` if a finding of `kind` is stored. Reliable for every kind: the
+    /// first finding of each class is always kept.
     pub(crate) fn has(&self, kind: ThreatKind) -> bool {
         self.findings.iter().any(|f| f.kind == kind)
     }

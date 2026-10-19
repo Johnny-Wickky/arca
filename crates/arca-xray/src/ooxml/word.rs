@@ -7,7 +7,7 @@ use quick_xml::events::BytesStart;
 
 use super::Package;
 use crate::report::{MetaKey, RefKind, Severity, ThreatKind};
-use crate::xmlwalk::{self, Visitor};
+use crate::xmlwalk::{self, Ancestors, Visitor};
 use crate::{Abort, Ctx, fields, url};
 
 struct Field {
@@ -45,12 +45,8 @@ fn on(e: &BytesStart<'_>) -> bool {
     !matches!(xml::attr(e, "val").as_deref(), Some("0" | "false" | "off"))
 }
 
-fn parent_is(anc: &[String], names: &[&str]) -> bool {
-    let n = anc.len();
-    if n < names.len() {
-        return false;
-    }
-    anc.get(n - names.len()..).is_some_and(|tail| tail.iter().zip(names).all(|(a, b)| a == b))
+fn parent_is(anc: &Ancestors, names: &[&str]) -> bool {
+    anc.ends_with(names)
 }
 
 fn is_dark_hex(hex: &str) -> bool {
@@ -66,7 +62,7 @@ fn is_dark_hex(hex: &str) -> bool {
 }
 
 impl Visitor for BodyVisitor<'_> {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &Ancestors) {
         match xml::local_name(e) {
             "background" => {
                 if let Some(c) = xml::attr(e, "color") {
@@ -161,8 +157,8 @@ impl Visitor for BodyVisitor<'_> {
         }
     }
 
-    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &[String]) {
-        match anc.last().map(String::as_str) {
+    fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &Ancestors) {
+        match anc.last() {
             Some("instrText" | "delInstrText") => {
                 if let Some(f) = self.fields.last_mut()
                     && f.in_instr
@@ -246,7 +242,7 @@ pub(super) fn vml_sources(ctx: &mut Ctx<'_>, e: &BytesStart<'_>, loc: &str) {
     for (k, v) in xml::attrs(e) {
         let (_, local) = xml::split_qname(&k);
         match local {
-            "src" if url::scheme(&v).is_some() || v.starts_with("\\\\") => {
+            "src" if url::leaves_package(&v) => {
                 super::record_external(ctx, &v, RefKind::Image, true, loc);
             }
             "href" if !v.is_empty() => {
@@ -346,7 +342,7 @@ struct SettingsVisitor {
 }
 
 impl Visitor for SettingsVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &Ancestors) {
         match xml::local_name(e) {
             "rsid" | "rsidRoot" if anc.last().is_some_and(|a| a == "rsids") => self.rsids += 1,
             "docVar" => {
@@ -408,7 +404,7 @@ struct VmlVisitor {
 }
 
 impl Visitor for VmlVisitor {
-    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &[String]) {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "OLEObject" => ole_object(ctx, e, &self.loc),
             _ => vml_sources(ctx, e, &self.loc),
