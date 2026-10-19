@@ -58,7 +58,7 @@
 |---|---|---|
 | переполнение буфера, UAF, double free в разборе ZIP/OLE2/XML/RTF/PDF | весь код — Safe Rust, `forbid(unsafe_code)`, без C-библиотек; индексация через `.get()` | ✅ `tools/check-unsafe.sh`, линты workspace |
 | целочисленное переполнение размеров и смещений | `overflow-checks = true` во всех профилях; checked/saturating арифметика; `try_from` | ✅ `truncated_archives_never_panic`, `corruption_never_panics` |
-| паника на битых данных (DoS) | `unwrap`/`expect`/`panic`/`unreachable` запрещены линтами; все ошибки — типизированные `Result` | ✅ `mutation_fuzz_never_panics`, `garbage_modules_are_rejected_without_panicking` |
+| паника на битых данных (DoS) | `unwrap`/`expect`/`panic`/`unreachable` запрещены линтами; все ошибки — типизированные `Result` | ✅ `mutation_fuzz_never_panics` (структурные мутации заголовков ZIP/CFB и содержимого XML-частей по всему корпусу; инварианты вердикта, wire-раундтрип, детерминизм, идемпотентность стерилизатора; длительный прогон — workflow `fuzz`), `garbage_modules_are_rejected_without_panicking`; ◐ `cargo-fuzz` в `fuzz/` написан, но запускается только в CI/на машине разработчика (nightly) |
 | логическая ошибка парсера под контролем атакующего | контур 2: гость без импортов, эфемерный экземпляр, лимиты | ✅ `hostile_guest_cannot_escape_via_memory_writes`, `any_import_is_forbidden` |
 | ошибка в интерпретаторе `wasmi` (побег из песочницы) | минимальная конфигурация: без `start`, без лишних proposals, валидация; отдельный поток; закреплённая версия, cargo-deny advisories | ◐ остаточный риск: `wasmi` содержит внутренний `unsafe` |
 
@@ -70,8 +70,13 @@
 | XML Billion Laughs / quadratic blowup | `DOCTYPE` запрещён целиком, неописанные сущности отвергаются | ✅ `billion_laughs_is_refused_at_the_doctype`, `undeclared_entities_are_refused_even_without_doctype` |
 | глубокая вложенность XML | глубина ≤ 64 | ✅ `depth_64_is_allowed_65_is_not`, `excessive_xml_depth_is_reported` |
 | циклы FAT/DIFAT/каталога OLE2 | обнаружение циклов, лимиты записей и потоков | ✅ `fat_self_loop_is_a_cycle_not_a_hang`, `directory_cycle_is_detected`, `ole2_fat_cycle_is_rejected_not_hung` |
-| бесконечный цикл или экспоненциальный алгоритм | топливо CPU в песочнице | ✅ `infinite_loop_runs_out_of_fuel`, `starved_guest_is_stopped` |
-| исчерпание памяти | 128 МиБ на экземпляр, лимит таблиц, лимит начальной памяти | ✅ `memory_growth_is_capped`, `oversized_initial_memory_is_refused_at_instantiation` |
+| бесконечный цикл или экспоненциальный алгоритм | топливо CPU в песочнице | ✅ `infinite_loop_runs_out_of_fuel`, `starved_guest_is_stopped`, `starvation_is_still_caught_with_tiny_slices` |
+| «слишком долго» на медленном устройстве при большом бюджете топлива | топливо выдаётся порциями; между порциями хост проверяет монотонный дедлайн (по умолчанию 300 с) | ✅ `the_deadline_stops_an_endless_guest`, `the_policy_wall_time_is_a_ceiling_that_options_cannot_raise`, `a_tighter_option_deadline_wins_over_a_looser_policy_wall_time` |
+| документ нужно прервать (пользователь закрыл файл) | `CancelToken`, опрос на каждой границе порции, без убийства процесса | ✅ `cancelling_from_another_thread_stops_an_endless_guest`, `a_cancelled_token_prevents_any_execution`, `the_real_guest_can_be_cancelled_and_timed_out` |
+| обработчик прогресса UI падает или зависает | паника перехватывается; обработчик вызывается только между порциями | ✅ `a_panicking_progress_callback_is_contained` (◐ зависший обработчик блокирует поток вызывающего — его надо делать неблокирующим) |
+| исчерпание памяти | `min(1 ГиБ, 96 МиБ + 4 × размер входа)` на экземпляр, лимит таблиц, лимит начальной памяти | ✅ `memory_growth_is_capped`, `oversized_initial_memory_is_refused_at_instantiation`, `the_per_run_memory_cap_follows_the_input`, `memory_limit_scales_with_the_input_up_to_the_ceiling` |
+| «лживый» размер записи ZIP: гигабайты при распаковке или усечённый поток | распаковка ровно заявленного размера (`inflate_exact`): избыток и недобор различаются, выделение не больше заявленного | ✅ `overstated_uncompressed_size_is_detected`, `truncated_deflate_stream_is_corrupt_not_a_size_error`, `empty_deflated_member_is_readable` |
+| дорогой для интерпретатора документ (миллионы мелких XML-элементов) | топливо пропорционально входу (32 000/байт), дедлайн, отмена | ◐ законный документ со сжатием выше ≈ 20:1 или очень большая книга может исчерпать бюджет и получит ошибку «слишком сложно», а не отчёт (§4.10) |
 | переполнение стека рекурсией | лимит глубины рекурсии интерпретатора и стека значений, отдельный поток | ✅ `unbounded_recursion_overflows_safely` |
 | огромное число записей или находок | лимиты записей ZIP, находок, потоков PDF; `ScanLimitReached` | ✅ `entry_count_limit`, `nesting_limit_is_enforced` |
 
@@ -108,6 +113,8 @@
 | удалённый шаблон (`attachedTemplate`, CVE-2017-0199) | никакой загрузки; находка Critical, вердикт «обезврежено»; стерилизатор удаляет связь | ✅ `remote_template_injection` |
 | трекинг-пиксель (внешняя картинка) | никакой загрузки, вердикт «скрытые трекеры» | ✅ `tracking_pixel_is_a_tracker`, `tracking_field_and_hidden_text` |
 | UNC-путь (`\\host\share`) → утечка NTLM-хэша | классификация UNC, Critical для шаблонов | ✅ `unc_template_leaks_ntlm` |
+| `file:`-URL, ведущий на хост (`file://host/…`, `file:////host/…`, `file:///\\host\…`) и цели `//host/…` без `TargetMode` | классификация по тому, *где находится хост*, а не по числу косых черт | ✅ `a2_file_uri_forms_that_reach_a_host_are_remote_templates`, `a2_genuinely_local_file_uris_stay_local`, `f4_unc_target_without_target_mode_is_remote`, `f4_scheme_target_without_target_mode_is_remote` |
+| URL и DDE внутри формул (`HYPERLINK`, `WEBSERVICE`, `IMAGE`, DDE после безобидной `\|`) | URL из формул попадают в `external_refs`; DDE ищется по всей формуле | ✅ `f3_hyperlink_unc_target_is_an_ntlm_leak_finding`, `f3_dde_is_found_after_an_earlier_harmless_pipe`, `f3_csv_formula_urls_are_listed`, `f3_ods_webservice_formula_url_is_listed`, `f3_ods_dde_function_and_dde_link_are_findings`, `prefilter_is_a_superset` |
 | протокольные обработчики (`ms-msdt:`, Follina) | классификация опасных схем | ✅ `follina_style_protocol_handler` |
 | удалённые изображения и HTML в Markdown | обнаружение | ✅ `markdown_remote_images_and_html` |
 | любое сетевое обращение ядра | в ядре нет сетевого кода; гость без импортов; приложению не нужен `INTERNET` | ✅ архитектурно, ⏳ проверка манифеста в Фазе 4 |
@@ -121,6 +128,8 @@
 | скрытый и «белый» текст, скрытые листы и слайды | обнаружение, показ в HUD | ✅ `tracking_field_and_hidden_text` |
 | bidi-переопределения в именах (`cod.exe` → `exe.doc`) | `display_safe` при показе, находка `BidiOverride` | ✅ |
 | «осиротевшие» данные в OLE2/ZIP | обнаружение | ✅ `orphaned_entries_are_reported` |
+| наводнение безобидными находками, вытесняющее решающую из отчёта | вердикт строится из фактов, не зависящих от лимита находок | ✅ `a1_flood_of_hyperlinks_cannot_hide_dde_in_the_body`, `a1_flood_in_the_same_rels_part_cannot_hide_remote_template`, `a1_first_finding_of_every_class_survives_the_cap`, `a1_dropped_findings_still_feed_the_verdict_facts`, `a1_auto_load_reference_beyond_the_cap_still_marks_trackers` |
+| часть документа осталась непроверенной (шифрование, битый XML, лимит, вложенность), но вердикт «Чистый» | вердикт `Unverified`; стерилизатор такую копию не выдаёт | ✅ `a3_encrypted_zip_member_is_unverified_not_clean`, `a3_encrypted_pdf_is_unverified_not_clean`, `a3_nesting_limit_reached_is_unverified`, `a3_unparsable_part_is_unverified`, `a3_active_content_outranks_unverified_and_unverified_outranks_trackers`, `a3_unverified_survives_the_wire` |
 
 ### 4.7 Утечки приватности
 
@@ -137,9 +146,10 @@
 | угроза | защита | статус |
 |---|---|---|
 | подмена Wasm-модуля | `ModulePin` — SHA-256 из allow-list; модуль с другим хэшем не исполняется | ✅ `unpinned_and_tampered_modules_are_refused` |
-| вредоносное обновление зависимости | точные версии, `Cargo.lock` + `--locked`, `cargo deny` (advisories, sources) | ◐ `Cargo.lock` нужно сгенерировать и закоммитить (ARCHITECTURE §7) |
+| вредоносное обновление зависимости | точные версии, `Cargo.lock` + `--locked`, `cargo deny` (advisories, sources), `tools/check-lockfile.sh` (только crates.io, у каждого пакета SHA-256) | ◐ `Cargo.lock` ещё не закоммичен: его нужно сгенерировать на машине с доступом к crates.io (ARCHITECTURE §7). До этого `--locked` в CI не включён, а проверка предупреждает; для релизного тега она — ошибка |
 | C-код через транзитивную зависимость | `deny.toml` (`cc`, `cmake`, `bindgen`, `*-sys`), `check-unsafe.sh` | ✅ |
 | подмена GitHub Actions | действия закреплены полными SHA коммитов | ✅ |
+| подмена собранного гостя между сборкой и приложением | `ModulePin` в приложении; CI проверяет отсутствие секции импортов и печатает SHA-256 | ◐ воспроизводимость сборки на независимых раннерах ещё не подтверждена (ARCHITECTURE §7, D-2) |
 
 ### 4.9 Побочные каналы
 
@@ -147,6 +157,21 @@
 |---|---|---|
 | timing-атаки из документа | у гостя нет таймера, часов и случайности; топливо — единственная мера времени, и оно детерминировано | ✅ |
 | спекулятивное исполнение | интерпретатор, а не JIT; отдельный экземпляр на документ | ◐ вне строгой модели |
+
+### 4.10 Известные ограничения и остаточные риски
+
+Здесь перечислено то, что **не** закрыто к концу Фазы 2. Список честнее, чем
+значки ✅ выше.
+
+| ограничение | почему | что дальше |
+|---|---|---|
+| большие и плотно сжатые таблицы могут не уложиться в бюджет топлива/памяти и получить ошибку «слишком сложно» вместо отчёта | интерпретатор `wasmi` примерно на порядок медленнее нативного кода; токенизатор `quick-xml` стоит ≈ 4 700 топлива на событие (причина не найдена); книга в 8 МБ — около 10 с на разработческой машине | Фаза 3: потоковый токенизатор и разбор горячего пути без DOM; бюджет можно поднять политикой, дедлайн и отмена остаются |
+| стерилизатор работает только для OOXML (F-1) | остальные форматы требуют графа сцены и «сплющенного» PDF | Фаза 3 (`SanitizeError::Unsupported` — явная ошибка, а не молчаливый пропуск) |
+| Access (`.mdb`/`.accdb`) проверяется поиском строк (F-2) | полноценный парсер Jet/ACE — Фаза 3 (`arca-access`) | Фаза 3 |
+| эвристики бинарных форматов (VBA stomping, поля Word Binary) | дают и ложные срабатывания, и пропуски | полные парсеры Фазы 3 |
+| цепочка поставок: `Cargo.lock` не закоммичен, воспроизводимость гостя не подтверждена | офлайн-среда разработки (см. §4.8) | шаги в ARCHITECTURE §7 |
+| реальные имена авторов и ссылки на пожертвования не заданы; текст дополнительных условий не проходил юридическую проверку | это решения команды и юриста | `ARCA_RELEASE=1` не соберётся, пока остаются заглушки |
+| мобильные цели (Android/iOS), MSRV и `cargo-fuzz` проверяются только в CI | в среде разработки нет этих целей и nightly | задания `mobile-targets`, `msrv` в `ci.yml`, workflow `fuzz` |
 
 ## 5. Вердикты и честность HUD
 
@@ -156,7 +181,11 @@
 * `ActiveContentNeutralized` означает, что активная или критическая внешняя
   нагрузка найдена и **не будет выполнена**. Это утверждение о поведении
   Arca, а не о безвредности файла для других программ.
-* `Clean` не гарантирует отсутствие угроз, неизвестных детекторам. Поэтому
+* `Unverified` означает, что часть файла не удалось проверить (зашифрована,
+  не разобрана, превышен лимит). Это не «чисто»: HUD показывает, *что именно*
+  осталось непроверенным.
+* `Clean` означает «проверено целиком, и известные детекторам угрозы не найдены»;
+  он не гарантирует отсутствие угроз, неизвестных детекторам. Поэтому
   отображение всегда идёт через песочницу, независимо от вердикта.
 * Эвристики (VBA stomping, поля бинарного Word, записи PowerPoint) могут
   давать как ложные срабатывания, так и пропуски. `Rejected` выставляют только
