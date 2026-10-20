@@ -258,7 +258,16 @@ public final class CoreTest {
         eq("HiddenShown", p.notices.get(0).kind, "notice");
         eq(true, p.truncated, "truncated");
 
-        String items = "[{\"k\":\"p\",\"s\":\"Heading1\",\"a\":1,\"l\":2,\"m\":\"1.\",\"r\":[[\"Hello \",1],[\"link\",4,\"https://x.test\"]]},"
+        // A document whose parts are all hidden (and not asked for) has no section at all; the
+        // preview screen must be able to show that instead of indexing into an empty list.
+        String none = "{\"format\":\"Xlsx\",\"family\":\"Spreadsheet\",\"sections\":[],"
+            + "\"notices\":[{\"kind\":\"HiddenOmitted\",\"count\":1,\"detail\":\"sheets\"}],\"stats\":{\"chars\":0,\"items\":0,\"truncated\":false}}";
+        Model.PreviewMeta empty = Model.parsePreviewMeta(none.getBytes(StandardCharsets.UTF_8));
+        eq(0, empty.sections.size(), "no sections");
+        eq(1, empty.notices.size(), "the notice survives");
+        eq("HiddenOmitted", empty.notices.get(0).kind, "hidden omitted notice");
+
+        String items ="[{\"k\":\"p\",\"s\":\"Heading1\",\"a\":1,\"l\":2,\"m\":\"1.\",\"r\":[[\"Hello \",1],[\"link\",4,\"https://x.test\"]]},"
             + "{\"k\":\"tr\",\"n\":3,\"first\":true,\"last\":false,\"cells\":[{\"c\":2,\"h\":true,\"p\":[{\"r\":[[\"a\",0]]}]},{\"c\":1,\"h\":false,\"p\":[]}]},"
             + "{\"k\":\"gh\",\"cols\":3,\"w\":[8,12,6],\"rows\":120,\"trunc\":false},"
             + "{\"k\":\"gr\",\"i\":7,\"h\":true,\"c\":[[0,0,\"text\"],[2,1,\"1,5\"]]},"

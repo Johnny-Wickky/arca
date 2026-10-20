@@ -132,10 +132,13 @@ public final class Prefs {
         if (theme == THEME_SYSTEM && lang == LANG_SYSTEM) {
             return base;
         }
-        Configuration conf = new Configuration(base.getResources().getConfiguration());
+        // Only the fields that are overridden, as a delta: the platform merges it onto the live
+        // configuration. A full copy of today's configuration would also pin the window size,
+        // orientation and density of this very moment, and the layout would stop following
+        // rotation, folding and split-screen. (An unset field is 0 / "undefined" here.)
+        Configuration conf = new Configuration();
         if (theme != THEME_SYSTEM) {
-            conf.uiMode = (conf.uiMode & ~Configuration.UI_MODE_NIGHT_MASK)
-                | (theme == THEME_DARK ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO);
+            conf.uiMode = theme == THEME_DARK ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO;
         }
         if (lang != LANG_SYSTEM) {
             Locale l = lang == LANG_RU ? new Locale("ru") : Locale.ENGLISH;

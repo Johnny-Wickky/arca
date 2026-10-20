@@ -22,19 +22,16 @@ import java.util.Locale;
 
 /** Progress while the file is read and X-rayed in the sandbox; the error page if that failed. */
 public final class ScanScreen extends Screen {
-    private static final long STARTED_AT = SystemClock.elapsedRealtime();
-    private static long scanStart = STARTED_AT;
-    private static Session.Phase lastPhase = Session.Phase.IDLE;
-
     private final Handler ticker = new Handler(Looper.getMainLooper());
     private TextView elapsed;
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
-            if (elapsed != null) {
-                long s = (SystemClock.elapsedRealtime() - scanStart) / 1000;
-                elapsed.setText(String.format(Locale.getDefault(), "%02d:%02d", s / 60, s % 60));
+            if (elapsed == null) {
+                return;
             }
+            long s = Math.max(0, SystemClock.elapsedRealtime() - Session.get().startedAt()) / 1000;
+            elapsed.setText(String.format(Locale.getDefault(), "%02d:%02d", s / 60, s % 60));
             ticker.postDelayed(this, 500);
         }
     };
@@ -46,10 +43,6 @@ public final class ScanScreen extends Screen {
     @Override
     public View build() {
         Session s = Session.get();
-        if (s.phase() != lastPhase && (s.phase() == Session.Phase.READING)) {
-            scanStart = SystemClock.elapsedRealtime();
-        }
-        lastPhase = s.phase();
         switch (s.phase()) {
             case READY:
                 // Defer: replacing the route from inside build() would re-enter the activity.
@@ -107,6 +100,20 @@ public final class ScanScreen extends Screen {
 
         elapsed = ui.text("00:00", Ui.MONO);
         elapsed.setGravity(Gravity.CENTER);
+        // The clock runs only while this very view is on screen: a screen that is rebuilt
+        // (rotation, folding, a new phase) or left must not leave its ticker behind.
+        elapsed.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                ticker.removeCallbacks(tick);
+                ticker.post(tick);
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                ticker.removeCallbacks(tick);
+            }
+        });
         col.addView(elapsed, ui.fillWidth());
         col.addView(ui.space(12));
 
@@ -121,8 +128,6 @@ public final class ScanScreen extends Screen {
                 act.home();
             }
         }));
-        ticker.removeCallbacks(tick);
-        ticker.post(tick);
         return page(header(ui.str(R.string.scan_title), false), centered(col, 480));
     }
 

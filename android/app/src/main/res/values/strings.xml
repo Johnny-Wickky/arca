@@ -159,6 +159,7 @@
     <string name="section_headers">Headers and footers</string>
     <string name="section_hidden">%1$s (hidden)</string>
     <string name="section_empty">Nothing to show in this part.</string>
+    <string name="preview_nothing">There is nothing to show in this document.</string>
     <string name="image_placeholder">Picture (not shown)</string>
     <string name="image_remote">Would load from the internet</string>
     <string name="cell_dialog_title">Cell content</string>

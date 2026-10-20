@@ -157,6 +157,7 @@
     <string name="section_headers">Колонтитулы</string>
     <string name="section_hidden">%1$s (скрыт)</string>
     <string name="section_empty">В этой части нечего показывать.</string>
+    <string name="preview_nothing">В этом документе нечего показывать.</string>
     <string name="image_placeholder">Рисунок (не показан)</string>
     <string name="image_remote">Загружался бы из интернета</string>
     <string name="cell_dialog_title">Содержимое ячейки</string>

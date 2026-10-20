@@ -253,7 +253,9 @@ public final class HomeScreen extends Screen {
                             return false;
                         }
                         Uri uri = clip.getItemAt(0).getUri();
-                        if (uri == null) {
+                        // Only a document handed over by another app (content://); a dragged web
+                        // address or anything else is not a file and is never fetched.
+                        if (uri == null || !"content".equals(uri.getScheme())) {
                             return false;
                         }
                         act.requestDragAndDropPermissions(event);

@@ -20,6 +20,7 @@ import org.arca.viewer.core.Capabilities;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Model;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -46,7 +47,8 @@ public final class ResultScreen extends Screen {
         "ActiveContent", "RemoteContent", "Concealment", "Structural", "Encryption", "PrivacyLeak"};
 
     // State that survives the screen being rebuilt when the window changes shape.
-    private static Model.Report lastReport;
+    // (a weak reference: a closed document's report must not be kept alive by this screen)
+    private static WeakReference<Model.Report> lastReport = new WeakReference<>(null);
     private static int tab;
     private static final Set<Integer> OPEN = new HashSet<>();
 
@@ -71,8 +73,8 @@ public final class ResultScreen extends Screen {
             });
             return new View(act);
         }
-        if (r != lastReport) {
-            lastReport = r;
+        if (r != lastReport.get()) {
+            lastReport = new WeakReference<>(r);
             OPEN.clear();
             tab = -1;
         }

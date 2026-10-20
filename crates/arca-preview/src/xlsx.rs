@@ -670,6 +670,38 @@ mod tests {
         )
     }
 
+    /// A preview may legitimately have no sections at all: every sheet hidden and hidden
+    /// content not asked for. Clients must cope (the Android screen shows "nothing to show"
+    /// together with the notice); this pins the shape they are written against.
+    #[test]
+    fn a_workbook_of_hidden_sheets_gives_a_preview_without_sections_and_says_why() {
+        let sheets = r#"<sheet name="Only" sheetId="1" state="hidden" r:id="rId11"/>"#;
+        let wb = workbook(sheets, "");
+        let wb_rels = rels(&[("rId11", "worksheet", "worksheets/sheet1.xml")]);
+        let s1 = format!(
+            r#"<worksheet {SS_NS}><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c></row></sheetData></worksheet>"#
+        );
+        let data = opc(
+            ("xl/workbook.xml", XLSX_CT),
+            &[
+                ("xl/workbook.xml", wb.as_str()),
+                ("xl/_rels/workbook.xml.rels", wb_rels.as_str()),
+                ("xl/worksheets/sheet1.xml", s1.as_str()),
+            ],
+        );
+        let policy =
+            crate::PreviewPolicy { reveal_hidden: false, ..crate::PreviewPolicy::default() };
+        let p = crate::preview(&data, &policy).expect("preview");
+        assert!(p.sections.is_empty(), "the only sheet is hidden and was not asked for");
+        assert!(
+            p.notices.iter().any(|n| n.kind == NoticeKind::HiddenOmitted && n.detail == "sheets"),
+            "the person is told something was left out"
+        );
+        // The same file with hidden content asked for shows the sheet.
+        let shown = ok(&data);
+        assert_eq!(shown.sections.len(), 1);
+    }
+
     #[test]
     fn cell_references() {
         assert_eq!(parse_ref("A1"), Some((0, 1)));

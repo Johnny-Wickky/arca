@@ -192,6 +192,15 @@ public final class PreviewScreen extends Screen {
         if (notices != null) {
             body.addView(notices, ui.fillWidth());
         }
+        if (meta.sections.isEmpty()) {
+            // An empty file, or one whose parts are all hidden and were not asked for: there is no
+            // section to open, so say so (the notices above explain what was left out).
+            TextView none = ui.text(R.string.preview_nothing, Ui.BODY);
+            none.setGravity(Gravity.CENTER);
+            none.setPadding(ui.dp(24), ui.dp(48), ui.dp(24), ui.dp(24));
+            body.addView(none, ui.fillWidth());
+            return page(head, body);
+        }
 
         boolean rail = Adaptive.twoPane(act) && meta.sections.size() > 1;
         LinearLayout main = ui.hbox();
@@ -215,6 +224,8 @@ public final class PreviewScreen extends Screen {
         if (meta.notices.isEmpty() && !meta.truncated) {
             return null;
         }
+        // With nothing else on the screen the explanation is shown open.
+        final boolean[] open = {noticesOpen || meta.sections.isEmpty()};
         final LinearLayout box = ui.vbox();
         box.setBackground(ui.rounded(ui.color(R.color.arca_unknown_container), 0, 12));
         int p = ui.dp(12);
@@ -227,7 +238,7 @@ public final class PreviewScreen extends Screen {
         TextView summary = ui.text(ui.str(R.string.notices_summary, meta.notices.size() + (meta.truncated ? 1 : 0)), Ui.LABEL);
         summary.setTextColor(ui.color(R.color.arca_unknown));
         head.addView(summary, ui.weight(1f));
-        final ImageView chevron = ui.icon(noticesOpen ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down, R.color.arca_unknown, 24);
+        final ImageView chevron = ui.icon(open[0] ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down, R.color.arca_unknown, 24);
         head.addView(chevron);
         box.addView(head);
 
@@ -238,16 +249,17 @@ public final class PreviewScreen extends Screen {
         if (meta.truncated) {
             list.addView(ui.text("• " + ui.str(R.string.notice_truncated_preview), Ui.SMALL));
         }
-        list.setVisibility(noticesOpen ? View.VISIBLE : View.GONE);
+        list.setVisibility(open[0] ? View.VISIBLE : View.GONE);
         box.addView(list);
         box.setClickable(true);
         box.setFocusable(true);
         box.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                noticesOpen = !noticesOpen;
-                list.setVisibility(noticesOpen ? View.VISIBLE : View.GONE);
-                chevron.setImageDrawable(act.getDrawable(noticesOpen ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down));
+                open[0] = !open[0];
+                noticesOpen = open[0];
+                list.setVisibility(open[0] ? View.VISIBLE : View.GONE);
+                chevron.setImageDrawable(act.getDrawable(open[0] ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down));
             }
         });
         return box;

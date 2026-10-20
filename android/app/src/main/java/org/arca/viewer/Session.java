@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 import android.provider.OpenableColumns;
 
 import org.arca.viewer.core.Fmt;
@@ -114,6 +115,7 @@ public final class Session {
     private String name = "";
     private String mime = "";
     private long size = -1;
+    private long startedAt;
     private Uri uri;
     private Failure failure;
     private Model.Report report;
@@ -175,6 +177,11 @@ public final class Session {
         return size;
     }
 
+    /** {@link SystemClock#elapsedRealtime()} at the moment the current document was opened. */
+    public long startedAt() {
+        return startedAt;
+    }
+
     public Uri uri() {
         return uri;
     }
@@ -221,6 +228,7 @@ public final class Session {
             ep = ++epoch;
         }
         phase = Phase.READING;
+        startedAt = SystemClock.elapsedRealtime();
         uri = source;
         mime = mimeType == null ? "" : mimeType;
         name = "";
