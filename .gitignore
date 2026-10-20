@@ -12,3 +12,8 @@
 /fuzz/corpus/
 /fuzz/artifacts/
 /fuzz/Cargo.lock
+
+# Release packaging output (tools/android/build-apk.sh, CI)
+/dist/
+/native/
+/smoke-out/

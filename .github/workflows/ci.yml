@@ -55,33 +55,20 @@ jobs:
           persist-credentials: false
       - name: toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - name: build guest
-        run: cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest $LOCKED
-      - name: guest must import nothing
+      - name: build guest (and check that it imports nothing)
+        run: bash tools/build-guest.sh
+      - name: end-to-end tests (release profile, the interpreter is far too slow in debug)
+        # The guest runs in wasmi inside the real sandbox. ARCA_REQUIRE_E2E turns "guest not
+        # found" from a skip into a failure; the fixtures are the real-software documents.
+        env:
+          ARCA_REQUIRE_E2E: "1"
+          ARCA_CORPUS_DIR: ${{ github.workspace }}/tests/fixtures
         run: |
-          wasm=target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm
-          sha256sum "$wasm"
-          # Import section id 2 must be absent (the sandbox also enforces this).
-          python3 - "$wasm" <<'EOF'
-          import sys
-          data = open(sys.argv[1], "rb").read()
-          assert data[:8] == b"\0asm\x01\0\0\0", "not a wasm v1 module"
-          pos = 8
-          def leb(p):
-              r = s = 0
-              while True:
-                  b = data[p]; p += 1; r |= (b & 0x7F) << s; s += 7
-                  if b < 0x80: return r, p
-          while pos < len(data):
-              sid = data[pos]; size, pos = leb(pos + 1)
-              assert sid != 2, "guest module has an import section"
-              pos += size
-          print("zero imports")
-          EOF
-      - name: end-to-end tests
-        run: |
-          ARCA_GUEST_XRAY_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm" \
-            cargo test -p arca-guest-xray --test e2e_sandbox $LOCKED -- --nocapture
+          export ARCA_GUEST_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm"
+          export ARCA_GUEST_XRAY_WASM="$ARCA_GUEST_WASM"
+          cargo test --release -p arca-guest-xray --test e2e_sandbox $LOCKED -- --nocapture
+          # The engine and the JNI layer, with the real guest embedded.
+          cargo test --release -p arca-engine -p arca-jni $LOCKED
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arca_guest_xray.wasm

@@ -1,0 +1,290 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Android: checks, the signed package, the GitHub release, and an emulator smoke run.
+#
+#   push to main / pull request  checks + package (artifact only)
+#   tag v*                       checks + package + GitHub release (pre-release)
+#   workflow_dispatch            same as a push, optionally with the emulator run
+#
+# Third-party actions are pinned to full commit SHAs. The package is built by tools/android/
+# build-apk.sh with the Android SDK build-tools (no Gradle): every step is in that script.
+name: android
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "android/**"
+      - "crates/**"
+      - "tools/**"
+      - "tests/fixtures/**"
+      - "docs/releases/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - "crates/**"
+      - "tools/**"
+      - "tests/fixtures/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+    inputs:
+      emulators:
+        description: "Run the emulator matrix (API 26-36, phone / tablet / foldable sizes)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  ANDROID_API_MIN: "26"
+  ANDROID_API_TARGET: "36"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  # Linker only: the NDK's clang links the shared libraries. No C or C++ is compiled
+  # (cargo-deny bans cc/cmake/bindgen; tools/check-unsafe.sh checks the lock file).
+  NDK_FALLBACK: "27.3.13750724"
+
+jobs:
+  checks:
+    name: app checks · JNI on a JVM · contract tests with the real guest
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Android SDK platforms (API 26 and 36 jars)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-$ANDROID_API_MIN" "platforms;android-$ANDROID_API_TARGET"
+      - name: resources, manifest, compile against API 26 and 36, pure-Java tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/jars"
+          for api in "$ANDROID_API_MIN" "$ANDROID_API_TARGET"; do
+            mkdir -p "$RUNNER_TEMP/jars/android-$api"
+            cp "$ANDROID_HOME/platforms/android-$api/android.jar" "$RUNNER_TEMP/jars/android-$api/android.jar"
+          done
+          ARCA_ANDROID_JARS="$RUNNER_TEMP/jars" bash tools/android/check-android.sh
+      - name: build the wasm guest
+        run: bash tools/build-guest.sh
+      - name: JNI tests and contract tests (real engine, real guest, fixtures and mutations)
+        env:
+          ARCA_CORPUS_DIR: ${{ github.workspace }}/tests/fixtures
+        run: |
+          export ARCA_GUEST_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm"
+          bash android/host-test/run.sh
+
+  package:
+    name: signed package (arm64-v8a · armeabi-v7a · x86_64)
+    needs: checks
+    runs-on: ubuntu-24.04
+    outputs:
+      signing: ${{ steps.sign.outputs.signing }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Android SDK (platform, build-tools, NDK linker)
+        run: |
+          sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkm" --licenses >/dev/null || true
+          "$sdkm" --install "platforms;android-$ANDROID_API_TARGET" "build-tools;$ANDROID_BUILD_TOOLS"
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+            "$sdkm" --install "ndk;$NDK_FALLBACK"
+            ndk="$ANDROID_HOME/ndk/$NDK_FALLBACK"
+          fi
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          grep -E "Pkg.(Revision|Desc)" "$ndk/source.properties"
+      - name: build the wasm guest
+        run: bash tools/build-guest.sh
+      - name: release gate (attribution must be real before a tag is released)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: ARCA_RELEASE=1 cargo build -p arca-attribution --release --locked
+      - name: native libraries for the three ABIs (16 KiB page size)
+        env:
+          # On a tag the libraries themselves are built as release builds: the attribution
+          # crate refuses placeholder URLs, and the app reports itself as a release build.
+          ARCA_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+        run: |
+          set -euo pipefail
+          export ARCA_GUEST_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm"
+          bin="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          api="$ANDROID_API_MIN"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android$api-clang"
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$bin/armv7a-linux-androideabi$api-clang"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android$api-clang"
+          # Shared libraries are laid out for 16 KiB pages (Android 15+ devices, Google Play).
+          align="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+          remap="--remap-path-prefix=$PWD=/arca --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $remap"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
+          mkdir -p native
+          for entry in aarch64-linux-android:arm64-v8a:aarch64 armv7-linux-androideabi:armeabi-v7a:arm x86_64-linux-android:x86_64:x86_64; do
+            IFS=: read -r triple abi machine <<<"$entry"
+            cargo build --release --locked -p arca-jni --target "$triple"
+            mkdir -p "native/$abi"
+            cp "target/$triple/release/libarca_jni.so" "native/$abi/"
+            # Every PT_LOAD segment must be 16 KiB aligned, and the machine must be the right one.
+            python3 tools/android/check_elf.py "native/$abi/libarca_jni.so" --align 16384 --machine "$machine"
+          done
+          sha256sum native/*/libarca_jni.so target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm | tee native/SHA256SUMS
+      - name: signing key
+        id: sign
+        env:
+          KEYSTORE_B64: ${{ secrets.ARCA_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.ARCA_KEYSTORE_PASS }}
+          KEY_ALIAS: ${{ secrets.ARCA_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ARCA_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ] && [ -n "$KEY_ALIAS" ]; then
+            umask 077
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "ARCA_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "ARCA_KEYSTORE_PASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+            echo "ARCA_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "ARCA_KEY_PASS=${KEY_PASS:-$KEYSTORE_PASS}" >> "$GITHUB_ENV"
+            echo "signing=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release key in the repository secrets: this build is signed with a THROWAWAY key."
+            echo "ARCA_THROWAWAY_KEY=1" >> "$GITHUB_ENV"
+            echo "signing=throwaway" >> "$GITHUB_OUTPUT"
+          fi
+      - name: build, sign and verify the APK
+        env:
+          ARCA_NATIVE_DIR: ${{ github.workspace }}/native
+          ARCA_OUT: ${{ github.workspace }}/dist
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME ARCA_BUILD_TOOLS="$ANDROID_BUILD_TOOLS"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+            export ARCA_VERSION_NAME="$ver"
+            # versionCode: MAJOR*1000000 + MINOR*1000 + PATCH (pre-release suffix ignored).
+            core="${ver%%[-+]*}"; IFS=. read -r a b c <<<"$core"
+            export ARCA_VERSION_CODE=$(( a * 1000000 + b * 1000 + c ))
+          fi
+          bash tools/android/build-apk.sh
+          cp native/SHA256SUMS dist/native.SHA256SUMS
+      - name: remove the release key from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arca-apk
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: GitHub release (pre-release)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: fetch the package built by this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name arca-apk --dir dist
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNING: ${{ needs.package.outputs.signing }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          notes="docs/releases/$tag.md"
+          [ -f "$notes" ] || { echo "missing $notes: write the release notes before tagging" >&2; exit 1; }
+          body="$RUNNER_TEMP/notes.md"
+          {
+            if [ "$SIGNING" != release ]; then
+              cat <<'WARN'
+          > **Подпись.** Этот файл подписан **одноразовым ключом**, созданным при сборке. Он ставится и работает,
+          > но следующая версия, подписанная другим ключом, не сможет его обновить: потребуется удалить и
+          > установить заново. Постоянный ключ подписи будет у стабильных релизов.
+          >
+          > **Signing.** This package is signed with a **throwaway key** generated for the build. It installs and
+          > runs, but a later build signed with another key cannot update it: uninstall first.
+
+          WARN
+            fi
+            cat "$notes"
+            echo
+            echo "## Контрольные суммы / Checksums (SHA-256)"
+            echo '```'
+            (cd dist && cat ./*.apk.sha256 native.SHA256SUMS)
+            echo '```'
+            echo
+            echo "## Сертификат подписи / Signing certificate"
+            echo '```'
+            grep -m3 -E "Signer #1 certificate (DN|SHA-256 digest)" dist/arca-*.verify.txt || echo "(see the attached verification report)"
+            echo '```'
+          } > "$body"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Arca ${tag#v}" \
+            --notes-file "$body" --prerelease --verify-tag \
+            dist/arca-*.apk dist/arca-*.apk.sha256 dist/arca-*.verify.txt dist/native.SHA256SUMS
+
+  emulators:
+    name: emulator API ${{ matrix.api }} · phone, tablet, foldable and flip sizes
+    # Evidence, not a gate: emulators are slow and flaky on shared runners. The release does not wait for it.
+    if: github.event_name == 'workflow_dispatch' && inputs.emulators || startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 28, 30, 31, 33, 34, 35, 36]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: fetch the package built by this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name arca-apk --dir dist
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: smoke run on the emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          disable-animations: true
+          script: bash tools/android/emulator-smoke.sh dist tests/fixtures smoke-out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: emulator-api-${{ matrix.api }}
+          path: smoke-out/
+          if-no-files-found: warn

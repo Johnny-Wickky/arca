@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.arca.viewer.Native;
 import org.arca.viewer.core.Capabilities;
@@ -298,6 +302,76 @@ public final class ContractTest {
         }
     }
 
+    private static void put(ZipOutputStream z, String name, String body) throws IOException {
+        z.putNextEntry(new ZipEntry(name));
+        z.write(body.getBytes(StandardCharsets.UTF_8));
+        z.closeEntry();
+    }
+
+    /** A workbook whose only sheet is hidden. */
+    private static byte[] workbookWithOnlyAHiddenSheet() throws IOException {
+        String rels = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bos)) {
+            put(z, "[Content_Types].xml",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                + "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>");
+            put(z, "_rels/.rels",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"" + rels + "/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>");
+            put(z, "xl/workbook.xml",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"" + rels + "\">"
+                + "<sheets><sheet name=\"Only\" sheetId=\"1\" state=\"hidden\" r:id=\"rId1\"/></sheets></workbook>");
+            put(z, "xl/_rels/workbook.xml.rels",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"" + rels + "/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>");
+            put(z, "xl/worksheets/sheet1.xml",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+                + "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>kept out of sight</t></is></c></row></sheetData></worksheet>");
+        }
+        return bos.toByteArray();
+    }
+
+    /**
+     * A preview may have no section at all: every part of the document is hidden and hidden
+     * content was not asked for. The app's screen is written for that shape (it says there is
+     * nothing to show and explains why); this pins the shape across the whole stack, from the
+     * guest through the JNI bridge to the app's own parser.
+     */
+    private static void documentWithNothingToShow() throws IOException {
+        long doc = load(workbookWithOnlyAHiddenSheet());
+        try {
+            for (int flags = 0; flags <= 1; flags++) {
+                long job = Native.jobNew();
+                long outcome = Native.run(job, doc, Native.OP_PREVIEW, flags);
+                Native.jobFree(job);
+                check(outcome > 0, "hidden-only workbook: preview returned " + outcome);
+                if (outcome <= 0) {
+                    continue;
+                }
+                check(Native.outcomeStatus(outcome) == Native.OK, "hidden-only workbook: status " + Native.outcomeStatus(outcome));
+                Model.PreviewMeta meta = Model.parsePreviewMeta(Native.previewMeta(outcome));
+                if (flags == 0) {
+                    check(meta.sections.isEmpty(), "hidden-only workbook: " + meta.sections.size() + " section(s) without being asked");
+                    boolean announced = false;
+                    for (Model.Notice n : meta.notices) {
+                        announced |= "HiddenOmitted".equals(n.kind);
+                    }
+                    check(announced, "hidden-only workbook: the omitted sheet is not announced");
+                    check(Native.previewItems(outcome, 0, 0, 1) == null, "hidden-only workbook: items for a section that does not exist");
+                } else {
+                    check(meta.sections.size() == 1 && meta.sections.get(0).hidden && meta.sections.get(0).items > 0,
+                        "hidden-only workbook: the sheet is not shown on request");
+                }
+                Native.outcomeFree(outcome);
+            }
+        } finally {
+            Native.docFree(doc);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         if (Native.init(256, 768, 120, 180) != 0) {
             System.out.println("FAIL init");
@@ -350,6 +424,7 @@ public final class ContractTest {
         }
         System.out.println("pristine inputs: " + inputs + ", operations: " + runs + ", previews: " + previews
             + ", items paged: " + itemsSeen);
+        documentWithNothingToShow();
 
         Random rnd = new Random(0xA2CA_2026L);
         int mutated = 0;
