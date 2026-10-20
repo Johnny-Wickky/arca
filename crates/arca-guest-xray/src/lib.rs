@@ -3,9 +3,10 @@
 
 //! # arca-guest-xray
 //!
-//! The Threat X-Ray packaged as a parser guest implementing
-//! [`arca_abi`] version 1. Built for `wasm32-unknown-unknown` it is a module
-//! with **zero imports**: it can compute, and nothing else.
+//! The parser guest implementing [`arca_abi`] version 2: Threat X-Ray
+//! (`Scan`), one-tap sterilisation (`Sanitize`) and the read-only content
+//! preview (`Preview`) in one module. Built for `wasm32-unknown-unknown` it is
+//! a module with **zero imports**: it can compute, and nothing else.
 //!
 //! ```text
 //! cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest
@@ -26,8 +27,11 @@
 use std::cell::RefCell;
 
 use arca_abi::envelope::{self, PayloadKind};
+use arca_abi::request::{self, Op, flags};
 use arca_abi::wire::{self, DecodeLimits, WireError};
 use arca_abi::{ABI_VERSION, status};
+use arca_preview::{Preview, PreviewError, PreviewPolicy};
+use arca_xray::sanitize::{SanitizeError, SanitizeOptions, SanitizedDocument};
 use arca_xray::{ScanPolicy, XRayReport};
 
 #[derive(Default)]
@@ -53,13 +57,69 @@ fn error_envelope(msg: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Scans a document and returns `(status, envelope)`. Pure and testable.
+/// Answers one request and returns `(status, envelope)`. Pure and testable.
+///
+/// `input` is the whole request: the 16-byte header followed by the document.
 #[must_use]
-pub fn process(document: &[u8]) -> (i32, Vec<u8>) {
-    let report = arca_xray::scan(document, &ScanPolicy::default());
-    match wire::to_bytes(&report).and_then(|p| envelope::seal(PayloadKind::XRayReport, &p)) {
+pub fn process(input: &[u8]) -> (i32, Vec<u8>) {
+    let req = match request::parse(input) {
+        Ok(r) => r,
+        Err(e) => return (status::BAD_REQUEST, error_envelope(&e.to_string())),
+    };
+    match req.op {
+        Op::Scan => {
+            let report = arca_xray::scan(req.document, &ScanPolicy::default());
+            seal(PayloadKind::XRayReport, &report, "could not encode the X-ray report")
+        }
+        Op::Sanitize => sanitize(req.document, req.flags),
+        Op::Preview => preview(req.document, req.flags),
+    }
+}
+
+fn seal<T: wire::Wire>(kind: PayloadKind, value: &T, what: &str) -> (i32, Vec<u8>) {
+    match wire::to_bytes(value).and_then(|p| envelope::seal(kind, &p)) {
         Ok(env) => (status::OK, env),
-        Err(_) => (status::ENCODE_FAILED, error_envelope("could not encode the X-ray report")),
+        Err(_) => (status::ENCODE_FAILED, error_envelope(what)),
+    }
+}
+
+fn sanitize(document: &[u8], request_flags: u32) -> (i32, Vec<u8>) {
+    let options = SanitizeOptions {
+        accept_revisions: request_flags & flags::ACCEPT_REVISIONS != 0,
+        remove_comments: request_flags & flags::REMOVE_COMMENTS != 0,
+        strip_metadata: request_flags & flags::STRIP_METADATA != 0,
+        remove_custom_xml: request_flags & flags::REMOVE_CUSTOM_XML != 0,
+    };
+    match arca_xray::sanitize::sanitize(document, &ScanPolicy::default(), &options) {
+        Ok(doc) => {
+            seal(PayloadKind::SanitizedDocument, &doc, "could not encode the sterile document")
+        }
+        Err(e @ SanitizeError::Unsupported(_)) => {
+            (status::UNSUPPORTED_FORMAT, error_envelope(&e.to_string()))
+        }
+        Err(e @ SanitizeError::Rejected(_)) => {
+            (status::DOCUMENT_REJECTED, error_envelope(&e.to_string()))
+        }
+        Err(e) => (status::OPERATION_FAILED, error_envelope(&e.to_string())),
+    }
+}
+
+fn preview(document: &[u8], request_flags: u32) -> (i32, Vec<u8>) {
+    let policy = PreviewPolicy {
+        reveal_hidden: request_flags & flags::REVEAL_HIDDEN != 0,
+        ..PreviewPolicy::default()
+    };
+    match arca_preview::preview(document, &policy) {
+        Ok(p) => seal(PayloadKind::Preview, &p, "could not encode the preview"),
+        Err(e @ PreviewError::Unsupported(_)) => {
+            (status::UNSUPPORTED_FORMAT, error_envelope(&e.to_string()))
+        }
+        Err(PreviewError::Encrypted) => {
+            (status::ENCRYPTED, error_envelope("the document is password protected"))
+        }
+        Err(e @ (PreviewError::Malformed(_) | PreviewError::TooLarge(_))) => {
+            (status::DOCUMENT_REJECTED, error_envelope(&e.to_string()))
+        }
     }
 }
 
@@ -176,24 +236,99 @@ impl core::fmt::Display for DecodeError {
 
 impl core::error::Error for DecodeError {}
 
-/// Decodes the payload returned by the sandbox into a report.
+/// Decoding limits for each kind of result. The payload is untrusted: a
+/// compromised guest could have written anything.
+const fn limits_for(kind: PayloadKind) -> DecodeLimits {
+    match kind {
+        PayloadKind::Preview => {
+            DecodeLimits { max_string_bytes: 8 << 20, max_items: 4 << 20, max_depth: 32 }
+        }
+        PayloadKind::SanitizedDocument => {
+            DecodeLimits { max_string_bytes: 1 << 30, max_items: 1 << 20, max_depth: 16 }
+        }
+        PayloadKind::XRayReport | PayloadKind::Error => {
+            DecodeLimits { max_string_bytes: 8 << 20, max_items: 1 << 20, max_depth: 8 }
+        }
+    }
+}
+
+/// A decoded guest result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Output {
+    /// Result of [`Op::Scan`].
+    Report(Box<XRayReport>),
+    /// Result of [`Op::Sanitize`].
+    Sanitized(Box<SanitizedDocument>),
+    /// Result of [`Op::Preview`].
+    Preview(Box<Preview>),
+}
+
+/// Decodes the payload returned by the sandbox.
 ///
 /// # Errors
 /// See [`DecodeError`].
-pub fn decode_report(kind: PayloadKind, payload: &[u8]) -> Result<XRayReport, DecodeError> {
-    let limits = DecodeLimits { max_string_bytes: 8 << 20, max_items: 1 << 20, max_depth: 8 };
+pub fn decode(kind: PayloadKind, payload: &[u8]) -> Result<Output, DecodeError> {
+    let limits = limits_for(kind);
     match kind {
-        PayloadKind::XRayReport => wire::from_bytes(payload, limits).map_err(DecodeError::Wire),
+        PayloadKind::XRayReport => wire::from_bytes(payload, limits)
+            .map(|r| Output::Report(Box::new(r)))
+            .map_err(DecodeError::Wire),
+        PayloadKind::SanitizedDocument => wire::from_bytes(payload, limits)
+            .map(|r| Output::Sanitized(Box::new(r)))
+            .map_err(DecodeError::Wire),
+        PayloadKind::Preview => wire::from_bytes(payload, limits)
+            .map(|r| Output::Preview(Box::new(r)))
+            .map_err(DecodeError::Wire),
         PayloadKind::Error => Err(DecodeError::Guest(
             wire::from_bytes::<String>(payload, limits).map_err(DecodeError::Wire)?,
         )),
-        other => Err(DecodeError::UnexpectedKind(other)),
+    }
+}
+
+/// Decodes the payload returned by the sandbox into a report.
+///
+/// # Errors
+/// See [`DecodeError`]; any kind other than a report is
+/// [`DecodeError::UnexpectedKind`].
+pub fn decode_report(kind: PayloadKind, payload: &[u8]) -> Result<XRayReport, DecodeError> {
+    match decode(kind, payload)? {
+        Output::Report(r) => Ok(*r),
+        Output::Sanitized(_) => Err(DecodeError::UnexpectedKind(PayloadKind::SanitizedDocument)),
+        Output::Preview(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Preview)),
+    }
+}
+
+/// Decodes the payload returned by the sandbox into a preview.
+///
+/// # Errors
+/// See [`DecodeError`].
+pub fn decode_preview(kind: PayloadKind, payload: &[u8]) -> Result<Preview, DecodeError> {
+    match decode(kind, payload)? {
+        Output::Preview(p) => Ok(*p),
+        Output::Report(_) => Err(DecodeError::UnexpectedKind(PayloadKind::XRayReport)),
+        Output::Sanitized(_) => Err(DecodeError::UnexpectedKind(PayloadKind::SanitizedDocument)),
+    }
+}
+
+/// Decodes the payload returned by the sandbox into a sterile document.
+///
+/// # Errors
+/// See [`DecodeError`].
+pub fn decode_sanitized(
+    kind: PayloadKind,
+    payload: &[u8],
+) -> Result<SanitizedDocument, DecodeError> {
+    match decode(kind, payload)? {
+        Output::Sanitized(d) => Ok(*d),
+        Output::Report(_) => Err(DecodeError::UnexpectedKind(PayloadKind::XRayReport)),
+        Output::Preview(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Preview)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arca_xray::Verdict;
 
     fn tiny_docx() -> Vec<u8> {
         use arca_container::zip::writer::{Compression, ZipWriter};
@@ -209,7 +344,7 @@ mod tests {
             ),
             (
                 "word/document.xml",
-                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>hi</w:t></w:r></w:p></w:body></w:document>"#,
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>hi</w:t></w:r></w:p><w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>secret</w:t></w:r></w:p></w:body></w:document>"#,
             ),
             (
                 "word/_rels/document.xml.rels",
@@ -223,27 +358,115 @@ mod tests {
         w.finish().unwrap()
     }
 
+    fn request_for(op: Op, flags: u32, doc: &[u8]) -> Vec<u8> {
+        let mut v = request::header(op, flags).to_vec();
+        v.extend_from_slice(doc);
+        v
+    }
+
+    fn open(env: &[u8]) -> (PayloadKind, &[u8]) {
+        envelope::open(env).unwrap()
+    }
+
     #[test]
-    fn process_matches_direct_scan_after_the_wire() {
+    fn scan_matches_direct_scan_after_the_wire() {
         let doc = tiny_docx();
-        let (code, env) = process(&doc);
+        let (code, env) = process(&request_for(Op::Scan, 0, &doc));
         assert_eq!(code, status::OK);
-        let (kind, payload) = envelope::open(&env).unwrap();
+        let (kind, payload) = open(&env);
         let report = decode_report(kind, payload).unwrap();
         assert_eq!(report, arca_xray::scan_default(&doc));
-        assert_eq!(report.verdict, arca_xray::Verdict::HiddenTrackers);
+        assert_eq!(report.verdict, Verdict::HiddenTrackers);
+    }
+
+    #[test]
+    fn preview_matches_direct_preview_after_the_wire() {
+        let doc = tiny_docx();
+        for reveal in [true, false] {
+            let flags = if reveal { flags::REVEAL_HIDDEN } else { 0 };
+            let (code, env) = process(&request_for(Op::Preview, flags, &doc));
+            assert_eq!(code, status::OK);
+            let (kind, payload) = open(&env);
+            assert_eq!(kind, PayloadKind::Preview);
+            let got = decode_preview(kind, payload).unwrap();
+            let policy = PreviewPolicy { reveal_hidden: reveal, ..PreviewPolicy::default() };
+            assert_eq!(got, arca_preview::preview(&doc, &policy).unwrap());
+            let all: String = got
+                .sections
+                .iter()
+                .flat_map(|s| s.blocks.iter())
+                .filter_map(|b| {
+                    if let arca_preview::model::Block::Para(p) = b { Some(p.text()) } else { None }
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+            assert_eq!(all.contains("secret"), reveal, "{all}");
+            assert!(all.contains("hi"));
+        }
+    }
+
+    #[test]
+    fn sanitize_removes_the_tracker_and_verifies() {
+        let doc = tiny_docx();
+        let (code, env) = process(&request_for(Op::Sanitize, flags::SANITIZE_ALL, &doc));
+        assert_eq!(code, status::OK);
+        let (kind, payload) = open(&env);
+        let sd = decode_sanitized(kind, payload).unwrap();
+        assert!(!sd.bytes.is_empty());
+        assert_eq!(sd.verification.verdict, Verdict::Clean);
+        assert!(!sd.actions.is_empty());
+        // A different payload kind is not mistaken for another.
+        assert!(matches!(decode_report(kind, payload), Err(DecodeError::UnexpectedKind(_))));
+        assert!(matches!(decode_preview(kind, payload), Err(DecodeError::UnexpectedKind(_))));
+    }
+
+    #[test]
+    fn unsupported_and_failed_operations_have_their_own_statuses() {
+        // Plain text cannot be rebuilt structurally.
+        let (code, env) = process(&request_for(Op::Sanitize, flags::SANITIZE_ALL, b"just text"));
+        assert_eq!(code, status::UNSUPPORTED_FORMAT);
+        let (kind, payload) = open(&env);
+        assert!(matches!(decode(kind, payload), Err(DecodeError::Guest(_))));
+        // An executable has nothing to preview.
+        let (code, _) = process(&request_for(Op::Preview, 0, b"MZ\x90\x00\x03\x00\x00\x00"));
+        assert_eq!(code, status::UNSUPPORTED_FORMAT);
+        // A garbled archive is a rejected document, not a trap.
+        let mut bad = tiny_docx();
+        bad.truncate(bad.len() / 2);
+        let (code, _) = process(&request_for(Op::Preview, 0, &bad));
+        assert_eq!(code, status::DOCUMENT_REJECTED);
+    }
+
+    #[test]
+    fn malformed_requests_are_refused_not_guessed() {
+        for (input, why) in [
+            (Vec::new(), "empty"),
+            (tiny_docx(), "a bare document is not a request"),
+            (request_for(Op::Scan, 1, b"x"), "unknown flag"),
+        ] {
+            let (code, env) = process(&input);
+            assert_eq!(code, status::BAD_REQUEST, "{why}");
+            let (kind, payload) = open(&env);
+            assert!(matches!(decode(kind, payload), Err(DecodeError::Guest(_))), "{why}");
+        }
+        let mut wrong_version = request_for(Op::Scan, 0, b"x");
+        wrong_version[4] = 1;
+        assert_eq!(process(&wrong_version).0, status::BAD_REQUEST);
+        let mut reserved = request_for(Op::Scan, 0, b"x");
+        reserved[12] = 1;
+        assert_eq!(process(&reserved).0, status::BAD_REQUEST);
     }
 
     #[test]
     fn abi_state_machine() {
-        let doc = tiny_docx();
+        let req = request_for(Op::Scan, 0, &tiny_docx());
         // Native addresses do not fit the 32-bit ABI; only wasm32 hands them out.
-        let ptr = input_reserve(i32::try_from(doc.len()).unwrap());
+        let ptr = input_reserve(i32::try_from(req.len()).unwrap());
         assert!(ptr >= 0);
-        assert_eq!(STATE.with(|s| s.borrow().input.len()), doc.len());
+        assert_eq!(STATE.with(|s| s.borrow().input.len()), req.len());
         // Simulate the host writing into guest memory.
-        STATE.with(|s| s.borrow_mut().input.copy_from_slice(&doc));
-        assert_eq!(run(i32::try_from(doc.len()).unwrap()), status::OK);
+        STATE.with(|s| s.borrow_mut().input.copy_from_slice(&req));
+        assert_eq!(run(i32::try_from(req.len()).unwrap()), status::OK);
         let len = usize::try_from(output_len()).unwrap();
         assert!(len > envelope::HEADER_LEN);
         assert!(output_ptr() >= 0);
@@ -268,6 +491,25 @@ mod tests {
     fn hostile_payloads_are_rejected_by_the_host_decoder() {
         assert!(decode_report(PayloadKind::XRayReport, &[0xFF; 64]).is_err());
         assert!(decode_report(PayloadKind::SanitizedDocument, &[]).is_err());
-        assert_eq!(abi_version(), 1);
+        assert!(decode_preview(PayloadKind::Preview, &[0xFF; 64]).is_err());
+        assert!(decode_preview(PayloadKind::Preview, &[]).is_err());
+        assert!(decode(PayloadKind::Error, &[0xFF; 8]).is_err());
+        assert_eq!(abi_version(), 2);
+    }
+
+    #[test]
+    fn corrupted_previews_never_panic_the_host_decoder() {
+        let doc = tiny_docx();
+        let (_, env) = process(&request_for(Op::Preview, flags::REVEAL_HIDDEN, &doc));
+        let (kind, payload) = envelope::open(&env).unwrap();
+        let payload = payload.to_vec();
+        for i in 0..payload.len() {
+            for mask in [0x01u8, 0x80, 0xFF] {
+                let mut m = payload.clone();
+                m[i] ^= mask;
+                let _ = decode_preview(kind, &m);
+            }
+            let _ = decode_preview(kind, &payload[..i]);
+        }
     }
 }

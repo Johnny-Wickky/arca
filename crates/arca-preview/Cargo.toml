@@ -1,0 +1,23 @@
+[package]
+name = "arca-preview"
+description = "Read-only extraction of the visible content of office documents, designed to run inside the arca-sandbox Wasm guest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Like arca-container and arca-xray this crate is I/O-free and compiles for the
+# wasm32-unknown-unknown guest that runs it inside arca-sandbox.
+[dependencies]
+arca-abi.workspace = true
+arca-container.workspace = true
+arca-xray.workspace = true
+
+[dev-dependencies]
+quick-xml.workspace = true
+miniz_oxide.workspace = true
+
+[lints]
+workspace = true

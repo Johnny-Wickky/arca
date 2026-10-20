@@ -611,12 +611,31 @@ impl Sandbox {
         input: &[u8],
         options: &RunOptions,
     ) -> Result<GuestOutput, SandboxError> {
+        self.run_request(module, &[], input, options)
+    }
+
+    /// Like [`run_with`](Self::run_with), but the guest's input region holds
+    /// `prefix` immediately followed by `input` (the ABI [`request`](arca_abi::request)
+    /// header and the document). Taking the two parts separately spares the
+    /// host a second copy of a document that can be tens of megabytes.
+    ///
+    /// Fuel and memory limits are computed from the combined length.
+    ///
+    /// # Errors
+    /// See [`SandboxError`]; every failure is contained.
+    pub fn run_request(
+        &self,
+        module: &GuestModule,
+        prefix: &[u8],
+        input: &[u8],
+        options: &RunOptions,
+    ) -> Result<GuestOutput, SandboxError> {
         let started = Instant::now();
         std::thread::scope(|scope| {
             let handle = std::thread::Builder::new()
                 .name(String::from("arca-sandbox"))
                 .stack_size(self.policy.worker_stack_bytes)
-                .spawn_scoped(scope, || self.execute(module, input, options, started))
+                .spawn_scoped(scope, || self.execute(module, prefix, input, options, started))
                 .map_err(|e| SandboxError::WorkerSpawn(e.to_string()))?;
             handle.join().map_err(|_| SandboxError::WorkerPanicked)?
         })
@@ -631,7 +650,7 @@ impl Sandbox {
         module: &GuestModule,
         input: &[u8],
     ) -> Result<GuestOutput, SandboxError> {
-        self.execute(module, input, &RunOptions::default(), Instant::now())
+        self.execute(module, &[], input, &RunOptions::default(), Instant::now())
     }
 
     fn engine(&self) -> Engine {
@@ -660,13 +679,16 @@ impl Sandbox {
     fn execute(
         &self,
         module: &GuestModule,
+        prefix: &[u8],
         input: &[u8],
         options: &RunOptions,
         started: Instant,
     ) -> Result<GuestOutput, SandboxError> {
         let p = &self.policy;
-        if input.len() > p.max_input_bytes {
-            return Err(SandboxError::InputTooLarge(input.len()));
+        let total_len =
+            prefix.len().checked_add(input.len()).ok_or(SandboxError::InputTooLarge(usize::MAX))?;
+        if total_len > p.max_input_bytes {
+            return Err(SandboxError::InputTooLarge(total_len));
         }
         if module.bytes.len() > p.max_module_bytes {
             return Err(SandboxError::ModuleTooLarge(module.bytes.len()));
@@ -677,9 +699,9 @@ impl Sandbox {
             return Err(SandboxError::ModuleNotPinned(digest));
         }
         let input_len =
-            i32::try_from(input.len()).map_err(|_| SandboxError::InputTooLarge(input.len()))?;
+            i32::try_from(total_len).map_err(|_| SandboxError::InputTooLarge(total_len))?;
 
-        let fuel = p.fuel.for_input(input.len());
+        let fuel = p.fuel.for_input(total_len);
         let mut meter = Meter::new(p, options, fuel, started);
         // A run that is already cancelled never pays for compilation.
         meter.check()?;
@@ -697,7 +719,7 @@ impl Sandbox {
         meter.check()?;
 
         let guard = Guard {
-            max_memory: p.memory_limit_for(input.len()),
+            max_memory: p.memory_limit_for(total_len),
             max_table: p.max_table_elements,
             memory_denied: false,
             peak_memory: 0,
@@ -714,7 +736,8 @@ impl Sandbox {
             .get_memory(&store, exports::MEMORY)
             .ok_or(SandboxError::MissingExport(exports::MEMORY))?;
 
-        let result = protocol(&mut store, &instance, memory, input, input_len, p, &mut meter);
+        let result =
+            protocol(&mut store, &instance, memory, (prefix, input), input_len, p, &mut meter);
 
         // Wipe the guest memory (input copy, intermediate parse state) before
         // the store is dropped, whatever the outcome.
@@ -801,7 +824,7 @@ fn protocol(
     store: &mut Store<Guard>,
     instance: &Instance,
     memory: Memory,
-    input: &[u8],
+    (prefix, input): (&[u8], &[u8]),
     input_len: i32,
     policy: &SandboxPolicy,
     meter: &mut Meter<'_>,
@@ -818,10 +841,12 @@ fn protocol(
     }
     let ptr = drive(store, meter, |s| reserve.call_resumable(s, input_len))?;
     let ptr = usize::try_from(ptr).map_err(|_| SandboxError::GuestAllocationFailed)?;
-    if ptr == 0 && !input.is_empty() {
+    if ptr == 0 && input_len != 0 {
         return Err(SandboxError::GuestAllocationFailed);
     }
-    memory.write(&mut *store, ptr, input).map_err(|_| SandboxError::GuestAllocationFailed)?;
+    memory.write(&mut *store, ptr, prefix).map_err(|_| SandboxError::GuestAllocationFailed)?;
+    let input_at = ptr.checked_add(prefix.len()).ok_or(SandboxError::GuestAllocationFailed)?;
+    memory.write(&mut *store, input_at, input).map_err(|_| SandboxError::GuestAllocationFailed)?;
     meter.check()?;
 
     let status = drive(store, meter, |s| run.call_resumable(s, input_len))?;

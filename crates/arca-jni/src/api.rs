@@ -1,0 +1,277 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+//! The safe API behind the JNI entry points.
+//!
+//! Conventions, mirrored in `Native.java`:
+//!
+//! * handles are positive `i64`; a negative return value is `-status` (see
+//!   [`arca_engine::Status`]);
+//! * functions returning text return UTF-8 bytes (JSON), or `None` when there is nothing
+//!   to return (the Java side maps that to `null`);
+//! * nothing here panics on invalid arguments.
+
+use std::io::{Read, Write};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use arca_engine::render::{self, lang_from_code};
+use arca_engine::{Engine, EngineConfig, Handle, Host, Status, selftest};
+
+mod guest {
+    include!(concat!(env!("OUT_DIR"), "/guest.rs"));
+}
+
+pub use guest::GUEST_SHA256;
+
+static HOST: OnceLock<Host> = OnceLock::new();
+
+/// `true` if a guest module was embedded at build time.
+#[must_use]
+pub fn has_guest() -> bool {
+    !guest::GUEST_WASM.is_empty()
+}
+
+/// Initialises the engine (once per process; later calls return the first result's state).
+///
+/// Limits come from the device: input in MiB, memory in MiB, scan and preview time in
+/// seconds. Out-of-range values are clamped by the engine, never rejected.
+#[must_use]
+pub fn init(max_input_mib: i32, max_memory_mib: i32, scan_secs: i32, preview_secs: i32) -> i32 {
+    if HOST.get().is_some() {
+        return Status::Ok.code();
+    }
+    if !has_guest() {
+        return Status::NotReady.code();
+    }
+    if arca_engine::guest_digest_of(guest::GUEST_WASM) != GUEST_SHA256 {
+        return Status::Fault.code();
+    }
+    let mib = |v: i32, default: usize| {
+        usize::try_from(v).ok().filter(|v| *v > 0).map_or(default, |v| v << 20)
+    };
+    let secs = |v: i32, default: u64| u64::try_from(v).ok().filter(|v| *v > 0).unwrap_or(default);
+    let d = EngineConfig::default();
+    let config = EngineConfig {
+        max_input_bytes: mib(max_input_mib, d.max_input_bytes),
+        max_memory_bytes: mib(max_memory_mib, d.max_memory_bytes),
+        scan_timeout: Duration::from_secs(secs(scan_secs, d.scan_timeout.as_secs())),
+        preview_timeout: Duration::from_secs(secs(preview_secs, d.preview_timeout.as_secs())),
+    };
+    // A concurrent first call may win; both built the same engine.
+    let _ = HOST.set(Host::new(Engine::new(guest::GUEST_WASM, config)));
+    Status::Ok.code()
+}
+
+fn host() -> Result<&'static Host, Status> {
+    HOST.get().ok_or(Status::NotReady)
+}
+
+fn handle(raw: i64) -> Result<Handle, Status> {
+    u64::try_from(raw).ok().filter(|h| *h > 0).ok_or(Status::BadHandle)
+}
+
+fn neg(status: Status) -> i64 {
+    -i64::from(status.code())
+}
+
+fn code<T>(r: Result<T, Status>) -> i32 {
+    match r {
+        Ok(_) => Status::Ok.code(),
+        Err(s) => s.code(),
+    }
+}
+
+fn handle_or_status(r: Result<Handle, Status>) -> i64 {
+    match r {
+        Ok(h) => i64::try_from(h).unwrap_or_else(|_| neg(Status::Fault)),
+        Err(s) => neg(s),
+    }
+}
+
+fn count_or_status(r: Result<u64, Status>) -> i64 {
+    match r {
+        Ok(n) => i64::try_from(n).unwrap_or_else(|_| neg(Status::Fault)),
+        Err(s) => neg(s),
+    }
+}
+
+/// Facts about the engine and the guest as JSON.
+#[must_use]
+pub fn info() -> Option<Vec<u8>> {
+    host().ok().map(Host::info_json)
+}
+
+/// Runs the built-in self-test and returns its JSON report.
+#[must_use]
+pub fn self_test() -> Option<Vec<u8>> {
+    host().ok().map(selftest::run)
+}
+
+/// Starts an empty document accepting at most `max_bytes`.
+#[must_use]
+pub fn doc_new(max_bytes: i64) -> i64 {
+    let Ok(max) = u64::try_from(max_bytes) else { return neg(Status::BadArgument) };
+    match host() {
+        Ok(h) => handle_or_status(Ok(h.doc_new(max))),
+        Err(s) => neg(s),
+    }
+}
+
+/// Appends `data` to the document.
+#[must_use]
+pub fn doc_append(doc: i64, data: &[u8]) -> i32 {
+    code(host().and_then(|h| h.doc_append(handle(doc)?, data)))
+}
+
+/// Reads `reader` to its end into the document; returns the byte count or `-status`.
+pub fn doc_read(doc: i64, reader: &mut dyn Read) -> i64 {
+    count_or_status(host().and_then(|h| h.doc_read_from(handle(doc)?, reader)))
+}
+
+/// Length of the document so far, or `-status`.
+#[must_use]
+pub fn doc_len(doc: i64) -> i64 {
+    count_or_status(host().and_then(|h| h.doc_len(handle(doc)?)))
+}
+
+/// Releases the document.
+pub fn doc_free(doc: i64) {
+    if let (Ok(h), Ok(d)) = (host(), handle(doc)) {
+        h.doc_free(d);
+    }
+}
+
+/// A new cancellation token; the handle or `-status`.
+#[must_use]
+pub fn job_new() -> i64 {
+    match host() {
+        Ok(h) => handle_or_status(Ok(h.job_new())),
+        Err(s) => neg(s),
+    }
+}
+
+/// Asks the job's run to stop.
+pub fn job_cancel(job: i64) {
+    if let (Ok(h), Ok(j)) = (host(), handle(job)) {
+        h.job_cancel(j);
+    }
+}
+
+/// Releases the job.
+pub fn job_free(job: i64) {
+    if let (Ok(h), Ok(j)) = (host(), handle(job)) {
+        h.job_free(j);
+    }
+}
+
+/// Runs an operation (blocking); returns the outcome handle or `-status`.
+#[must_use]
+pub fn run(job: i64, doc: i64, op: i32, flags: i32) -> i64 {
+    let (Ok(op), Ok(flags)) = (u16::try_from(op), u32::try_from(flags)) else {
+        return neg(Status::BadArgument);
+    };
+    handle_or_status(host().and_then(|h| h.run(handle(job)?, handle(doc)?, op, flags)))
+}
+
+/// Status code of a finished run (a negative `-status` for a bad handle).
+#[must_use]
+pub fn outcome_status(outcome: i64) -> i32 {
+    match host().and_then(|h| h.outcome_status(handle(outcome)?)) {
+        Ok(s) => s.code(),
+        Err(s) => -s.code(),
+    }
+}
+
+fn bytes(r: Result<Vec<u8>, Status>) -> Option<Vec<u8>> {
+    r.ok()
+}
+
+/// Diagnostics of a finished run as JSON.
+#[must_use]
+pub fn outcome_info(outcome: i64) -> Option<Vec<u8>> {
+    bytes(host().and_then(|h| h.outcome_info_json(handle(outcome)?)))
+}
+
+/// The X-ray report as JSON.
+#[must_use]
+pub fn report(outcome: i64) -> Option<Vec<u8>> {
+    bytes(host().and_then(|h| h.report_json(handle(outcome)?)))
+}
+
+/// Preview sections, notices and totals as JSON.
+#[must_use]
+pub fn preview_meta(outcome: i64) -> Option<Vec<u8>> {
+    bytes(host().and_then(|h| h.preview_meta_json(handle(outcome)?)))
+}
+
+/// A page of preview items as a JSON array.
+#[must_use]
+pub fn preview_items(outcome: i64, section: i32, from: i64, count: i32) -> Option<Vec<u8>> {
+    let (Ok(section), Ok(from), Ok(count)) =
+        (u32::try_from(section), u64::try_from(from), u32::try_from(count))
+    else {
+        return None;
+    };
+    bytes(host().and_then(|h| h.preview_items_json(handle(outcome)?, section, from, count)))
+}
+
+/// Description of a sterile copy as JSON.
+#[must_use]
+pub fn sanitized_info(outcome: i64) -> Option<Vec<u8>> {
+    bytes(host().and_then(|h| h.sanitized_info_json(handle(outcome)?)))
+}
+
+/// Writes the sterile copy to `out`; returns the byte count or `-status`.
+pub fn sanitized_write(outcome: i64, out: &mut dyn Write) -> i64 {
+    count_or_status(host().and_then(|h| h.sanitized_write_to(handle(outcome)?, out)))
+}
+
+/// Releases a stored outcome.
+pub fn outcome_free(outcome: i64) {
+    if let (Ok(h), Ok(o)) = (host(), handle(outcome)) {
+        h.outcome_free(o);
+    }
+}
+
+/// The "About & Support" screen as JSON (`lang` 0 = Russian, otherwise English).
+#[must_use]
+pub fn about(lang: i32) -> Vec<u8> {
+    render::about_json(lang_from_code(u32::try_from(lang).unwrap_or(1)))
+}
+
+/// The Patron Passport as JSON for the stored 36-byte `record` and the day number `today`.
+#[must_use]
+pub fn passport(lang: i32, record: &[u8], today: i32) -> Vec<u8> {
+    render::passport_json(
+        lang_from_code(u32::try_from(lang).unwrap_or(1)),
+        record,
+        u32::try_from(today).unwrap_or(0),
+    )
+}
+
+/// The Patron Passport record after one more opened document.
+#[must_use]
+pub fn passport_update(record: &[u8], today: i32, trackers: i32, active: i32) -> Vec<u8> {
+    render::passport_update(
+        record,
+        u32::try_from(today).unwrap_or(0),
+        u32::try_from(trackers).unwrap_or(0),
+        u32::try_from(active).unwrap_or(0),
+    )
+}
+
+/// A licence text (see [`render::license_text`]).
+#[must_use]
+pub fn license_text(which: i32) -> Option<Vec<u8>> {
+    u32::try_from(which).ok().and_then(render::license_text).map(|t| t.as_bytes().to_vec())
+}
+
+/// Release readiness of this build (placeholder URLs etc.) as JSON.
+#[must_use]
+pub fn release_info() -> Vec<u8> {
+    render::release_blockers_json()
+}
+
+#[cfg(test)]
+mod tests;

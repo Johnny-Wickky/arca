@@ -1,0 +1,54 @@
+[package]
+name = "arca-jni"
+description = "JNI bridge: the Android app talks to arca-engine through this shared library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+# cdylib: libarca_jni.so loaded by the app (System.loadLibrary("arca_jni")).
+# rlib:   the safe API layer, tested natively without a JVM.
+[lib]
+name = "arca_jni"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arca-engine.workspace = true
+zeroize.workspace = true
+
+[build-dependencies]
+arca-digest.workspace = true
+
+# JNI exports need `#[unsafe(no_mangle)]` and raw-pointer handling, so this crate cannot
+# inherit `unsafe_code = "forbid"`. It uses `deny` and allows `unsafe` in exactly one file,
+# `src/ffi.rs`; `tools/check-unsafe.sh` enforces that (and that every other lint is the
+# workspace's).
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_must_use = "deny"
+unused_qualifications = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+mem_forget = "deny"
+exit = "deny"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+cast_lossless = "warn"
+string_slice = "warn"
+get_unwrap = "deny"

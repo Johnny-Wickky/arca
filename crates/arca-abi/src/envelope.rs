@@ -3,7 +3,7 @@
 //! ```text
 //! offset  size  field
 //! 0       4     magic  "ARCA"
-//! 4       2     ABI version (u16, = 1)
+//! 4       2     ABI version (u16, = [`ABI_VERSION`](crate::ABI_VERSION))
 //! 6       2     payload kind (u16, see PayloadKind)
 //! 8       4     payload length (u32)
 //! 12      n     payload (wire-encoded)
@@ -25,6 +25,8 @@ pub enum PayloadKind {
     XRayReport,
     /// A wire-encoded sterilised document.
     SanitizedDocument,
+    /// A wire-encoded read-only preview of the document content.
+    Preview,
     /// A wire-encoded error description (`String`).
     Error,
 }
@@ -34,6 +36,7 @@ impl PayloadKind {
         match self {
             Self::XRayReport => 1,
             Self::SanitizedDocument => 2,
+            Self::Preview => 3,
             Self::Error => 0xFFFF,
         }
     }
@@ -42,9 +45,19 @@ impl PayloadKind {
         match c {
             1 => Some(Self::XRayReport),
             2 => Some(Self::SanitizedDocument),
+            3 => Some(Self::Preview),
             0xFFFF => Some(Self::Error),
             _ => None,
         }
+    }
+}
+
+/// The ABI version as stored in the envelope header.
+const fn version_u16() -> u16 {
+    // `ABI_VERSION` is a small positive constant; the cast cannot truncate.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        crate::ABI_VERSION as u16
     }
 }
 
@@ -56,7 +69,7 @@ pub fn seal(kind: PayloadKind, payload: &[u8]) -> Result<Vec<u8>, WireError> {
     let len = u32::try_from(payload.len()).map_err(|_| WireError::EncodeOverflow)?;
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
     out.extend_from_slice(&MAGIC);
-    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&version_u16().to_le_bytes());
     out.extend_from_slice(&kind.code().to_le_bytes());
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(payload);
@@ -75,7 +88,7 @@ pub fn open(data: &[u8]) -> Result<(PayloadKind, &[u8]), WireError> {
     }
     let version =
         u16::from_le_bytes([rest.first().copied().unwrap_or(0), rest.get(1).copied().unwrap_or(0)]);
-    if version != 1 {
+    if version != version_u16() {
         return Err(WireError::InvalidTag(version));
     }
     let code =
