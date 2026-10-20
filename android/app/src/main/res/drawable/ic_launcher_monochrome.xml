@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root. -->
+<!-- Themed-icon (Android 13+) version: one colour, the page cut out of the shield. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,27 L77,36 V54 C77,68 67.5,77.5 54,83.5 C40.5,77.5 31,68 31,54 V36 Z M44,40 H55 L64,49 V68 H44 Z"
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd" />
+    <path
+        android:pathData="M48.5,57 H59.5 M48.5,62 H59.5"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round" />
+</vector>

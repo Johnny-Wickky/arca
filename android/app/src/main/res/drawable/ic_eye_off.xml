@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M2.5,12 C5,7.5 8.3,5.5 12,5.5 C15.7,5.5 19,7.5 21.5,12 C19,16.5 15.7,18.5 12,18.5 C8.3,18.5 5,16.5 2.5,12 Z"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M12,9.2 A2.8,2.8 0 1 0 12,14.8 A2.8,2.8 0 1 0 12,9.2 Z"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M4,20 L20,4"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

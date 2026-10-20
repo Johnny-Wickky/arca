@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     Название и пояснение каждой находки «Рентгена угроз» (ThreatKind в
+     crates/arca-xray/src/report.rs). -->
+<resources>
+    <!-- Активное содержимое -->
+    <string name="threat_vba_macros_title">Макросы VBA</string>
+    <string name="threat_vba_macros_text">Код на Visual Basic внутри документа. Выполняясь в Word, Excel или PowerPoint, он может скачивать и запускать программы, менять файлы и читать данные. Это самый частый способ атаки через документы.</string>
+    <string name="threat_macro_auto_exec_title">Макрос, запускающийся сам</string>
+    <string name="threat_macro_auto_exec_text">Макрос настроен на запуск в момент открытия или закрытия документа, без единого нажатия. С этого начинается большинство вредоносных макросов.</string>
+    <string name="threat_xlm_macro_sheet_title">Макролист Excel 4.0</string>
+    <string name="threat_xlm_macro_sheet_text">Старый формат макросов, где команды лежат в ячейках таблицы. Антивирусы часто его пропускают, а злоумышленники используют его для запуска программ.</string>
+    <string name="threat_xlm_auto_open_name_title">Макрос Excel 4.0, запускающийся при открытии</string>
+    <string name="threat_xlm_auto_open_name_text">Специальное имя (Auto_Open) заставляет макролист Excel 4.0 выполниться сразу при открытии книги.</string>
+    <string name="threat_star_basic_macros_title">Макросы LibreOffice Basic</string>
+    <string name="threat_star_basic_macros_text">Сценарии на языке Basic из LibreOffice и OpenOffice внутри документа. Они могут выполнять команды на компьютере.</string>
+    <string name="threat_embedded_script_title">Встроенный сценарий</string>
+    <string name="threat_embedded_script_text">Код на Python, JavaScript или BeanShell внутри документа, который офисная программа может выполнить.</string>
+    <string name="threat_dde_field_title">Поле DDE</string>
+    <string name="threat_dde_field_text">Поле, которое просит систему выполнить команду через динамический обмен данными. Запускает программы без всякого макроса и хорошо известно как приём атаки.</string>
+    <string name="threat_dde_formula_title">Формула DDE в ячейке</string>
+    <string name="threat_dde_formula_text">В ячейке таблицы лежит формула, вызывающая другую программу через DDE. При открытии книги она может запустить команду.</string>
+    <string name="threat_dangerous_formula_title">Опасная формула</string>
+    <string name="threat_dangerous_formula_text">Формула таблицы, которая вызывает внешние программы, читает файлы или получает данные из сети (CALL, EXEC, WEBSERVICE и подобные).</string>
+    <string name="threat_ole_object_title">Встроенный объект OLE</string>
+    <string name="threat_ole_object_text">Объект другой программы внутри документа. При активации запускается программа-владелец, а в таких программах много известных уязвимостей.</string>
+    <string name="threat_ole_package_title">Вложенный файл</string>
+    <string name="threat_ole_package_text">Файл внутри документа, который Office может извлечь и запустить по двойному щелчку на значке. Классический способ доставить программу.</string>
+    <string name="threat_exploitable_ole_class_title">Объект типа, применявшегося в атаках</string>
+    <string name="threat_exploitable_ole_class_text">Объект относится к компоненту, который использовали в настоящих атаках (например, «Редактор формул» или MSHTML). Открытие в Office могло бы выполнить код злоумышленника.</string>
+    <string name="threat_active_x_control_title">Элемент ActiveX</string>
+    <string name="threat_active_x_control_text">Элемент Windows, встроенный в документ. Элементы — это программы, и они могут всё, что может пользователь.</string>
+    <string name="threat_ribbon_callbacks_title">Своя панель инструментов с кодом</string>
+    <string name="threat_ribbon_callbacks_text">Документ меняет панель инструментов программы и привязывает код к её кнопкам.</string>
+    <string name="threat_program_action_title">Действие, запускающее программу</string>
+    <string name="threat_program_action_text">Кнопка или фигура в документе связана с запуском программы или макроса по щелчку или наведению.</string>
+    <string name="threat_macro_button_field_title">Поле MacroButton</string>
+    <string name="threat_macro_button_field_text">Поле Word, которое выполняет макрос по щелчку или при открытии документа.</string>
+    <string name="threat_pdf_java_script_title">JavaScript в PDF</string>
+    <string name="threat_pdf_java_script_text">Сценарий внутри PDF. Программы чтения, выполняющие сценарии PDF, можно атаковать через них; сценарии могут отправлять данные и открывать другие файлы.</string>
+    <string name="threat_pdf_launch_action_title">PDF запускает программу</string>
+    <string name="threat_pdf_launch_action_text">PDF просит программу чтения запустить программу или открыть файл на компьютере. Почти никогда не бывает добросовестным.</string>
+    <string name="threat_pdf_auto_action_title">Действие PDF при открытии</string>
+    <string name="threat_pdf_auto_action_text">В PDF есть действие, которое выполняется автоматически при открытии документа или страницы.</string>
+    <string name="threat_pdf_embedded_file_title">Файл внутри PDF</string>
+    <string name="threat_pdf_embedded_file_text">Внутри PDF приложен файл. Программа чтения может предложить его извлечь, а вложение может оказаться программой.</string>
+    <string name="threat_pdf_rich_media_title">Активные медиа в PDF</string>
+    <string name="threat_pdf_rich_media_text">В PDF есть Flash, 3D или другое насыщенное содержимое, которому нужен модуль с долгой историей уязвимостей.</string>
+    <string name="threat_rtf_embedded_object_title">Объект внутри RTF</string>
+    <string name="threat_rtf_embedded_object_text">В RTF хранится встроенный объект. Word запускает программу-владельца, а объекты RTF не раз использовались в атаках.</string>
+    <string name="threat_rtf_auto_update_object_title">Объект RTF, обновляющийся сам</string>
+    <string name="threat_rtf_auto_update_object_text">Объект RTF настроен на автоматическое обновление при открытии, так что его программа запускается без щелчка.</string>
+    <string name="threat_embedded_executable_title">Программа внутри документа</string>
+    <string name="threat_embedded_executable_text">Внутри документа лежит исполняемый файл (EXE, DLL, сценарий). У документа нет честной причины его содержать.</string>
+    <string name="threat_embedded_document_title">Документ внутри документа</string>
+    <string name="threat_embedded_document_text">Внутри хранится другой документ. У него могут быть свои макросы, поэтому он исследуется отдельно.</string>
+    <string name="threat_odf_event_script_title">Сценарий, привязанный к событию</string>
+    <string name="threat_odf_event_script_text">Файл OpenDocument привязывает сценарий к событию — например, к открытию документа или щелчку по элементу.</string>
+    <string name="threat_signed_macro_project_title">Макросы с цифровой подписью</string>
+    <string name="threat_signed_macro_project_text">У макросов есть подпись. Подпись говорит лишь о том, кто подписал, но не делает код безопасным, а украденные сертификаты применяются в атаках. Arca ей не доверяет.</string>
+    <string name="threat_html_active_content_title">Активное содержимое в HTML</string>
+    <string name="threat_html_active_content_text">В странице есть сценарии, фреймы или обработчики событий, которые выполнил бы браузер.</string>
+    <string name="threat_csv_formula_injection_title">Формула таблицы в текстовой таблице</string>
+    <string name="threat_csv_formula_injection_text">Ячейка начинается с =, +, - или @, поэтому программа электронных таблиц сочтёт её формулой и может выполнить команды. Arca показывает её простым текстом.</string>
+    <string name="threat_alt_chunk_import_title">Подтягиваемое внешнее содержимое</string>
+    <string name="threat_alt_chunk_import_text">Word получает указание при открытии подтянуть содержимое другого файла, а это может принести HTML или RTF со своими рисками.</string>
+
+    <!-- Внешнее содержимое -->
+    <string name="threat_remote_template_title">Шаблон из интернета</string>
+    <string name="threat_remote_template_text">Документ настроен скачивать шаблон с сервера при открытии. Так загружают вредоносные макросы или узнают, что документ открыли.</string>
+    <string name="threat_external_image_title">Рисунок из интернета</string>
+    <string name="threat_external_image_text">Рисунок запрашивается с сервера при открытии документа. Сервер узнаёт ваш адрес и время и понимает, что документ прочитали.</string>
+    <string name="threat_external_frame_title">Фрейм из интернета</string>
+    <string name="threat_external_frame_text">Фрейм показывает содержимое с удалённого адреса, которое может измениться в любой момент.</string>
+    <string name="threat_external_object_link_title">Объект, связанный с удалённым адресом</string>
+    <string name="threat_external_object_link_text">Объект связан с файлом или сервером и обновляется оттуда.</string>
+    <string name="threat_external_workbook_link_title">Ссылка на другую книгу</string>
+    <string name="threat_external_workbook_link_text">Книга берёт данные из другого файла или с сервера. Адрес может выдать вашу сеть или подгрузить неожиданные данные.</string>
+    <string name="threat_external_data_connection_title">Подключение к данным</string>
+    <string name="threat_external_data_connection_text">При обновлении книга подключается к базе данных или веб-службе. Она может не только получать данные, но и отправлять их.</string>
+    <string name="threat_remote_field_include_title">Поле с удалённым содержимым</string>
+    <string name="threat_remote_field_include_text">Поле (INCLUDETEXT, INCLUDEPICTURE, LINK) при обновлении документа получает содержимое с другого адреса.</string>
+    <string name="threat_unc_path_reference_title">Сетевой путь (UNC)</string>
+    <string name="threat_unc_path_reference_text">Документ ссылается на сетевой путь Windows (он начинается с двух обратных косых черт). При открытии Windows пытается войти на тот сервер, и это может выдать хеш пароля.</string>
+    <string name="threat_dangerous_protocol_uri_title">Ссылка с опасным протоколом</string>
+    <string name="threat_dangerous_protocol_uri_text">Ссылка использует протокол, который запускает программы или сценарии (например, ms-msdt, file, javascript, vbscript).</string>
+    <string name="threat_external_hyperlink_title">Ссылка в интернет</string>
+    <string name="threat_external_hyperlink_text">В документе есть ссылка на веб-адрес. Arca по ней никогда не переходит.</string>
+    <string name="threat_xml_stylesheet_reference_title">Внешняя таблица стилей</string>
+    <string name="threat_xml_stylesheet_reference_text">XML ссылается на внешнюю таблицу стилей, которая может преобразовывать содержимое или получать данные.</string>
+    <string name="threat_mail_merge_data_source_title">Источник данных слияния</string>
+    <string name="threat_mail_merge_data_source_text">Документ связан с файлом данных или базой для слияния, из-за чего Word открывает это подключение.</string>
+    <string name="threat_pdf_remote_action_title">PDF обращается к удалённому адресу</string>
+    <string name="threat_pdf_remote_action_text">PDF настроен открывать веб-адрес или отправлять форму на сервер.</string>
+    <string name="threat_external_resource_title">Внешний ресурс</string>
+    <string name="threat_external_resource_text">Документ ссылается на что-то за своими пределами, что загружается при открытии.</string>
+    <string name="threat_hyperlink_base_title">Базовый адрес для ссылок</string>
+    <string name="threat_hyperlink_base_text">Документ задаёт базовый адрес, который меняет, куда ведут его относительные ссылки.</string>
+
+    <!-- Скрытое -->
+    <string name="threat_hidden_sheet_title">Скрытый лист</string>
+    <string name="threat_hidden_sheet_text">Лист, которого не видно среди вкладок книги. В нём могут быть данные, формулы или макросы.</string>
+    <string name="threat_very_hidden_sheet_title">Очень скрытый лист</string>
+    <string name="threat_very_hidden_sheet_text">Лист, который нельзя показать обычным меню; его раскрывает только макрос или редактор. Почти всегда у такого сокрытия есть причина.</string>
+    <string name="threat_hidden_rows_or_columns_title">Скрытые строки или столбцы</string>
+    <string name="threat_hidden_rows_or_columns_text">Строки или столбцы есть, но не отображаются.</string>
+    <string name="threat_hidden_text_title">Скрытый текст</string>
+    <string name="threat_hidden_text_text">Текст помечен как скрытый: он не виден и не печатается, но остаётся в файле.</string>
+    <string name="threat_invisible_text_title">Невидимый текст</string>
+    <string name="threat_invisible_text_text">Текст сделан невидимым крошечным размером или цветом, совпадающим с фоном.</string>
+    <string name="threat_hidden_slide_title">Скрытый слайд</string>
+    <string name="threat_hidden_slide_text">Слайд, который пропускается при показе, но остаётся в файле.</string>
+    <string name="threat_orphaned_ole_entries_title">Остаточные данные в файле</string>
+    <string name="threat_orphaned_ole_entries_text">В файле старого формата остались части, на которые ничто не ссылается. Это могут быть остатки прежнего содержимого или спрятанная нагрузка.</string>
+    <string name="threat_unreferenced_archive_data_title">Неиспользуемые файлы в контейнере</string>
+    <string name="threat_unreferenced_archive_data_text">В контейнере лежат файлы, которые ничто в документе не использует; так можно спрятать данные.</string>
+    <string name="threat_polyglot_file_title">Файл сразу двух форматов</string>
+    <string name="threat_polyglot_file_text">Файл читается как два разных формата — приём, чтобы пройти проверки.</string>
+    <string name="threat_trailing_data_title">Данные после конца файла</string>
+    <string name="threat_trailing_data_text">За настоящим концом файла идут лишние байты. Программы их игнорируют, а злоумышленники прячут там нагрузку.</string>
+    <string name="threat_document_variables_title">Переменные документа</string>
+    <string name="threat_document_variables_text">Word хранит в файле именованные значения. Макросы могут их читать, поэтому в них прячут код или настройки.</string>
+    <string name="threat_custom_xml_data_title">Пользовательские данные XML</string>
+    <string name="threat_custom_xml_data_text">Другие программы прикрепили к документу скрытые блоки данных.</string>
+    <string name="threat_stale_thumbnail_title">Миниатюра документа</string>
+    <string name="threat_stale_thumbnail_text">Сохранённая миниатюра может показывать прежнюю версию содержимого, в том числе текст, удалённый позже.</string>
+    <string name="threat_bidi_override_title">Приём с направлением текста</string>
+    <string name="threat_bidi_override_text">Невидимые символы переворачивают порядок текста — например, чтобы имя файла выглядело как заканчивающееся на .txt, хотя оно оканчивается на .exe.</string>
+    <string name="threat_obfuscated_name_title">Замаскированное имя</string>
+    <string name="threat_obfuscated_name_text">Имя в документе записано случайными символами или приёмами, скрывающими, чем оно является.</string>
+
+    <!-- Личные данные -->
+    <string name="threat_author_metadata_title">Сведения об авторе</string>
+    <string name="threat_author_metadata_text">В файле остались имена тех, кто его создал или менял.</string>
+    <string name="threat_local_path_leak_title">Путь на компьютере автора</string>
+    <string name="threat_local_path_leak_text">В файле сохранён путь к папке на компьютере автора; в нём часто есть имя пользователя.</string>
+    <string name="threat_printer_metadata_title">Сведения о принтере</string>
+    <string name="threat_printer_metadata_text">Файл хранит название использованного принтера. Оно может выдать офис или сеть.</string>
+    <string name="threat_tracked_changes_title">Исправления</string>
+    <string name="threat_tracked_changes_text">Файл хранит историю правок, включая удалённый текст и имена тех, кто вносил изменения.</string>
+    <string name="threat_comments_title">Комментарии</string>
+    <string name="threat_comments_text">В файле сохранены заметки рецензентов.</string>
+    <string name="threat_personal_identifier_title">Идентификатор человека или устройства</string>
+    <string name="threat_personal_identifier_text">В файле есть идентификаторы (GUID, имена компьютеров или учётных записей), по которым его можно связать с автором.</string>
+    <string name="threat_editing_session_ids_title">Идентификаторы сеансов правки</string>
+    <string name="threat_editing_session_ids_text">Скрытые номера сеансов правки Word могут показать, как и когда правили файл, и связать файлы между собой.</string>
+    <string name="threat_custom_properties_title">Пользовательские свойства</string>
+    <string name="threat_custom_properties_text">Дополнительные свойства, добавленные автором или программой, иногда с внутренними именами или метками конфиденциальности.</string>
+
+    <!-- Устройство файла -->
+    <string name="threat_malformed_container_title">Повреждённый контейнер</string>
+    <string name="threat_malformed_container_text">Внутреннее устройство файла нарушено или противоречит себе. Разные программы могут понимать его по-разному, чем пользуются злоумышленники.</string>
+    <string name="threat_unusual_compression_title">Необычное сжатие</string>
+    <string name="threat_unusual_compression_text">В архиве применён вид сжатия, который не создают честные программы.</string>
+    <string name="threat_macro_enabled_content_type_title">Тип файла допускает макросы</string>
+    <string name="threat_macro_enabled_content_type_text">Файл относится к типу, предназначенному для макросов (например, DOCM или XLSM).</string>
+    <string name="threat_content_type_mismatch_title">Макросы не соответствуют типу файла</string>
+    <string name="threat_content_type_mismatch_text">Файл заявляет, что макросов нет, но содержит проект макросов — или наоборот. Неверно помеченные файлы используют, чтобы обойти фильтры.</string>
+    <string name="threat_disguised_executable_title">Программа под видом документа</string>
+    <string name="threat_disguised_executable_text">Файл — программа, но имя или значок у него как у документа.</string>
+    <string name="threat_unsupported_format_title">Неподдерживаемый формат</string>
+    <string name="threat_unsupported_format_text">Arca не смогла распознать формат, поэтому не может поручиться за файл.</string>
+    <string name="threat_scan_limit_reached_title">Достигнут предел проверки</string>
+    <string name="threat_scan_limit_reached_text">Файл так велик или так глубоко вложен, что проверка остановилась на предохранительном пределе. Остальное не исследовано.</string>
+    <string name="threat_embedded_font_title">Встроенный шрифт</string>
+    <string name="threat_embedded_font_text">В файле хранится шрифт. Шрифты читает сложный код, который уже не раз атаковали.</string>
+    <string name="threat_compression_bomb_title">«Бомба» распаковки</string>
+    <string name="threat_compression_bomb_text">Маленький файл, раздувающийся до огромного размера, чтобы исчерпать память. Его остановили.</string>
+    <string name="threat_path_traversal_title">Выход за пределы папки в архиве</string>
+    <string name="threat_path_traversal_text">У файла в архиве имя вроде ../, чтобы при распаковке выбраться из своей папки и перезаписать чужие файлы.</string>
+    <string name="threat_parser_differential_title">Противоречивое устройство архива</string>
+    <string name="threat_parser_differential_text">Внутренние таблицы файла противоречат друг другу (повторяющиеся имена, пересекающиеся записи, несовпадающие заголовки), поэтому разные программы прочли бы разное. Так обходят сканеры.</string>
+    <string name="threat_xml_entity_attack_title">Атака через сущности XML</string>
+    <string name="threat_xml_entity_attack_text">XML построен так, что при чтении он раздувается до огромного объёма данных или подтягивает локальный либо удалённый файл.</string>
+
+    <!-- Шифрование -->
+    <string name="threat_encrypted_document_title">Зашифрованный документ</string>
+    <string name="threat_encrypted_document_text">Содержимое зашифровано, поэтому его нельзя исследовать. Зашифрованные вложения часто используют, чтобы обойти сканеры.</string>
+    <string name="threat_encrypted_member_title">Зашифрованная часть</string>
+    <string name="threat_encrypted_member_text">Часть внутри файла зашифрована, и её не удалось исследовать.</string>
+</resources>

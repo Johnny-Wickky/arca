@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+package org.arca.viewer.ui;
+
+import android.content.Context;
+
+import org.arca.viewer.R;
+import org.arca.viewer.core.Fmt;
+import org.arca.viewer.core.Names;
+
+/**
+ * Localised names for the engine's identifiers. Each identifier maps to a string resource named
+ * {@code prefix_snake_case_id}; an identifier from a newer engine that the app has no text for
+ * is shown as it is (escaped), never hidden. {@code tools/android/check_resources.py} checks
+ * that every identifier the engine can produce has a text in every language.
+ */
+public final class Labels {
+    private Labels() {}
+
+    /** The string resource called {@code name}, or {@code fallback}. */
+    private static String byName(Context c, String name, String fallback) {
+        int res = c.getResources().getIdentifier(name, "string", c.getPackageName());
+        return res != 0 ? c.getString(res) : fallback;
+    }
+
+    /** The string named {@code prefix + snake(id)}, or {@code fallback}. */
+    public static String of(Context c, String prefix, String id, String fallback) {
+        return byName(c, prefix + Names.snake(id), fallback);
+    }
+
+    private static String of(Context c, String prefix, String id) {
+        return of(c, prefix, id, Fmt.safe(id));
+    }
+
+    public static String threatTitle(Context c, String kind) {
+        return byName(c, Names.threatTitle(kind), Fmt.safe(kind));
+    }
+
+    public static String threatText(Context c, String kind) {
+        return byName(c, Names.threatText(kind), c.getString(R.string.threat_unknown_text));
+    }
+
+    public static String format(Context c, String format) {
+        return of(c, "format_", format);
+    }
+
+    public static String category(Context c, String cat) {
+        return of(c, "cat_", cat);
+    }
+
+    public static String severity(Context c, String sev) {
+        return of(c, "sev_", sev);
+    }
+
+    public static String metaKey(Context c, String key) {
+        return of(c, "meta_", key);
+    }
+
+    public static String refKind(Context c, String kind) {
+        return of(c, "ref_kind_", kind);
+    }
+
+    public static String refClass(Context c, String cls) {
+        return of(c, "ref_class_", cls);
+    }
+
+    public static String embeddedKind(Context c, String kind) {
+        return of(c, "emb_kind_", kind);
+    }
+
+    public static String macroLang(Context c, String lang) {
+        return of(c, "macro_lang_", lang);
+    }
+
+    public static String sanitizeAction(Context c, String kind) {
+        return of(c, "action_", kind);
+    }
+
+    public static String notice(Context c, String kind) {
+        return of(c, "notice_", kind, c.getString(R.string.notice_unknown));
+    }
+
+    /** Colour resource for a severity name. */
+    public static int severityColor(String sev) {
+        switch (sev) {
+            case "Critical": return R.color.arca_sev_critical;
+            case "High": return R.color.arca_sev_high;
+            case "Medium": return R.color.arca_sev_medium;
+            case "Low": return R.color.arca_sev_low;
+            default: return R.color.arca_sev_info;
+        }
+    }
+}

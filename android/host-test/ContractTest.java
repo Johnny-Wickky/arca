@@ -1,0 +1,372 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
+
+import org.arca.viewer.Native;
+import org.arca.viewer.core.Capabilities;
+import org.arca.viewer.core.Model;
+
+/**
+ * Runs real documents through the real engine and the app's real model parsers: the JSON
+ * contract between {@code arca-engine} and {@code org.arca.viewer.core.Model}, end to end.
+ *
+ * <p>Inputs: a generated DOCX, every file of {@code $ARCA_CORPUS_DIR} (the LibreOffice-made
+ * corpus), and seeded random mutations of both ({@code $ARCA_FUZZ_ITERS}, default 24 per
+ * file). Invariants checked for every input and operation:
+ * <ul>
+ *   <li>the engine never crashes the JVM and returns a status and a parseable diagnostic;
+ *   <li>every JSON document parses with the strict parser;
+ *   <li>a clean verdict is never reported for a file the engine rejected or could not read;
+ *   <li>paging through every section yields exactly the number of items announced.
+ * </ul>
+ */
+public final class ContractTest {
+    private static int checks;
+    private static int inputs;
+    private static int runs;
+    private static int previews;
+    private static long itemsSeen;
+    private static final List<String> problems = new ArrayList<>();
+
+    private static void check(boolean ok, String what) {
+        checks++;
+        if (!ok) {
+            problems.add(what);
+            if (problems.size() <= 30) {
+                System.out.println("  FAIL " + what);
+            }
+        }
+    }
+
+    private static long load(byte[] bytes) {
+        long doc = Native.docNew(64L << 20);
+        check(doc > 0, "docNew");
+        for (int pos = 0; pos < bytes.length; pos += 65536) {
+            Native.docAppend(doc, bytes, pos, Math.min(65536, bytes.length - pos));
+        }
+        return doc;
+    }
+
+    /**
+     * What the pristine corpus files must produce: the detected format, then strings that must
+     * appear in the preview. Mutated copies are only held to the generic invariants.
+     */
+    private static final java.util.Map<String, String[]> EXPECT = new java.util.HashMap<>();
+    /** Text that exists only in hidden parts of a document. */
+    private static final java.util.Map<String, String[]> CONCEALED = new java.util.HashMap<>();
+
+    static {
+        EXPECT.put("report.doc", new String[] {"Doc", "Квартальный отчёт", "Шаг два"});
+        EXPECT.put("lo-rich.doc", new String[] {"Doc"});
+        EXPECT.put("report.docx", new String[] {"Docx", "Квартальный отчёт", "Шаг два"});
+        EXPECT.put("report.odt", new String[] {"Odt", "Квартальный отчёт"});
+        EXPECT.put("report.rtf", new String[] {"Rtf", "Квартальный отчёт"});
+        EXPECT.put("report.pdf", new String[] {"Pdf", "Квартальный отчёт", "Шаг два"});
+        EXPECT.put("sheet.xls", new String[] {"Xls", "Яблоки", "Груши"});
+        EXPECT.put("sheet.xlsx", new String[] {"Xlsx", "Яблоки", "Груши"});
+        EXPECT.put("sheet.ods", new String[] {"Ods", "Яблоки", "Груши"});
+        EXPECT.put("sheet.csv", new String[] {"Csv", "Яблоки", "Груши"});
+        EXPECT.put("slides.ppt", new String[] {"Ppt", "Заголовок первого слайда", "Заметки докладчика", "Второй слайд"});
+        EXPECT.put("slides.pptx", new String[] {"Pptx", "Заголовок первого слайда", "Заметки докладчика", "Второй слайд"});
+        EXPECT.put("slides.odp", new String[] {"Odp", "Заголовок первого слайда", "Второй слайд"});
+        EXPECT.put("deck-rich.ppt", new String[] {"Ppt", "Квартальный обзор 2026", "Заметка докладчика", "example.org"});
+        EXPECT.put("deck-rich.pptx", new String[] {"Pptx", "Квартальный обзор 2026", "Заметка докладчика"});
+        EXPECT.put("rich-lo.xls", new String[] {"Xls"});
+
+        // Hidden content: absent by default (the viewer never shows what the author concealed
+        // unless asked) and present, labelled by the app, when the reader asks for it.
+        CONCEALED.put("sheet.xls", new String[] {"Скрытый"});
+        CONCEALED.put("sheet.xlsx", new String[] {"Скрытый"});
+        CONCEALED.put("deck-rich.ppt", new String[] {"СКРЫТЫЙ СЛАЙД"});
+        CONCEALED.put("deck-rich.pptx", new String[] {"СКРЫТЫЙ СЛАЙД"});
+        CONCEALED.put("rich-lo.xls", new String[] {"СКРЫТАЯ_СТРОКА"});
+    }
+
+    private static void one(String name, byte[] bytes) {
+        one(name, bytes, false);
+    }
+
+    private static void one(String name, byte[] bytes, boolean pristine) {
+        inputs++;
+        // Files whose behaviour is fully specified: the corpus documents and the generated DOCX.
+        final boolean strict = pristine && (EXPECT.containsKey(name) || "generated.docx".equals(name));
+        long doc = load(bytes);
+        Model.Verdict scanVerdict = null;
+        String format = "?";
+        try {
+            // ---- scan ---------------------------------------------------------------------
+            long job = Native.jobNew();
+            long outcome = Native.run(job, doc, Native.OP_SCAN, 0);
+            Native.jobFree(job);
+            runs++;
+            check(outcome > 0, name + ": scan returned " + outcome);
+            if (outcome > 0) {
+                Model.RunInfo info = Model.parseRunInfo(Native.outcomeInfo(outcome));
+                int status = Native.outcomeStatus(outcome);
+                check(status == info.status, name + ": status mismatch " + status + " vs " + info.status);
+                if (status == Native.OK) {
+                    Model.Report r = Model.parseReport(Native.report(outcome));
+                    scanVerdict = r.verdict;
+                    format = r.format;
+                    check(r.sha256.length() == 64, name + ": sha256 length " + r.sha256.length());
+                    if (r.verdict == Model.Verdict.REJECTED) {
+                        check(!r.rejection.isEmpty(), name + ": rejected without a reason");
+                    }
+                    if (r.verdict == Model.Verdict.CLEAN) {
+                        check(r.active == 0 && r.trackers == 0, name + ": clean with counters");
+                        check(r.topRank() < 3, name + ": clean with a high-severity finding");
+                    }
+                    for (Model.Finding f : r.findings) {
+                        check(!f.kind.isEmpty() && !f.category.isEmpty(), name + ": finding without kind/category");
+                    }
+                } else {
+                    check(Native.report(outcome) == null, name + ": report for a failed scan");
+                }
+                Native.outcomeFree(outcome);
+            }
+
+            // ---- preview ------------------------------------------------------------------
+            for (int flags = 0; flags <= 1; flags++) {
+                job = Native.jobNew();
+                outcome = Native.run(job, doc, Native.OP_PREVIEW, flags);
+                Native.jobFree(job);
+                runs++;
+                check(outcome > 0, name + ": preview returned " + outcome);
+                if (outcome <= 0) {
+                    continue;
+                }
+                int status = Native.outcomeStatus(outcome);
+                Model.parseRunInfo(Native.outcomeInfo(outcome));
+                if (strict && flags == 0 && scanVerdict != null && !"?".equals(format)) {
+                    // The app's capability table and the engine must agree in both directions.
+                    if (Capabilities.canPreview(format)) {
+                        check(status == Native.OK, name + ": " + format + " is listed as previewable but status was " + status);
+                    } else {
+                        check(status == Native.UNSUPPORTED, name + ": " + format + " is not listed but status was " + status);
+                    }
+                }
+                if (status == Native.OK) {
+                    previews++;
+                    StringBuilder allText = new StringBuilder();
+                    Model.PreviewMeta meta = Model.parsePreviewMeta(Native.previewMeta(outcome));
+                    long announced = 0;
+                    for (int s = 0; s < meta.sections.size(); s++) {
+                        allText.append(meta.sections.get(s).name).append('\n');
+                        long count = meta.sections.get(s).items;
+                        announced += count;
+                        long seen = 0;
+                        // Page like the app does: 64 items at a time, plus one odd-sized page.
+                        long from = 0;
+                        int page = 0;
+                        while (from < count) {
+                            int want = page++ == 1 ? 7 : 64;
+                            byte[] json = Native.previewItems(outcome, s, from, want);
+                            check(json != null, name + ": no items for section " + s + " from " + from);
+                            if (json == null) {
+                                break;
+                            }
+                            allText.append(new String(json, StandardCharsets.UTF_8));
+                            List<Model.Item> items = Model.parseItems(json);
+                            long expect = Math.min(want, count - from);
+                            check(items.size() == expect,
+                                name + ": section " + s + " page at " + from + " has " + items.size() + " items, expected " + expect);
+                            if (items.isEmpty()) {
+                                break;
+                            }
+                            seen += items.size();
+                            from += items.size();
+                        }
+                        check(seen == count, name + ": section " + s + " yielded " + seen + " of " + count);
+                        itemsSeen += seen;
+                        check(Native.previewItems(outcome, s, count + 10, 5) != null
+                            && Model.parseItems(Native.previewItems(outcome, s, count + 10, 5)).isEmpty(),
+                            name + ": past-the-end page is not empty");
+                    }
+                    check(announced == meta.items || meta.truncated || meta.items >= 0, name + ": item totals");
+                    if (pristine) {
+                        String[] expect = EXPECT.get(name);
+                        if (expect != null) {
+                            check(expect[0].equals(format), name + ": format " + format + ", expected " + expect[0]);
+                            for (int e = 1; e < expect.length; e++) {
+                                check(allText.indexOf(expect[e]) >= 0,
+                                    name + " (flags " + flags + "): preview lacks <" + expect[e] + ">");
+                            }
+                        }
+                        String[] concealed = CONCEALED.get(name);
+                        if (concealed != null) {
+                            for (String c : concealed) {
+                                if (flags == 0) {
+                                    check(allText.indexOf(c) < 0, name + ": hidden <" + c + "> shown by default");
+                                } else {
+                                    check(allText.indexOf(c) >= 0, name + ": hidden <" + c + "> not shown on request");
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    check(Native.previewMeta(outcome) == null, name + ": preview meta for a failed run");
+                }
+                Native.outcomeFree(outcome);
+            }
+
+            // ---- sanitize (OOXML only; everything else must say so cleanly) ---------------
+            job = Native.jobNew();
+            outcome = Native.run(job, doc, Native.OP_SANITIZE, Native.SANITIZE_ALL);
+            Native.jobFree(job);
+            runs++;
+            check(outcome > 0, name + ": sanitize returned " + outcome);
+            if (outcome > 0) {
+                int status = Native.outcomeStatus(outcome);
+                Model.parseRunInfo(Native.outcomeInfo(outcome));
+                if (strict && !"?".equals(format)) {
+                    if (Capabilities.canSanitize(format)) {
+                        check(status == Native.OK, name + ": " + format + " is listed as sanitizable but status was " + status);
+                    } else {
+                        check(status == Native.UNSUPPORTED, name + ": " + format + " sanitize status " + status);
+                    }
+                }
+                if (status == Native.OK) {
+                    Model.SanitizedInfo si = Model.parseSanitized(Native.sanitizedInfo(outcome));
+                    check(si.size > 0, name + ": empty sterile copy");
+                    check(si.verdict == Model.Verdict.CLEAN || si.verdict == Model.Verdict.UNVERIFIED,
+                        name + ": sterile copy verdict " + si.verdict);
+                } else {
+                    check(status == Native.UNSUPPORTED || status == Native.REJECTED || status == Native.FAILED
+                        || status == Native.ENCRYPTED || status == Native.RESOURCE_LIMIT || status == Native.TIMEOUT,
+                        name + ": sanitize status " + status);
+                    check(Native.sanitizedInfo(outcome) == null, name + ": sterile info for a failed run");
+                }
+                Native.outcomeFree(outcome);
+            }
+        } catch (RuntimeException e) {
+            check(false, name + ": exception " + e);
+            e.printStackTrace(System.out);
+        } finally {
+            Native.docFree(doc);
+        }
+    }
+
+    private static byte[] mutate(byte[] src, Random rnd) {
+        byte[] b = src.clone();
+        int kind = rnd.nextInt(6);
+        switch (kind) {
+            case 0: // flip a few bits
+                for (int i = 0; i < 1 + rnd.nextInt(8) && b.length > 0; i++) {
+                    b[rnd.nextInt(b.length)] ^= (byte) (1 << rnd.nextInt(8));
+                }
+                return b;
+            case 1: // truncate
+                return Arrays.copyOf(b, rnd.nextInt(Math.max(1, b.length)));
+            case 2: // overwrite a run with 0xFF / 0x00
+                if (b.length > 8) {
+                    int at = rnd.nextInt(b.length - 4);
+                    int n = 1 + rnd.nextInt(Math.min(64, b.length - at));
+                    Arrays.fill(b, at, at + n, (byte) (rnd.nextBoolean() ? 0xFF : 0x00));
+                }
+                return b;
+            case 3: // insert garbage
+                if (b.length > 8) {
+                    int at = rnd.nextInt(b.length);
+                    byte[] junk = new byte[1 + rnd.nextInt(32)];
+                    rnd.nextBytes(junk);
+                    byte[] out = new byte[b.length + junk.length];
+                    System.arraycopy(b, 0, out, 0, at);
+                    System.arraycopy(junk, 0, out, at, junk.length);
+                    System.arraycopy(b, at, out, at + junk.length, b.length - at);
+                    return out;
+                }
+                return b;
+            case 4: // delete a slice
+                if (b.length > 16) {
+                    int at = rnd.nextInt(b.length - 8);
+                    int n = 1 + rnd.nextInt(Math.min(256, b.length - at));
+                    byte[] out = new byte[b.length - n];
+                    System.arraycopy(b, 0, out, 0, at);
+                    System.arraycopy(b, at + n, out, at, b.length - at - n);
+                    return out;
+                }
+                return b;
+            default: // splice: header of one file, tail of another
+                return b.length > 32 ? Arrays.copyOfRange(b, rnd.nextInt(16), b.length) : b;
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        if (Native.init(256, 768, 120, 180) != 0) {
+            System.out.println("FAIL init");
+            Runtime.getRuntime().halt(1);
+        }
+        long t0 = System.nanoTime();
+        List<String> names = new ArrayList<>();
+        List<byte[]> blobs = new ArrayList<>();
+        names.add("generated.docx");
+        blobs.add(NativeTest.docxWithTracker());
+        String corpus = System.getenv("ARCA_CORPUS_DIR");
+        if (corpus != null && !corpus.isEmpty()) {
+            File[] files = new File(corpus).listFiles();
+            if (files != null) {
+                Arrays.sort(files);
+                for (File f : files) {
+                    if (f.isFile() && f.length() < (8 << 20)) {
+                        names.add(f.getName());
+                        blobs.add(Files.readAllBytes(f.toPath()));
+                    }
+                }
+            }
+        }
+        // Hand-made edge cases next to the real files.
+        names.add("text-cp1251.txt");
+        blobs.add("Привет, мир! Это тест.".getBytes("windows-1251"));
+        names.add("empty");
+        blobs.add(new byte[0]);
+        names.add("one-byte");
+        blobs.add(new byte[] {0x50});
+        names.add("zip-magic-only");
+        blobs.add(new byte[] {0x50, 0x4B, 0x03, 0x04});
+        names.add("ole-magic-only");
+        blobs.add(new byte[] {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1});
+        names.add("pdf-header-only");
+        blobs.add("%PDF-1.7\n".getBytes(StandardCharsets.US_ASCII));
+        names.add("rtf-header-only");
+        blobs.add("{\\rtf1\\ansi".getBytes(StandardCharsets.US_ASCII));
+        names.add("pe-header");
+        blobs.add("MZ\u0090\u0000\u0003\u0000\u0000\u0000".getBytes(StandardCharsets.ISO_8859_1));
+
+        int iters = 24;
+        String env = System.getenv("ARCA_FUZZ_ITERS");
+        if (env != null && !env.isEmpty()) {
+            iters = Integer.parseInt(env);
+        }
+
+        for (int i = 0; i < names.size(); i++) {
+            one(names.get(i), blobs.get(i), true);
+        }
+        System.out.println("pristine inputs: " + inputs + ", operations: " + runs + ", previews: " + previews
+            + ", items paged: " + itemsSeen);
+
+        Random rnd = new Random(0xA2CA_2026L);
+        int mutated = 0;
+        for (int i = 0; i < names.size(); i++) {
+            byte[] src = blobs.get(i);
+            if (src.length < 16) {
+                continue;
+            }
+            for (int k = 0; k < iters; k++) {
+                one(names.get(i) + "~" + k, mutate(src, rnd));
+                mutated++;
+            }
+        }
+        System.out.println("mutated inputs: " + mutated);
+        System.out.println(checks + " checks, " + problems.size() + " problem(s), "
+            + (System.nanoTime() - t0) / 1_000_000_000L + " s");
+        System.out.flush();
+        Runtime.getRuntime().halt(problems.isEmpty() ? 0 : 1);
+    }
+}

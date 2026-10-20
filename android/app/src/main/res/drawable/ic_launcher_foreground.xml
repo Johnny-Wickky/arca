@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root. -->
+<!-- The mark: a shield with a document page inside. Everything stays within the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,27 L77,36 V54 C77,68 67.5,77.5 54,83.5 C40.5,77.5 31,68 31,54 V36 Z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M44,40 H55 L64,49 V68 H44 Z"
+        android:fillColor="#FF0B6B63" />
+    <path
+        android:pathData="M55,40 V49 H64 Z"
+        android:fillColor="#FF7FD6CC" />
+    <path
+        android:pathData="M48.5,57 H59.5 M48.5,62 H59.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round" />
+</vector>

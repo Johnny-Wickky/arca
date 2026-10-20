@@ -1,0 +1,261 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     Русский перевод. Имена и плейсхолдеры должны совпадать с values/strings.xml
+     (tools/android/check_resources.py проверяет это). Количества записаны как «Подпись: N»,
+     чтобы не склонять слова по числу. -->
+<resources>
+    <!-- Общее -->
+    <string name="back">Назад</string>
+    <string name="back_home">На главный экран</string>
+    <string name="cancel">Отмена</string>
+    <string name="close">Закрыть</string>
+    <string name="copy">Копировать</string>
+    <string name="copied">Скопировано</string>
+    <string name="retry">Повторить</string>
+    <string name="settings">Настройки</string>
+    <string name="open_in_browser">Открыть в браузере</string>
+    <string name="no_browser">На устройстве нет браузера, чтобы открыть этот адрес.</string>
+    <string name="no_file_picker">На устройстве нет окна выбора файлов. Откройте документ из файлового менеджера или отправьте его в Arca через «Поделиться».</string>
+    <string name="share_without_file">Проверять нечего: другое приложение не передало файл.</string>
+    <string name="unsupported_source">Arca открывает только файлы, которые передаёт система (адреса content и file).</string>
+    <string name="technical_label">Технические подробности</string>
+
+    <!-- Главный экран -->
+    <string name="home_tagline">Безопасно открывайте заражённые документы</string>
+    <string name="home_blurb">Выберите документ. Arca проверит его в изолированной песочнице, у которой нет доступа к вашим файлам, сети и другим приложениям, покажет, что в нём спрятано, и выведет безопасный просмотр обычным текстом. Ничто из документа не запускается.</string>
+    <string name="home_open">Открыть документ</string>
+    <string name="home_drop_hint">Файл можно также перетащить в это окно или отправить в Arca из другого приложения.</string>
+    <string name="home_engine_ready">Песочница готова</string>
+    <string name="home_engine_failed">Песочница не запустилась</string>
+    <string name="home_engine_starting">Запускаем песочницу…</string>
+    <string name="home_engine_detail">Движок %1$s · модуль %2$s</string>
+    <string name="home_no_network">У приложения нет разрешения на сеть. Документы не покидают устройство.</string>
+    <string name="passport_fallback_title">Паспорт мецената</string>
+    <string name="passport_fallback_body">Arca — свободное ПО, его делают люди, которые просят в ответ только поддержки. Узнайте, кто они и как помочь.</string>
+    <string name="stat_documents">Проверено документов</string>
+    <string name="stat_trackers">Скрытые трекеры</string>
+    <string name="stat_active">Активные угрозы</string>
+    <string name="stat_findings">Находки</string>
+    <string name="licenses_title">Лицензии</string>
+    <string name="diagnostics_title">Диагностика</string>
+    <string name="about_title">О программе и поддержка</string>
+
+    <!-- Ход проверки -->
+    <string name="scan_title">Проверка</string>
+    <string name="scan_reading">Читаем файл…</string>
+    <string name="scan_inspecting">Исследуем в песочнице…</string>
+    <string name="scan_note">Документ читается только как данные в изолированной песочнице. Ничто в нём не открывается, не запускается и не подгружается из сети.</string>
+
+    <!-- Ошибки -->
+    <string name="err_too_large_title">Файл слишком большой</string>
+    <string name="err_too_large_text">Файл больше предела, который защищает песочницу на этом устройстве.</string>
+    <string name="err_too_large_limit">Предел на этом устройстве: %1$d МиБ.</string>
+    <string name="err_timeout_title">Слишком долго</string>
+    <string name="err_timeout_text">Проверка этого файла превысила лимит времени. Файл, нарочно построенный так, чтобы тратить время, уже признак атаки. Проверку остановили, ничего не открывалось.</string>
+    <string name="err_rejected_title">Файл отклонён</string>
+    <string name="err_rejected_text">Файл повреждён или устроен так, как не делает ни одна честная программа. Его отвергли до того, как что-либо в нём было истолковано.</string>
+    <string name="err_unsupported_title">Не поддерживаемый документ</string>
+    <string name="err_unsupported_text">Arca не умеет читать такой тип файлов и ничего из него не показывает. Файл не открывался и не запускался.</string>
+    <string name="err_encrypted_title">Документ зашифрован</string>
+    <string name="err_encrypted_text">Содержимое защищено паролем, поэтому проверить его нельзя. Arca никогда не спрашивает пароли и не пытается их подобрать.</string>
+    <string name="err_resource_title">Достигнут предел ресурсов</string>
+    <string name="err_resource_text">Файл попытался занять больше памяти или времени, чем разрешает песочница (например, «бомба» распаковки). Его безопасно остановили.</string>
+    <string name="err_io_title">Не удалось прочитать или записать файл</string>
+    <string name="err_io_text">Система отказала в доступе или хранилище недоступно. Попробуйте ещё раз или выберите файл другим способом.</string>
+    <string name="err_open_title">Не удалось открыть файл</string>
+    <string name="err_open_text">Приложение, предоставившее файл, не дало Arca прочитать его. Выберите файл заново кнопкой «Открыть».</string>
+    <string name="err_empty_title">Файл пуст</string>
+    <string name="err_empty_text">В этом файле нечего проверять.</string>
+    <string name="err_engine_title">Песочница недоступна</string>
+    <string name="err_engine_text">Изолированный движок не запустился, поэтому безопасно проверить документ нельзя. Ничего не открывалось. Причина — в разделе «Диагностика».</string>
+    <string name="err_failed_title">Проверка не удалась</string>
+    <string name="err_failed_text">Неожиданная ошибка остановила проверку. Документ не открывался, ничего не запускалось.</string>
+
+    <!-- Результат: вердикты -->
+    <string name="result_title">Рентген угроз</string>
+    <string name="verdict_clean_title">Ничего опасного не найдено</string>
+    <string name="verdict_clean_text">В документе нет макросов, внешнего содержимого, скрытых трекеров и других активных частей.</string>
+    <string name="verdict_trackers_title">Найдены скрытые трекеры</string>
+    <string name="verdict_trackers_text">При открытии в обычной программе документ обратился бы к чужим серверам или нёс бы скрытые данные о вас. Arca не делает ни того, ни другого.</string>
+    <string name="verdict_active_title">Активное содержимое найдено и заблокировано</string>
+    <string name="verdict_active_text">В документе есть части, которые выполняют код или совершают действия (макросы, объекты, сценарии). В Arca ни одна из них не запустится.</string>
+    <string name="verdict_rejected_title">Опасный или искажённый файл</string>
+    <string name="verdict_rejected_text">Файл построен так, чтобы эксплуатировать программы или скрывать своё содержимое. Ничего не истолковывалось. Не открывайте его в других программах.</string>
+    <string name="verdict_rejected_reason">Причина: %1$s</string>
+    <string name="verdict_unverified_title">Не удалось проверить полностью</string>
+    <string name="verdict_unverified_text">Часть документа исследовать не удалось, поэтому гарантировать чистоту нельзя. Считайте его недоверенным.</string>
+    <string name="verdict_label">Вердикт</string>
+
+    <!-- Результат: файл, счётчики, действия -->
+    <string name="file_label">Файл</string>
+    <string name="format_label">Формат</string>
+    <string name="sha256_label">SHA-256</string>
+    <string name="copy_hash">Копировать хеш</string>
+    <string name="action_preview">Безопасный просмотр</string>
+    <string name="preview_blocked_rejected">Отклонённый файл не показывается.</string>
+    <string name="preview_not_available">Для этого формата просмотр недоступен.</string>
+    <string name="action_sanitize">Создать стерильную копию</string>
+    <string name="sanitize_blocked_rejected">Отклонённый файл нельзя пересобрать.</string>
+    <string name="sanitize_not_available">Для этого формата стерильная копия недоступна.</string>
+
+    <!-- Результат: вкладки и списки -->
+    <string name="tab_findings">Находки</string>
+    <string name="tab_macros">Макросы</string>
+    <string name="tab_links">Ссылки</string>
+    <string name="tab_meta">Метаданные</string>
+    <string name="tab_embedded">Вложения</string>
+    <string name="tab_details">Подробности</string>
+    <string name="nothing_found">Здесь сообщать не о чем.</string>
+    <string name="show_more">Показать ещё (осталось %1$d)</string>
+    <string name="category_other">Прочее</string>
+    <string name="blocked">Заблокировано</string>
+    <string name="show_explanation">Пояснить</string>
+    <string name="hide_explanation">Скрыть</string>
+    <string name="macros_note">Исходный текст каждого макроса показан для чтения. Здесь он не может выполняться.</string>
+    <string name="macro_autoexec">Запускается сам при открытии документа</string>
+    <string name="macro_suspicious">Подозрительные вызовы</string>
+    <string name="macro_iocs">Адреса и команды в коде</string>
+    <string name="macro_source">Исходный текст</string>
+    <string name="macro_truncated">Исходный текст длинный, показано только его начало.</string>
+    <string name="copy_source">Копировать текст</string>
+    <string name="links_note">Адреса, на которые ссылается документ. Arca никогда не переходит по ним. Нажмите на адрес, чтобы прочитать его целиком.</string>
+    <string name="ref_auto">Загружается само</string>
+    <string name="link_dialog_title">Адрес в документе</string>
+    <string name="meta_note">Сведения о том, кто и как создал документ. В документах часто остаются имена, пути и названия компьютеров, которыми вы не хотели бы делиться.</string>
+    <string name="embedded_note">Файлы и объекты, хранящиеся внутри документа. Они только перечислены и никогда не открываются.</string>
+    <string name="emb_file">Имя</string>
+    <string name="emb_class">Класс</string>
+    <string name="emb_size">Размер</string>
+    <string name="emb_location">Место в документе</string>
+    <string name="stat_parts">Частей в контейнере</string>
+    <string name="stat_xml">Прочитано элементов XML</string>
+    <string name="stat_inflated">Размер после распаковки</string>
+    <string name="stat_nesting">Наибольшая вложенность</string>
+    <string name="details_note">Числа, полученные при проверке; пригодятся для отчёта об ошибке.</string>
+
+    <!-- Результат: отправка отчёта -->
+    <string name="share_report">Поделиться отчётом</string>
+    <string name="share_report_subject">Отчёт Arca</string>
+    <string name="share_report_header">Отчёт Arca об угрозах</string>
+    <string name="share_report_footer">Составлено Arca. Документ исследован в изолированной песочнице, не открывался и не запускался.</string>
+
+    <!-- Просмотр -->
+    <string name="preview_title">Безопасный просмотр</string>
+    <string name="preview_building">Готовим просмотр…</string>
+    <string name="show_hidden">Показать скрытое</string>
+    <string name="hide_hidden">Скрыть скрытое</string>
+    <string name="notices_summary">Чего нет в просмотре: %1$d</string>
+    <string name="notice_truncated_preview">Документ очень длинный, поэтому показано только его начало.</string>
+    <string name="section_body">Документ</string>
+    <string name="section_sheet">Лист %1$d</string>
+    <string name="section_slide">Слайд %1$d</string>
+    <string name="section_page">Страница %1$d</string>
+    <string name="section_comments">Комментарии</string>
+    <string name="section_notes">Заметки</string>
+    <string name="section_headers">Колонтитулы</string>
+    <string name="section_hidden">%1$s (скрыт)</string>
+    <string name="section_empty">В этой части нечего показывать.</string>
+    <string name="image_placeholder">Рисунок (не показан)</string>
+    <string name="image_remote">Загружался бы из интернета</string>
+    <string name="cell_dialog_title">Содержимое ячейки</string>
+
+    <!-- Стерильная копия -->
+    <string name="sanitize_title">Стерильная копия</string>
+    <string name="sanitize_intro">Arca пересобирает документ только из безопасных частей и проверяет результат ещё раз. Копия открывается в любой программе без макросов, внешнего содержимого и других активных частей.</string>
+    <string name="sanitize_always_title">Всегда удаляется</string>
+    <string name="sanitize_always_text">Макросы и сценарии, встроенные и связанные объекты, ActiveX, удалённые шаблоны и рисунки, самозагружающиеся ссылки, подключения к данным, DDE и опасные формулы, а также всё, что контейнер прячет.</string>
+    <string name="sanitize_options_title">Дополнительно удалить</string>
+    <string name="opt_metadata">Автора и свойства документа</string>
+    <string name="opt_metadata_desc">Имена, организацию, пути, принтер и историю правок.</string>
+    <string name="opt_custom_xml">Пользовательские данные XML</string>
+    <string name="opt_custom_xml_desc">Скрытые блоки данных, которые другие программы прикрепляют к документу.</string>
+    <string name="opt_comments">Комментарии</string>
+    <string name="opt_comments_desc">Замечания рецензентов. Текст документа не меняется.</string>
+    <string name="opt_revisions">Принять все исправления</string>
+    <string name="opt_revisions_desc">Удалённый текст исчезнет, вставленный станет обычным. Это меняет документ.</string>
+    <string name="sanitize_original_untouched">Исходный файл никогда не изменяется. Копия сохраняется только туда, куда вы укажете.</string>
+    <string name="sanitize_start">Создать копию</string>
+    <string name="sanitize_building">Пересобираем документ…</string>
+    <string name="sanitize_building_note">Потом он будет проверен ещё раз, и только после этого его можно сохранить.</string>
+    <string name="sanitize_done_clean_title">Копия чистая</string>
+    <string name="sanitize_done_clean_text">Её проверили повторно: активного содержимого, внешнего содержимого и скрытых трекеров не осталось.</string>
+    <string name="sanitize_done_unverified_title">Копию не удалось проверить полностью</string>
+    <string name="sanitize_done_unverified_text">Она собрана без опасных частей, но часть её повторно исследовать не удалось. Открывайте с осторожностью.</string>
+    <string name="sanitize_size">Размер копии</string>
+    <string name="sanitize_actions_title">Что изменено: %1$d</string>
+    <string name="sanitize_no_actions">Менять ничего не пришлось.</string>
+    <string name="sanitize_more_actions">…и ещё %1$d</string>
+    <string name="sanitize_save">Сохранить копию…</string>
+    <string name="sanitize_save_again">Сохранить ещё одну копию…</string>
+    <string name="sanitize_saving">Сохраняем…</string>
+    <string name="sanitize_saved">Сохранено (%1$s).</string>
+    <string name="sanitize_save_failed">Не удалось сохранить копию</string>
+    <string name="sanitize_change_options">Изменить параметры</string>
+
+    <!-- О программе -->
+    <string name="about_version">Версия %1$s</string>
+    <string name="about_unavailable">Сведения об авторах недоступны, потому что движок не запущен. Смотрите раздел «Диагностика».</string>
+    <string name="about_not_release_title">Тестовая сборка</string>
+    <string name="about_not_release_text">Это не официальный выпуск: сведения об авторстве в нём неполные.</string>
+    <string name="about_homepage">Страница проекта</string>
+    <string name="about_source">Исходный код</string>
+    <string name="about_fingerprint">Отпечаток сведений об авторстве</string>
+
+    <!-- Лицензии -->
+    <string name="licenses_agpl">AGPLv3</string>
+    <string name="licenses_terms_ru">Доп. условия (RU)</string>
+    <string name="licenses_terms_en">Доп. условия (EN)</string>
+    <string name="licenses_third_party">Сторонние</string>
+    <string name="licenses_unavailable">Этот текст недоступен.</string>
+
+    <!-- Настройки -->
+    <string name="settings_appearance">Оформление</string>
+    <string name="settings_theme">Тема</string>
+    <string name="theme_system">Как в системе</string>
+    <string name="theme_light">Светлая</string>
+    <string name="theme_dark">Тёмная</string>
+    <string name="settings_language">Язык</string>
+    <string name="lang_system">Как в системе</string>
+    <string name="settings_text_size">Размер текста в просмотре</string>
+    <string name="size_small">Мелкий</string>
+    <string name="size_normal">Обычный</string>
+    <string name="size_large">Крупный</string>
+    <string name="size_huge">Очень крупный</string>
+    <string name="settings_text_sample">Съешь ещё этих мягких французских булок, да выпей чаю.</string>
+    <string name="settings_privacy">Приватность</string>
+    <string name="settings_secure">Запретить снимки экрана</string>
+    <string name="settings_secure_desc">Скрывает приложение в списке недавних и запрещает снимки и запись экрана. Выключите, если нужно сделать снимок.</string>
+    <string name="settings_reveal">Показывать скрытое по умолчанию</string>
+    <string name="settings_reveal_desc">Скрытый текст, листы и слайды появятся в просмотре с пометкой. Переключить можно и там.</string>
+
+    <!-- Диагностика -->
+    <string name="diag_engine">Движок</string>
+    <string name="diag_engine_version">Версия</string>
+    <string name="diag_guest_hash">SHA-256 модуля песочницы</string>
+    <string name="diag_limits">Пределы</string>
+    <string name="diag_limits_value">файл до %1$s, память песочницы до %2$s</string>
+    <string name="diag_build_kind">Сборка</string>
+    <string name="diag_build_release">Выпуск</string>
+    <string name="diag_build_dev">Тестовая сборка</string>
+    <string name="diag_device">Устройство</string>
+    <string name="diag_app">Приложение</string>
+    <string name="diag_android">Система</string>
+    <string name="diag_abis">Процессор</string>
+    <string name="diag_screen">Экран</string>
+    <string name="diag_window">Окно</string>
+    <string name="diag_selftest">Самопроверка</string>
+    <string name="diag_selftest_note">Прогоняет встроенный документ через всю песочницу и проверяет, что опасные части найдены и заблокированы.</string>
+    <string name="diag_selftest_run">Запустить самопроверку</string>
+    <string name="diag_selftest_again">Запустить снова</string>
+    <string name="diag_selftest_running">Выполняется…</string>
+    <string name="diag_selftest_ok">Все проверки пройдены</string>
+    <string name="diag_selftest_failed">Некоторые проверки не пройдены</string>
+    <string name="diag_copy_report">Копировать диагностический отчёт</string>
+    <string name="diag_privacy">В отчёте нет документов и личных данных. Он копируется только по нажатию кнопки.</string>
+
+    <!-- Запасные подписи для того, что движок может добавить в новой версии -->
+    <string name="threat_unknown_text">Движок сообщил о том, для чего в этой версии приложения нет описания. Считайте документ недоверенным.</string>
+    <string name="notice_unknown">В просмотре что-то опущено (в этой версии нет описания): %2$s</string>
+</resources>

@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     Deliberately absent: INTERNET and every other permission. The app opens a document that the
+     system hands it (a content:// address or a file picked by the person) and nothing else, so
+     there is nothing to ask for and no network channel for a malicious document to use. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arca.viewer"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <!-- Works with or without a touch screen (Chromebooks, desktop modes) and in any orientation. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.landscape" android:required="false" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.Arca"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:usesCleartextTraffic="false"
+        android:supportsRtl="true"
+        android:extractNativeLibs="false"
+        android:localeConfig="@xml/locales_config"
+        android:enableOnBackInvokedCallback="true"
+        android:resizeableActivity="true"
+        android:largeHeap="false"
+        android:name=".App">
+
+        <!-- Samsung / legacy multi-window hint: the app handles any window size. -->
+        <meta-data android:name="android.supports_size_changes" android:value="true" />
+
+        <!--
+          One activity, every size. It handles the configuration changes that a window of a new
+          shape causes (rotation, folding and unfolding, split-screen and freeform resizing,
+          density and display-size changes, an attached keyboard) by rebuilding its views. Theme
+          and language changes are not listed on purpose: they recreate the activity so the
+          matching resources are loaded.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="unspecified"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|colorMode|layoutDirection|touchscreen">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- "Open with": the common document types. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.ms-word" />
+                <data android:mimeType="application/vnd.ms-word.document.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-word.template.macroEnabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.template" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.binary.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.addin.macroEnabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.template" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.ms-powerpoint.presentation.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.slideshow.macroEnabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.slideshow" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.template" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
+                <data android:mimeType="application/vnd.ms-outlook" />
+                <data android:mimeType="application/vnd.visio" />
+                <data android:mimeType="application/vnd.ms-visio.drawing" />
+                <data android:mimeType="application/rtf" />
+                <data android:mimeType="text/rtf" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="text/tab-separated-values" />
+                <data android:mimeType="text/markdown" />
+            </intent-filter>
+
+            <!-- Messengers and mail clients often hand a document over as a generic binary type,
+                 or with no type at all; the file name still says what it is. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/zip" />
+                <data android:pathPattern=".*\\.[dD][oO][cC][xX]" />
+                <data android:pathPattern=".*\\.[dD][oO][cC][mM]" />
+                <data android:pathPattern=".*\\.[dD][oO][tT][xX]" />
+                <data android:pathPattern=".*\\.[dD][oO][tT][mM]" />
+                <data android:pathPattern=".*\\.[dD][oO][cC]" />
+                <data android:pathPattern=".*\\.[dD][oO][tT]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS][xX]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS][mM]" />
+                <data android:pathPattern=".*\\.[xX][lL][tT][xX]" />
+                <data android:pathPattern=".*\\.[xX][lL][tT][mM]" />
+                <data android:pathPattern=".*\\.[xX][lL][aA][mM]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS][bB]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS]" />
+                <data android:pathPattern=".*\\.[xX][lL][tT]" />
+                <data android:pathPattern=".*\\.[pP][pP][tT][xX]" />
+                <data android:pathPattern=".*\\.[pP][pP][tT][mM]" />
+                <data android:pathPattern=".*\\.[pP][pP][sS][xX]" />
+                <data android:pathPattern=".*\\.[pP][pP][sS][mM]" />
+                <data android:pathPattern=".*\\.[pP][oO][tT][xX]" />
+                <data android:pathPattern=".*\\.[pP][oO][tT][mM]" />
+                <data android:pathPattern=".*\\.[pP][pP][tT]" />
+                <data android:pathPattern=".*\\.[pP][pP][sS]" />
+                <data android:pathPattern=".*\\.[pP][oO][tT]" />
+                <data android:pathPattern=".*\\.[oO][dD][tT]" />
+                <data android:pathPattern=".*\\.[oO][dD][sS]" />
+                <data android:pathPattern=".*\\.[oO][dD][pP]" />
+                <data android:pathPattern=".*\\.[rR][tT][fF]" />
+                <data android:pathPattern=".*\\.[pP][dD][fF]" />
+                <data android:pathPattern=".*\\.[vV][sS][dD][xX]" />
+                <data android:pathPattern=".*\\.[vV][sS][dD][mM]" />
+                <data android:pathPattern=".*\\.[mM][sS][gG]" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.[dD][oO][cC][xX]" />
+                <data android:pathPattern=".*\\.[dD][oO][cC][mM]" />
+                <data android:pathPattern=".*\\.[dD][oO][tT][xX]" />
+                <data android:pathPattern=".*\\.[dD][oO][tT][mM]" />
+                <data android:pathPattern=".*\\.[dD][oO][cC]" />
+                <data android:pathPattern=".*\\.[dD][oO][tT]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS][xX]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS][mM]" />
+                <data android:pathPattern=".*\\.[xX][lL][tT][xX]" />
+                <data android:pathPattern=".*\\.[xX][lL][tT][mM]" />
+                <data android:pathPattern=".*\\.[xX][lL][aA][mM]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS][bB]" />
+                <data android:pathPattern=".*\\.[xX][lL][sS]" />
+                <data android:pathPattern=".*\\.[xX][lL][tT]" />
+                <data android:pathPattern=".*\\.[pP][pP][tT][xX]" />
+                <data android:pathPattern=".*\\.[pP][pP][tT][mM]" />
+                <data android:pathPattern=".*\\.[pP][pP][sS][xX]" />
+                <data android:pathPattern=".*\\.[pP][pP][sS][mM]" />
+                <data android:pathPattern=".*\\.[pP][oO][tT][xX]" />
+                <data android:pathPattern=".*\\.[pP][oO][tT][mM]" />
+                <data android:pathPattern=".*\\.[pP][pP][tT]" />
+                <data android:pathPattern=".*\\.[pP][pP][sS]" />
+                <data android:pathPattern=".*\\.[pP][oO][tT]" />
+                <data android:pathPattern=".*\\.[oO][dD][tT]" />
+                <data android:pathPattern=".*\\.[oO][dD][sS]" />
+                <data android:pathPattern=".*\\.[oO][dD][pP]" />
+                <data android:pathPattern=".*\\.[rR][tT][fF]" />
+                <data android:pathPattern=".*\\.[pP][dD][fF]" />
+                <data android:pathPattern=".*\\.[vV][sS][dD][xX]" />
+                <data android:pathPattern=".*\\.[vV][sS][dD][mM]" />
+                <data android:pathPattern=".*\\.[mM][sS][gG]" />
+            </intent-filter>
+
+            <!-- "Share": any file may be sent here to be checked; a file that is not a document
+                 simply gets the answer "not a supported document". -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

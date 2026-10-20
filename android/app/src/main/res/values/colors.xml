@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root. -->
+<resources>
+    <!-- Surfaces and text. Pairs were chosen for a contrast of at least 4.5:1 (7:1 for body text). -->
+    <color name="arca_bg">#F5F7FA</color>
+    <color name="arca_surface">#FFFFFF</color>
+    <color name="arca_surface_variant">#E9EEF3</color>
+    <color name="arca_on_surface">#12171D</color>
+    <color name="arca_on_surface_variant">#46515E</color>
+    <color name="arca_outline">#C5CDD6</color>
+    <color name="arca_scrim">#66000000</color>
+
+    <!-- Brand. -->
+    <color name="arca_primary">#0B6B63</color>
+    <color name="arca_on_primary">#FFFFFF</color>
+    <color name="arca_primary_container">#D2F0EB</color>
+    <color name="arca_on_primary_container">#00201D</color>
+
+    <!-- Verdicts: a text colour on its own container fill. -->
+    <color name="arca_safe">#14672F</color>
+    <color name="arca_safe_container">#DDF3E3</color>
+    <color name="arca_warn">#7A4F00</color>
+    <color name="arca_warn_container">#FFEFC9</color>
+    <color name="arca_danger">#A8201A</color>
+    <color name="arca_danger_container">#FBE1DF</color>
+    <color name="arca_unknown">#364F6B</color>
+    <color name="arca_unknown_container">#E1EAF4</color>
+
+    <!-- Severities (text on arca_surface_variant). -->
+    <color name="arca_sev_critical">#A8201A</color>
+    <color name="arca_sev_high">#B03A0A</color>
+    <color name="arca_sev_medium">#7A4F00</color>
+    <color name="arca_sev_low">#1A5A9E</color>
+    <color name="arca_sev_info">#46515E</color>
+
+    <!-- Document content. -->
+    <color name="arca_hidden_text">#6B7480</color>
+    <color name="arca_deleted">#A8201A</color>
+    <color name="arca_inserted">#14672F</color>
+    <color name="arca_link">#1A5A9E</color>
+    <color name="arca_code_bg">#EEF1F5</color>
+
+    <!-- Launcher icon. -->
+    <color name="ic_launcher_background">#0A3F3B</color>
+</resources>
