@@ -43,7 +43,7 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal
           cargo install cargo-fuzz --version 0.12.0 --locked
-      - name: seeds (the real-software fixtures, plus the scanner's own corpus)
+      - name: seeds (the real-software fixtures)
         run: |
           mkdir -p "fuzz/corpus/${{ matrix.target }}"
           cp tests/fixtures/* "fuzz/corpus/${{ matrix.target }}/"
