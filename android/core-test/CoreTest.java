@@ -575,6 +575,20 @@ public final class CoreTest {
         check(Capabilities.previewFormats().containsAll(Arrays.asList(previews)), "the sets agree");
     }
 
+    static void numericLooking() {
+        String[] yes = {"1", "-3", "+4.5", "1,234.50", "12%", "(1 234)", "$5.00", "\u20ac12", "1E+21",
+            "2024-03-05", "12:30:15", "3/5/24", "1.5E-3"};
+        for (String t : yes) {
+            check(Fmt.looksNumeric(t), t + " is written like a number");
+        }
+        String[] no = {"", "abc", "TRUE", "#DIV/0!", "5 \u044f\u043d\u0432\u0430\u0440\u044f", "x1", "1 apple"};
+        for (String t : no) {
+            check(!Fmt.looksNumeric(t), t + " is not");
+        }
+        check(!Fmt.looksNumeric(null), "null is not");
+        eq(6, Model.CELL_CALCULATED, "the wire code of a calculated cell");
+    }
+
     static void chunks() {
         eq(0, Fmt.chunks(null, 10).size(), "null text");
         eq(0, Fmt.chunks("", 10).size(), "empty text");
@@ -896,7 +910,7 @@ public final class CoreTest {
 
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -913,6 +927,7 @@ public final class CoreTest {
                     case "chunks": chunks(); break;
                     case "search": search(); break;
                     case "outlineBookmarksZoom": outlineBookmarksZoom(); break;
+                    case "numericLooking": numericLooking(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

@@ -201,10 +201,15 @@ pub enum CellKind {
     Bool,
     /// An error value such as `#DIV/0!`.
     Error,
-    /// A formula whose cached result is shown (never evaluated).
+    /// A formula whose cached result is shown, or whose text is when it has none and could not be
+    /// calculated.
     Formula,
+    /// The result of a formula that had no stored result, calculated by the viewer.
+    Calculated,
 }
-wire_enum!(CellKind { Text = 0, Number = 1, Date = 2, Bool = 3, Error = 4, Formula = 5 });
+wire_enum!(CellKind {
+    Text = 0, Number = 1, Date = 2, Bool = 3, Error = 4, Formula = 5, Calculated = 6,
+});
 
 /// One non-empty cell of a [`Grid`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -371,11 +376,13 @@ pub enum NoticeKind {
     /// Content flagged hidden by the document was left out because the request did not ask
     /// for hidden content; `count` says how much, `detail` says what.
     HiddenOmitted,
+    /// Formulas that had no stored result were calculated by the viewer; `count` of them.
+    FormulasCalculated,
 }
 wire_enum!(NoticeKind {
     Truncated = 0, Unsupported = 1, Skipped = 2, InvisibleRemoved = 3, ImagesNotShown = 4,
     HiddenShown = 5, TrackedChanges = 6, FormulasNotEvaluated = 7, BestEffort = 8,
-    HiddenOmitted = 9,
+    HiddenOmitted = 9, FormulasCalculated = 10,
 });
 
 /// A remark about what the preview does or does not show.

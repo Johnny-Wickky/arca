@@ -39,6 +39,8 @@ public final class Model {
     public static final int CELL_BOOL = 3;
     public static final int CELL_ERROR = 4;
     public static final int CELL_FORMULA = 5;
+    /** The result of a formula that had no stored result, calculated by the viewer. */
+    public static final int CELL_CALCULATED = 6;
 
     // ---- verdicts ---------------------------------------------------------------------------
     /** What the X-ray concluded (names are those of the engine's {@code Verdict}). */

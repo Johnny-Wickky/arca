@@ -35,6 +35,7 @@ mod detect;
 mod doc;
 mod docx;
 mod export;
+mod formula;
 mod listfmt;
 pub mod model;
 mod msg;

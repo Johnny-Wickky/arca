@@ -86,6 +86,8 @@ public final class ContractTest {
         EXPECT.put("deck-rich.ppt", new String[] {"Ppt", "Квартальный обзор 2026", "Заметка докладчика", "example.org"});
         EXPECT.put("deck-rich.pptx", new String[] {"Pptx", "Квартальный обзор 2026", "Заметка докладчика"});
         EXPECT.put("rich-lo.xls", new String[] {"Xls"});
+        // Formulas without stored results are calculated: the sum, the text built from it, the lookup.
+        EXPECT.put("formulas.xlsx", new String[] {"Xlsx", "Яблоки", "Всего: 100.00 руб."});
         EXPECT.put("drawing.vsdx", new String[] {"Vsdx", "Принять заказ", "Проверить оплату", "Ответственный", "Склад"});
 
         // Hidden content: absent by default (the viewer never shows what the author concealed

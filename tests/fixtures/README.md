@@ -11,6 +11,7 @@ not by Arca's own writers, so the parsers are exercised on layouts they did not 
 | `sheet.xls` `.xlsx` `.ods` `.csv` | a sales sheet with formulas, dates, a percentage, a hidden sheet and Cyrillic text (the cached formula results in these LibreOffice-made copies are errors; the viewer shows what is stored) |
 | `slides.ppt` `.pptx` `.odp` `slides-impress.pdf` | two slides with bullets, a text box and speaker notes |
 | `deck-rich.ppt` `.pptx` | title/bullets/links/table/picture slides, a hidden slide, notes |
+| `formulas.xlsx` | a workbook as a library writes it (`tools/fixtures/make_formulas.py`, openpyxl): formulas and **no stored results**, so the viewer has to calculate them; one formula (`TODAY()`) cannot be and must stay text |
 | `drawing.vsdx` | a Visio drawing with two pages (one a background page), shapes with text and fields, shape data, a hyperlink, a group, a picture and connectors. **Hand-assembled from the VSDX schema** by `tools/fixtures/make_visio.py` — there is no Visio, and LibreOffice cannot export VSDX — so unlike the others it was not made by real software |
 | `lo-rich.doc` `lo-latin.doc` | Word 97 files: `lo-rich.doc` has styles, a table, hidden text, tracked changes, footnotes and endnotes, a comment, a hyperlink and a frame; `lo-latin.doc` is Windows-1252 text (curly quotes, euro sign, ellipsis) |
 

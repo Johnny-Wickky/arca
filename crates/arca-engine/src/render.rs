@@ -460,6 +460,7 @@ const fn cell_kind_code(kind: CellKind) -> u64 {
         CellKind::Bool => 3,
         CellKind::Error => 4,
         CellKind::Formula => 5,
+        CellKind::Calculated => 6,
     }
 }
 

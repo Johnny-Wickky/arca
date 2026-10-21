@@ -1396,6 +1396,14 @@ public final class PreviewScreen extends Screen {
                     c.setTypeface(Typeface.MONOSPACE, Typeface.ITALIC);
                     c.setTextColor(ui.color(R.color.arca_link));
                     break;
+                case Model.CELL_CALCULATED:
+                    // Calculated by Arca, not stored in the file: italic, and numbers stay on the right.
+                    c.setTypeface(Typeface.DEFAULT, Typeface.ITALIC);
+                    c.setTextColor(ui.color(R.color.arca_link));
+                    if (Fmt.looksNumeric(cell.text)) {
+                        c.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+                    }
+                    break;
                 default:
                     break;
             }

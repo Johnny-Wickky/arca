@@ -45,6 +45,26 @@ public final class Fmt {
         return n < s.length() ? out + "…" : out;
     }
 
+    /**
+     * Whether {@code s} is written like a number: digits with signs, separators, a currency sign, a
+     * percent sign, a date or an exponent, and nothing else. Such cells keep to the right edge.
+     */
+    public static boolean looksNumeric(String s) {
+        if (s == null || s.isEmpty()) {
+            return false;
+        }
+        boolean digit = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= '0' && c <= '9') {
+                digit = true;
+            } else if (" \u00a0.,'+-()%/:$\u20ac\u00a3\u00a5\u20bdeE".indexOf(c) < 0) {
+                return false;
+            }
+        }
+        return digit;
+    }
+
     private static boolean isSuspicious(char c) {
         if (c == '\t' || c == '\n') {
             return false;

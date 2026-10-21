@@ -2,13 +2,15 @@
 //!
 //! Cells are shown the way the author sees them: numbers go through their
 //! number format (dates, percentages, currency), shared strings are resolved,
-//! formulas show their cached result (or their text when none was stored) and
-//! are never evaluated. Hidden sheets, rows and comments are included and
-//! labelled.
+//! formulas show their cached result; one that has none (files written by libraries rather than
+//! by a spreadsheet application) is calculated by [`crate::formula`] when that can be done
+//! faithfully and is marked as calculated, otherwise its text is shown. Hidden sheets, rows and
+//! comments are included and labelled.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::PreviewError;
+use crate::formula::{self, Book, ErrCode, Val};
 use crate::model::{CellKind, ParaStyle, Paragraph, Run, SectionKind, style};
 use crate::numfmt::{self, Format};
 use crate::opc::Package;
@@ -29,6 +31,9 @@ struct SheetRef {
 #[derive(Default)]
 struct WorkbookHandler {
     date1904: bool,
+    /// `<calcPr fullCalcOnLoad>`: the file asks to be recalculated when opened, so the results
+    /// it stores may be stale (libraries write `0` there).
+    recalc_all: bool,
     sheets: Vec<SheetRef>,
 }
 
@@ -37,6 +42,10 @@ impl Handler for WorkbookHandler {
         match tag.local() {
             "workbookPr" => {
                 self.date1904 = tag.attr("date1904").is_some_and(|v| matches!(&*v, "1" | "true"));
+            }
+            "calcPr" => {
+                self.recalc_all =
+                    tag.attr("fullCalcOnLoad").is_some_and(|v| matches!(&*v, "1" | "true"));
             }
             "sheet" => {
                 self.sheets.push(SheetRef {
@@ -222,6 +231,8 @@ struct SheetHandler<'a> {
     sst: &'a [String],
     formats: &'a mut Formats,
     date1904: bool,
+    /// Every formula is a candidate for calculation, whatever result the file stores.
+    recalc_all: bool,
     // Position.
     row: u32,
     next_col: u32,
@@ -241,16 +252,124 @@ struct SheetHandler<'a> {
     formulas: u64,
     stop: bool,
     max_text: usize,
+    // The formula of the current cell.
+    f_type: FormulaKind,
+    f_si: String,
+    /// Only collect what the calculator needs (a second pass over a sheet); no grid is built.
+    collect_only: bool,
+    // What the calculator needs: every cell's value, formulas that have no stored result.
+    raw: BTreeMap<(u32, u32), formula::Cell>,
+    raw_complete: bool,
+    raw_cap: usize,
+    shared: HashMap<String, (u32, u32, String)>,
+    /// Style of the cells whose formula has to be calculated.
+    uncached: BTreeMap<(u32, u32), usize>,
+}
+
+/// Most cells kept for the calculator in a whole workbook.
+const MAX_CALC_CELLS: usize = 150_000;
+/// Most formulas that are calculated in a workbook; beyond that none are.
+const MAX_CALC_FORMULAS: usize = 10_000;
+/// Longest text kept for the calculator.
+const MAX_CALC_TEXT: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FormulaKind {
+    #[default]
+    Normal,
+    Shared,
+    /// Array and data-table formulas: a spreadsheet calculates them differently.
+    Other,
 }
 
 impl SheetHandler<'_> {
+    /// The text shown for the formula of the current cell and the text the calculator is given
+    /// (empty: it cannot); `None` for a cell without a formula.
+    #[inline]
+    fn formula_parts(&mut self) -> (String, Option<String>) {
+        let own = self.f.trim();
+        if !own.is_empty() {
+            let own = own.to_owned();
+            return match self.f_type {
+                FormulaKind::Shared => {
+                    self.shared.insert(self.f_si.clone(), (self.row, self.col, own.clone()));
+                    (own.clone(), Some(own))
+                }
+                FormulaKind::Other => (own, Some(String::new())),
+                FormulaKind::Normal => (own.clone(), Some(own)),
+            };
+        }
+        if self.f_type != FormulaKind::Shared {
+            return (String::new(), None);
+        }
+        // A cell that shares the formula of another, moved to its own place.
+        match self.shared.get(&self.f_si) {
+            Some((r0, c0, text)) => {
+                let moved = formula::shifted(
+                    text,
+                    i64::from(self.row) - i64::from(*r0),
+                    i64::from(self.col) - i64::from(*c0),
+                )
+                .unwrap_or_default();
+                (moved.clone(), Some(moved))
+            }
+            None => (String::new(), Some(String::new())),
+        }
+    }
+
+    /// Whether the file stores a result for the current cell.
+    #[inline]
+    fn has_stored_value(&self) -> bool {
+        !self.v.trim().is_empty() || (self.ctype == "inlineStr" && !self.is.is_empty())
+    }
+
     fn finish_cell(&mut self) {
         self.in_cell = false;
         if !self.row_ok {
             return;
         }
+        if self.f_type != FormulaKind::Shared && self.f.is_empty() {
+            // No formula: by far the most common cell.
+            if self.collect_only {
+                self.keep_for_calculation(None, false);
+            } else {
+                let (text, kind) = self.stored_text();
+                if !self.grid.cell(self.col, kind, text) {
+                    self.stop = true;
+                }
+            }
+            return;
+        }
+        let (shown, source) = self.formula_parts();
+        let stored = self.has_stored_value();
+        // To be calculated if the file stores no result, or asks to be recalculated.
+        let candidate = source.is_some() && (self.recalc_all || !stored);
+        if self.collect_only {
+            self.keep_for_calculation(source, candidate);
+            return;
+        }
+        if source.is_some() {
+            self.formulas = self.formulas.saturating_add(1);
+        }
+        if candidate && source.as_deref().is_some_and(|f| !f.is_empty()) {
+            self.uncached.insert((self.row, self.col), self.style_idx);
+        }
+        let (text, kind) = if source.is_some() && !stored && !shown.is_empty() {
+            // Shown as its text; replaced by the result if the calculator manages it.
+            (format!("={shown}"), CellKind::Formula)
+        } else {
+            self.stored_text()
+        };
+        if !self.grid.cell(self.col, kind, text) {
+            self.stop = true;
+        }
+    }
+
+    /// The stored value of the current cell as the author sees it.
+    #[inline]
+    fn stored_text(&mut self) -> (String, CellKind) {
         let v = self.v.trim();
-        let (text, kind) = match self.ctype.as_str() {
+        match self.ctype.as_str() {
             "s" => match v.parse::<usize>().ok().and_then(|i| self.sst.get(i)) {
                 Some(s) => (s.clone(), CellKind::Text),
                 None => (String::new(), CellKind::Text),
@@ -274,21 +393,51 @@ impl SheetHandler<'_> {
                 }
                 _ => (self.v.clone(), CellKind::Text),
             },
-        };
-        let has_formula = !self.f.trim().is_empty();
-        let (text, kind) = if has_formula {
-            self.formulas = self.formulas.saturating_add(1);
-            if text.is_empty() {
-                (format!("={}", self.f.trim()), CellKind::Formula)
-            } else {
-                (text, kind)
-            }
-        } else {
-            (text, kind)
-        };
-        if !self.grid.cell(self.col, kind, text) {
-            self.stop = true;
         }
+    }
+
+    /// The stored value of the current cell in the terms of the calculator.
+    fn stored_value(&self) -> Val {
+        let v = self.v.trim();
+        match self.ctype.as_str() {
+            "s" => match v.parse::<usize>().ok().and_then(|i| self.sst.get(i)) {
+                Some(s) => Val::Str(s.clone()),
+                None => Val::Empty,
+            },
+            "inlineStr" => Val::Str(self.is.clone()),
+            "str" | "d" => Val::Str(self.v.clone()),
+            "b" => Val::Bool(v == "1" || v.eq_ignore_ascii_case("true")),
+            "e" => Val::Err(ErrCode::from_text(v).unwrap_or(ErrCode::Value)),
+            _ => match v.parse::<f64>() {
+                Ok(n) if n.is_finite() && !v.is_empty() => Val::Num(n),
+                _ if v.is_empty() => Val::Empty,
+                _ => Val::Str(self.v.clone()),
+            },
+        }
+    }
+
+    fn keep_for_calculation(&mut self, source: Option<String>, uncached: bool) {
+        if !self.raw_complete {
+            return;
+        }
+        let value = if uncached { Val::Empty } else { self.stored_value() };
+        let formula = if uncached { source } else { None };
+        if value == Val::Empty && formula.is_none() {
+            return;
+        }
+        if matches!(&value, Val::Str(t) if t.len() > MAX_CALC_TEXT) {
+            // Not a text the calculator can be trusted with: what refers to it must not be
+            // calculated either.
+            self.raw_complete = false;
+            self.raw.clear();
+            return;
+        }
+        if self.raw.len() >= self.raw_cap {
+            self.raw_complete = false;
+            self.raw.clear();
+            return;
+        }
+        self.raw.insert((self.row, self.col), formula::Cell { value, formula });
     }
 }
 
@@ -300,7 +449,7 @@ impl Handler for SheetHandler<'_> {
                 self.row = r.unwrap_or_else(|| self.row.saturating_add(1));
                 self.next_col = 0;
                 let hidden = tag.attr("hidden").is_some_and(|v| matches!(&*v, "1" | "true"));
-                self.row_ok = self.grid.row(self.row, hidden);
+                self.row_ok = self.collect_only || self.grid.row(self.row, hidden);
                 if !self.row_ok {
                     self.stop = true;
                 }
@@ -321,9 +470,19 @@ impl Handler for SheetHandler<'_> {
                 self.v.clear();
                 self.f.clear();
                 self.is.clear();
+                self.f_type = FormulaKind::Normal;
+                self.f_si.clear();
             }
             "v" if self.in_cell => self.in_v = true,
-            "f" if self.in_cell => self.in_f = true,
+            "f" if self.in_cell => {
+                self.in_f = true;
+                self.f_si = tag.attr("si").unwrap_or_default().into_owned();
+                self.f_type = match tag.attr("t").as_deref() {
+                    Some("shared") => FormulaKind::Shared,
+                    Some("array" | "dataTable") => FormulaKind::Other,
+                    _ => FormulaKind::Normal,
+                };
+            }
             "is" if self.in_cell => self.in_is = true,
             "t" if self.in_is => self.in_t = true,
             "rPh" => return Flow::SkipChildren,
@@ -373,6 +532,117 @@ impl Handler for SheetHandler<'_> {
     fn done(&self) -> bool {
         self.stop
     }
+}
+
+/// Reads the sheets once more, this time only for their values, and calculates the formulas that
+/// have no stored result. Only done for a workbook that has some: the common one pays nothing.
+fn calculate(
+    pkg: &mut Package<'_>,
+    parts: &[(String, String)],
+    sink: &Sink<'_>,
+    sst: &[String],
+    formats: &mut Formats,
+    (date1904, recalc_all): (bool, bool),
+) -> Result<formula::Outcome, PreviewError> {
+    let mut book = Book::new(date1904);
+    let mut cells = 0usize;
+    for (name, part) in parts {
+        let mut sheet = formula::Sheet::new(name, BTreeMap::new(), false);
+        if let Some(text) = read_xml(pkg, part)? {
+            let mut h = SheetHandler {
+                grid: GridBuilder::new(sink.policy, 0),
+                links: Vec::new(),
+                sst,
+                formats,
+                date1904,
+                recalc_all,
+                row: 0,
+                next_col: 0,
+                col: 0,
+                row_ok: false,
+                in_cell: false,
+                ctype: String::new(),
+                style_idx: 0,
+                v: String::new(),
+                f: String::new(),
+                is: String::new(),
+                in_v: false,
+                in_f: false,
+                in_is: false,
+                in_t: false,
+                formulas: 0,
+                stop: false,
+                max_text: sink.policy.max_cell_bytes,
+                f_type: FormulaKind::Normal,
+                f_si: String::new(),
+                collect_only: true,
+                raw: BTreeMap::new(),
+                raw_complete: true,
+                raw_cap: MAX_CALC_CELLS.saturating_sub(cells),
+                shared: HashMap::new(),
+                uncached: BTreeMap::new(),
+            };
+            let ended = xml::drive(&text, pkg.limits(), &mut h);
+            cells = cells.saturating_add(h.raw.len());
+            // A sheet that could not be read to the end is not a sheet to calculate from.
+            sheet = formula::Sheet::new(
+                name,
+                std::mem::take(&mut h.raw),
+                h.raw_complete && ended.is_ok(),
+            );
+        }
+        book.add(sheet);
+    }
+    Ok(book.calculate())
+}
+
+/// A sheet whose grid waits for the results of its formulas.
+struct Waiting {
+    sec: crate::sink::SectionId,
+    sheet: usize,
+    grid: crate::model::Grid,
+    styles: BTreeMap<(u32, u32), usize>,
+}
+
+/// Writes the calculated values into the cells that showed a formula; returns how many.
+fn fill_calculated(
+    grid: &mut crate::model::Grid,
+    sheet: usize,
+    styles: &BTreeMap<(u32, u32), usize>,
+    outcome: &formula::Outcome,
+    formats: &mut Formats,
+    date1904: bool,
+) -> u64 {
+    let mut done = 0u64;
+    for row in &mut grid.rows {
+        for cell in &mut row.cells {
+            let (Some(value), Some(&style_idx)) = (
+                outcome.values.get(&(sheet, row.index, cell.col)),
+                styles.get(&(row.index, cell.col)),
+            ) else {
+                continue;
+            };
+            let (text, kind) = match value {
+                Val::Num(n) => {
+                    let text = match formats.for_style(style_idx) {
+                        Some(fmt) => fmt.number(*n, date1904).0,
+                        None => numfmt::general(*n),
+                    };
+                    (text, CellKind::Calculated)
+                }
+                Val::Str(t) => (t.clone(), CellKind::Calculated),
+                Val::Bool(b) => {
+                    ((if *b { "TRUE" } else { "FALSE" }).to_owned(), CellKind::Calculated)
+                }
+                Val::Err(e) => (e.text().to_owned(), CellKind::Error),
+                Val::Empty => ("0".to_owned(), CellKind::Calculated),
+            };
+            cell.text = text;
+            cell.kind = kind;
+            done += 1;
+        }
+    }
+    done
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +811,10 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
     let mut comments: Vec<(String, String, String, String)> = Vec::new();
     let mut formulas = 0u64;
     let mut drawings = false;
+    // What the calculator gets to see, and the grids that wait for its results.
+    let mut parts: Vec<(String, String)> = Vec::new();
+    let mut waiting: Vec<Waiting> = Vec::new();
+    let mut pending_items = 0usize;
 
     for sheet in &wb.sheets {
         if sink.is_full() {
@@ -563,11 +837,12 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             continue;
         };
         let mut h = SheetHandler {
-            grid: GridBuilder::new(sink.policy, sink.items_left()),
+            grid: GridBuilder::new(sink.policy, sink.items_left().saturating_sub(pending_items)),
             links: Vec::new(),
             sst: &sst,
             formats: &mut formats,
             date1904: wb.date1904,
+            recalc_all: wb.recalc_all,
             row: 0,
             next_col: 0,
             col: 0,
@@ -585,10 +860,19 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             formulas: 0,
             stop: false,
             max_text: sink.policy.max_cell_bytes,
+            f_type: FormulaKind::Normal,
+            f_si: String::new(),
+            collect_only: false,
+            raw: BTreeMap::new(),
+            raw_complete: true,
+            raw_cap: 0,
+            shared: HashMap::new(),
+            uncached: BTreeMap::new(),
         };
         let res = xml::drive(&text, pkg.limits(), &mut h);
         formulas = formulas.saturating_add(h.formulas);
         let raw_links = std::mem::take(&mut h.links);
+        let uncached = std::mem::take(&mut h.uncached);
         let mut grid = h.grid.finish();
         grid.attach_links(&sheet_links(pkg, &part, &raw_links, sink.policy.max_href_bytes)?);
         if res.is_err() {
@@ -597,11 +881,19 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         if grid.truncated {
             sink.truncated("grid");
         }
-        if grid.rows.is_empty() && !grid.truncated {
+        let sheet_index = parts.len();
+        parts.push((sheet.name.clone(), part.clone()));
+        if uncached.is_empty() {
             // Empty sheets still list their name so nothing appears to be missing.
             sink.push(sec, crate::model::Block::Grid(grid));
         } else {
-            sink.push(sec, crate::model::Block::Grid(grid));
+            // This sheet has formulas without a result: it is pushed once they are calculated.
+            pending_items = pending_items.saturating_add(
+                grid.rows
+                    .iter()
+                    .fold(1usize, |n, r| n.saturating_add(1).saturating_add(r.cells.len())),
+            );
+            waiting.push(Waiting { sec, sheet: sheet_index, grid, styles: uncached });
         }
 
         // Notes attached to cells, and drawings we do not render.
@@ -620,6 +912,27 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         if !pkg.rel_targets(&part, "drawing")?.is_empty() {
             drawings = true;
         }
+    }
+
+    // Calculate what has no stored result, then hand over the grids that waited for it.
+    let candidates: usize = waiting.iter().map(|w| w.styles.len()).sum();
+    let outcome = if waiting.is_empty() || candidates > MAX_CALC_FORMULAS {
+        // Nothing to calculate, or more than is worth the time: shown as stored (or as text).
+        formula::Outcome::default()
+    } else {
+        calculate(pkg, &parts, sink, &sst, &mut formats, (wb.date1904, wb.recalc_all))?
+    };
+    let mut calculated = 0u64;
+    for mut w in waiting {
+        calculated = calculated.saturating_add(fill_calculated(
+            &mut w.grid,
+            w.sheet,
+            &w.styles,
+            &outcome,
+            &mut formats,
+            wb.date1904,
+        ));
+        sink.push(w.sec, crate::model::Block::Grid(w.grid));
     }
 
     if !comments.is_empty()
@@ -646,8 +959,11 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             }
         }
     }
-    if formulas > 0 {
-        sink.count(crate::model::NoticeKind::FormulasNotEvaluated, "", formulas);
+    if calculated > 0 {
+        sink.count(crate::model::NoticeKind::FormulasCalculated, "", calculated);
+    }
+    if formulas > calculated {
+        sink.count(crate::model::NoticeKind::FormulasNotEvaluated, "", formulas - calculated);
     }
     if drawings {
         sink.note(crate::model::NoticeKind::Unsupported, "drawings and charts");
@@ -820,6 +1136,117 @@ mod tests {
             r#"<workbookPr date1904="1"/>"#,
         );
         assert_eq!(cell(grid(&ok(&data), 0), 1, 0), Some(("1904-01-01", CellKind::Date)));
+    }
+
+    #[test]
+    fn formulas_without_a_stored_result_are_calculated_and_marked() {
+        // What a library writes: formulas and no results. Sheet2 reads Sheet1.
+        let s1 = r#"<row r="1"><c r="A1"><v>2</v></c><c r="B1"><v>3</v></c><c r="C1"><f>A1*B1</f></c></row>
+            <row r="2"><c r="A2" t="inlineStr"><is><t>x</t></is></c><c r="C2" s="1"><f>C1/4</f></c><c r="D2"><f>A2&amp;"!"</f></c></row>
+            <row r="3"><c r="A3"><f>SUM(A1:B1)</f><v>99</v></c><c r="B3"><f>1/0</f></c><c r="C3"><f>TODAY()</f></c></row>"#;
+        let s2 = r#"<row r="1"><c r="A1"><f>Sheet1!C1+1</f></c><c r="B1"><f>IF(A1&gt;6,"big","small")</f></c></row>"#;
+        let data = xlsx(&[s1, s2], &sst_xml(&[]), &styles_xml("", &[0, 9]), "");
+        let p = ok(&data);
+        let g = grid(&p, 0);
+        assert_eq!(cell(g, 1, 2), Some(("6", CellKind::Calculated)));
+        assert_eq!(
+            cell(g, 2, 2),
+            Some(("150%", CellKind::Calculated)),
+            "the cell's own number format"
+        );
+        assert_eq!(cell(g, 2, 3), Some(("x!", CellKind::Calculated)));
+        assert_eq!(
+            cell(g, 3, 0),
+            Some(("99", CellKind::Number)),
+            "a stored result is never recalculated"
+        );
+        assert_eq!(cell(g, 3, 1), Some(("#DIV/0!", CellKind::Error)));
+        assert_eq!(
+            cell(g, 3, 2),
+            Some(("=TODAY()", CellKind::Formula)),
+            "not calculable: the formula"
+        );
+        let g = grid(&p, 1);
+        assert_eq!(cell(g, 1, 0), Some(("7", CellKind::Calculated)));
+        assert_eq!(cell(g, 1, 1), Some(("big", CellKind::Calculated)));
+        let n = |k| p.notices.iter().find(|n| n.kind == k).map(|n| n.count);
+        assert_eq!(n(NoticeKind::FormulasCalculated), Some(6));
+        assert_eq!(n(NoticeKind::FormulasNotEvaluated), Some(2), "A3 (stored) and C3 (unknown)");
+    }
+
+    #[test]
+    fn a_file_that_asks_for_recalculation_gets_it_where_possible() {
+        // xlsxwriter and openpyxl store 0 or nothing and set fullCalcOnLoad.
+        let s1 = r#"<row r="1"><c r="A1"><v>4</v></c><c r="B1"><f>A1*5</f><v>0</v></c><c r="C1"><f>TODAY()</f><v>45000</v></c></row>"#;
+        let data =
+            xlsx(&[s1], &sst_xml(&[]), &styles_xml("", &[0]), r#"<calcPr fullCalcOnLoad="1"/>"#);
+        let p = ok(&data);
+        let g = grid(&p, 0);
+        assert_eq!(cell(g, 1, 1), Some(("20", CellKind::Calculated)), "not the stored 0");
+        assert_eq!(
+            cell(g, 1, 2),
+            Some(("45000", CellKind::Number)),
+            "what cannot be calculated keeps its stored result"
+        );
+        // Without the flag the stored result stands.
+        let data = xlsx(&[s1], &sst_xml(&[]), &styles_xml("", &[0]), "");
+        let p = ok(&data);
+        assert_eq!(cell(grid(&p, 0), 1, 1), Some(("0", CellKind::Number)));
+    }
+
+    #[test]
+    fn a_workbook_written_by_a_library_is_calculated() {
+        // tools/fixtures/make_formulas.py: formulas, no stored results, fullCalcOnLoad.
+        let data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/formulas.xlsx"
+        ))
+        .expect("the fixture");
+        let p = ok(&data);
+        let g = grid(&p, 0);
+        assert_eq!(cell(g, 5, 1), Some(("100", CellKind::Calculated)));
+        assert_eq!(cell(g, 6, 1), Some(("Всего: 100.00 руб.", CellKind::Calculated)));
+        assert_eq!(cell(g, 7, 1), Some(("Яблоки", CellKind::Calculated)));
+        assert_eq!(cell(g, 8, 1), Some(("40%", CellKind::Calculated)));
+        assert_eq!(cell(g, 9, 1), Some(("=TODAY()", CellKind::Formula)));
+        assert_eq!(cell(grid(&p, 1), 1, 1), Some(("200", CellKind::Calculated)));
+        let n = |k| p.notices.iter().find(|n| n.kind == k).map(|n| n.count);
+        assert_eq!(n(NoticeKind::FormulasCalculated), Some(5));
+        assert_eq!(n(NoticeKind::FormulasNotEvaluated), Some(1));
+    }
+
+    #[test]
+    fn shared_formulas_are_moved_to_each_cell() {
+        let s1 = r#"<row r="1"><c r="A1"><v>1</v></c><c r="B1"><f t="shared" ref="B1:B4" si="0">A1*10</f></c></row>
+            <row r="2"><c r="A2"><v>2</v></c><c r="B2"><f t="shared" si="0"/></c></row>
+            <row r="3"><c r="A3"><v>3</v></c><c r="B3"><f t="shared" si="0"/><v>777</v></c></row>
+            <row r="4"><c r="A4"><v>4</v></c><c r="B4"><f t="shared" si="0"/></c></row>
+            <row r="5"><c r="A5"><f t="array" ref="A5">SUM(A1:A4*2)</f></c></row>"#;
+        let data = xlsx(&[s1], &sst_xml(&[]), &styles_xml("", &[0]), "");
+        let p = ok(&data);
+        let g = grid(&p, 0);
+        assert_eq!(cell(g, 1, 1), Some(("10", CellKind::Calculated)));
+        assert_eq!(cell(g, 2, 1), Some(("20", CellKind::Calculated)));
+        assert_eq!(cell(g, 3, 1), Some(("777", CellKind::Number)), "a stored result wins");
+        assert_eq!(cell(g, 4, 1), Some(("40", CellKind::Calculated)));
+        assert_eq!(
+            cell(g, 5, 0),
+            Some(("=SUM(A1:A4*2)", CellKind::Formula)),
+            "array formulas are not guessed at"
+        );
+    }
+
+    #[test]
+    fn calculated_cells_use_stored_values_and_shared_strings() {
+        let s1 = r#"<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1"><f>COUNTIF(A1:A3,"a*")</f></c></row>
+            <row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" t="b"><v>1</v></c><c r="C2"><f>IF(B2,"yes","no")</f></c></row>
+            <row r="3"><c r="A3" t="e"><v>#N/A</v></c><c r="C3"><f>IFERROR(A3,"gone")</f></c></row>"#;
+        let data = xlsx(&[s1], &sst_xml(&["apple", "banana"]), &styles_xml("", &[0]), "");
+        let g_p = ok(&data);
+        let g = grid(&g_p, 0);
+        assert_eq!(cell(g, 1, 2), Some(("1", CellKind::Calculated)));
+        assert_eq!(cell(g, 2, 2), Some(("yes", CellKind::Calculated)));
+        assert_eq!(cell(g, 3, 2), Some(("gone", CellKind::Calculated)));
     }
 
     #[test]

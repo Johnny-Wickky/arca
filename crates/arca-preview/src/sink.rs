@@ -519,6 +519,7 @@ impl<'p> Sink<'p> {
                 NoticeKind::HiddenOmitted,
                 NoticeKind::TrackedChanges,
                 NoticeKind::FormulasNotEvaluated,
+                NoticeKind::FormulasCalculated,
             ]
             .into_iter()
             .find(|k| *k as u8 == code) else {

@@ -41,6 +41,9 @@ fn main() {
         eprintln!("usage: dump <file>");
         return;
     };
+    // `ARCA_DUMP_ROWS=n` shows more (or fewer) than the first 40 rows of a grid.
+    let grid_rows: usize =
+        std::env::var("ARCA_DUMP_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
     let data = match std::fs::read(&path) {
         Ok(d) => d,
         Err(e) => {
@@ -97,7 +100,7 @@ fn main() {
                                 g.rows.len(),
                                 g.truncated
                             );
-                            for r in g.rows.iter().take(40) {
+                            for r in g.rows.iter().take(grid_rows) {
                                 let cells: Vec<String> = r
                                     .cells
                                     .iter()

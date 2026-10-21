@@ -158,7 +158,8 @@
     <string name="notice_images_not_shown">Pictures are never decoded and appear as placeholders: %1$d.</string>
     <string name="notice_hidden_shown">Hidden content is shown and marked as hidden: %1$d.</string>
     <string name="notice_tracked_changes">The document has tracked changes; deletions are struck through, insertions are underlined: %1$d.</string>
-    <string name="notice_formulas_not_evaluated">Formulas are not calculated; the stored results are shown: %1$d.</string>
+    <string name="notice_formulas_not_evaluated">Formulas are not recalculated; the result stored in the file is shown, or the formula itself when none is stored: %1$d.</string>
+    <string name="notice_formulas_calculated">Formulas with no stored result were calculated by Arca and are shown in italics: %1$d.</string>
     <string name="notice_best_effort">The text was recovered from an old binary format as well as possible; layout and some content may be missing.</string>
     <string name="notice_hidden_omitted">Hidden content is not shown (turn on Show hidden content to see it): %1$d.</string>
 </resources>

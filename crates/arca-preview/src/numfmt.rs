@@ -191,7 +191,7 @@ pub(crate) fn general(v: f64) -> String {
 // ---------------------------------------------------------------------------
 
 /// Days since 1970-01-01 → (year, month, day).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -205,7 +205,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// Days from civil date to 1970-01-01.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
@@ -213,6 +213,29 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// The serial number of a calendar date (`DATE(y, m, d)`; month and day may overflow). `None`
+/// outside the years a serial can hold and for the first two months of 1900, which spreadsheets
+/// number differently from the calendar.
+pub(crate) fn serial_from_civil(y: i64, m: i64, d: i64, date1904: bool) -> Option<f64> {
+    let months = y.checked_mul(12)?.checked_add(m.checked_sub(1)?)?;
+    let (year, month) = (months.div_euclid(12), months.rem_euclid(12) + 1);
+    let days = days_from_civil(year, month, 1).checked_add(d.checked_sub(1)?)?;
+    let serial = if date1904 {
+        days - days_from_civil(1904, 1, 1)
+    } else {
+        let s = days - days_from_civil(1899, 12, 30);
+        if s < 61 {
+            return None;
+        }
+        s
+    };
+    if !(0..2_958_466).contains(&serial) {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    Some(serial as f64)
 }
 
 /// A broken-down date and time.
@@ -900,7 +923,6 @@ impl Format {
     }
 
     /// Formats text (the `@` section).
-    #[cfg(test)]
     pub(crate) fn text(&self, s: &str) -> String {
         let sec = self.sections.get(3).or_else(|| self.sections.iter().find(|s| s.is_text_only()));
         match sec {
