@@ -315,8 +315,9 @@ fn collect_labels(shapes: &[Shape], out: &mut BTreeMap<u32, String>, depth: usiz
 /// Reading order: top to bottom (Visio's y axis points up), then left to right.
 fn reading_order(shapes: &mut [Shape]) {
     #[allow(clippy::cast_possible_truncation)]
-    let key =
-        |s: &Shape| (-((s.pin_y * 20.0).round() as i64), (s.pin_x * 20.0).round() as i64, s.id);
+    let key = |s: &Shape| {
+        (((s.pin_y * 20.0).round() as i64).saturating_neg(), (s.pin_x * 20.0).round() as i64, s.id)
+    };
     shapes.sort_by_key(key);
 }
 
@@ -620,6 +621,21 @@ mod tests {
         assert_eq!(p.sections[0].blocks.len(), 3_000);
         let cut = many.chars().take(many.len() / 2).collect::<String>();
         let _ = run(&drawing(&[("Cut", "")], &[cut.as_str()]));
+    }
+
+    #[test]
+    fn positions_beyond_the_range_of_integers_do_not_overflow_the_sort() {
+        // Found by the damage test of the binary reader: negating the saturated key of a position
+        // like -1e300 overflowed.
+        let page = format!(
+            r#"<PageContents {NS}><Shapes>
+              <Shape ID="1"><Cell N="PinX" V="-1e300"/><Cell N="PinY" V="-1e300"/><Text>far below</Text></Shape>
+              <Shape ID="2"><Cell N="PinX" V="1e300"/><Cell N="PinY" V="1e300"/><Text>far above</Text></Shape>
+              <Shape ID="3"><Cell N="PinX" V="0"/><Cell N="PinY" V="0"/><Text>middle</Text></Shape>
+            </Shapes></PageContents>"#
+        );
+        let p = ok(&drawing(&[("Far", "")], &[&page]));
+        assert_eq!(text_of_page(&p, 0), ["far above", "middle", "far below"]);
     }
 
     #[test]

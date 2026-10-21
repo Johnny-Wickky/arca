@@ -467,8 +467,8 @@ ARCA_RELEASE=1 cargo build -p arca-attribution --release   # падает, по�
 * **Сделано.** Фаза 3 (безопасный просмотр OOXML, OLE2, ODF, RTF, PDF-текст, MSG в песочнице) и
   Фаза 4 для Android (`arca-engine`, `arca-jni`, приложение, сборка и выпуск). См.
   [`ANDROID.md`](ANDROID.md) и [`releases/v0.1.0.md`](releases/v0.1.0.md).
-* **Просмотр бинарного Visio (`.vsd`) и 3D** — отдельный парсер; рентген для этих форматов уже есть.
-  Access (Jet 3/Jet 4/ACE) читается модулем `arca-preview::access` как набор таблиц.
+* **Рисунок Visio** (геометрия, соединители, мастера, 3D): `arca-preview::vsd` и `vsdx` показывают текст
+  фигур. Access (Jet 3/Jet 4/ACE) читается модулем `arca-preview::access` как набор таблиц.
 * **Рисование страниц** (`ArcaRenderTree`-подобная модель с позициями): точная вёрстка,
   картинки, диаграммы.
 * **Чистый вычислитель формул** с блокировкой `WEBSERVICE`/`CALL`/`REGISTER`/DDE.

@@ -33,6 +33,8 @@ public final class Capabilities {
         "Odt", "Ods", "Odp",
         // Legacy binary Office, PDF and Outlook messages: text extraction, nothing is rendered
         "Doc", "Xls", "Ppt", "Pdf", "Msg",
+        // Binary Visio: the text of the shapes of each page
+        "Vsd",
         // Access: the tables, as grids; queries, forms, reports, macros and modules are only listed
         "AccessJet3", "AccessJet4", "AccessAce",
         // Text

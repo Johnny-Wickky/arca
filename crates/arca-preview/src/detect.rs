@@ -150,6 +150,7 @@ pub(crate) fn extract(doc: Doc<'_>, sink: &mut Sink<'_>) -> Result<FileFormat, P
                 FileFormat::Xls => crate::xls::extract(&cf, sink)?,
                 FileFormat::Ppt => crate::ppt::extract(&cf, sink)?,
                 FileFormat::Msg => crate::msg::extract(&cf, sink)?,
+                FileFormat::Vsd => crate::vsd::extract(&cf, sink)?,
                 _ => return Err(PreviewError::Unsupported(format)),
             }
             Ok(format)
