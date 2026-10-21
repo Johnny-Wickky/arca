@@ -45,6 +45,7 @@ mod ppt;
 mod pptx;
 mod rtf;
 pub mod sink;
+mod vsdx;
 mod xls;
 mod xlsx;
 mod xml;

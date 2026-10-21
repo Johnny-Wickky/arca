@@ -125,6 +125,9 @@ pub(crate) fn extract(doc: Doc<'_>, sink: &mut Sink<'_>) -> Result<FileFormat, P
                 F::Pptx | F::Pptm | F::Ppsx | F::Ppsm | F::Potx | F::Potm => {
                     crate::pptx::extract(&mut pkg, sink)?;
                 }
+                F::Vsdx | F::Vsdm | F::VisioTemplateOrStencil => {
+                    crate::vsdx::extract(&mut pkg, sink)?;
+                }
                 _ => return Err(PreviewError::Unsupported(format)),
             }
             for s in std::mem::take(&mut pkg.skipped) {

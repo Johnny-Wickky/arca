@@ -543,11 +543,11 @@ public final class CoreTest {
 
     static void capabilities() {
         String[] previews = {"Docx", "Xlsx", "Pptx", "Odt", "Ods", "Odp", "Doc", "Xls", "Ppt", "Pdf", "Msg",
-            "Rtf", "PlainText", "Csv", "Tsv", "Markdown"};
+            "Rtf", "PlainText", "Csv", "Tsv", "Markdown", "Vsdx", "Vsdm", "VisioTemplateOrStencil"};
         for (String f : previews) {
             check(Capabilities.canPreview(f), "preview of " + f);
         }
-        String[] noPreview = {"Vsd", "Vsdx", "Msi", "OleOther", "Exe", "", "docx", "Unknown"};
+        String[] noPreview = {"Vsd", "Msi", "OleOther", "Exe", "", "docx", "Unknown"};
         for (String f : noPreview) {
             check(!Capabilities.canPreview(f), "no preview of " + f);
         }

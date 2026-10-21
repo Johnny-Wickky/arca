@@ -27,6 +27,8 @@ public final class Capabilities {
         "Docx", "Docm", "Dotx", "Dotm",
         "Xlsx", "Xlsm", "Xltx", "Xltm", "Xlam",
         "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm",
+        // Visio: the text, data, links and connections of the shapes; no geometry
+        "Vsdx", "Vsdm", "VisioTemplateOrStencil",
         // OpenDocument
         "Odt", "Ods", "Odp",
         // Legacy binary Office, PDF and Outlook messages: text extraction, nothing is rendered
