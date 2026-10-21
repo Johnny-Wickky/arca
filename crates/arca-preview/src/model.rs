@@ -378,11 +378,14 @@ pub enum NoticeKind {
     HiddenOmitted,
     /// Formulas that had no stored result were calculated by the viewer; `count` of them.
     FormulasCalculated,
+    /// Records the document marks as deleted are still stored in the file and were not shown;
+    /// `count` of them.
+    DeletedRecords,
 }
 wire_enum!(NoticeKind {
     Truncated = 0, Unsupported = 1, Skipped = 2, InvisibleRemoved = 3, ImagesNotShown = 4,
     HiddenShown = 5, TrackedChanges = 6, FormulasNotEvaluated = 7, BestEffort = 8,
-    HiddenOmitted = 9, FormulasCalculated = 10,
+    HiddenOmitted = 9, FormulasCalculated = 10, DeletedRecords = 11,
 });
 
 /// A remark about what the preview does or does not show.

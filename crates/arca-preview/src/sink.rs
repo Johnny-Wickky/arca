@@ -520,6 +520,7 @@ impl<'p> Sink<'p> {
                 NoticeKind::TrackedChanges,
                 NoticeKind::FormulasNotEvaluated,
                 NoticeKind::FormulasCalculated,
+                NoticeKind::DeletedRecords,
             ]
             .into_iter()
             .find(|k| *k as u8 == code) else {

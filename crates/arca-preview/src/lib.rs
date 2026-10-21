@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+mod access;
 mod bidi;
 mod decrypt;
 mod detect;

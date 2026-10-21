@@ -30,6 +30,8 @@ pub(crate) enum Doc<'a> {
     Rtf(&'a [u8]),
     /// PDF bytes.
     Pdf(&'a [u8]),
+    /// Access database bytes.
+    Access { data: &'a [u8], format: FileFormat },
     /// Decoded text; `legacy` is the code page assumed for old 8-bit text.
     Text { text: String, format: FileFormat, legacy: Option<u16> },
 }
@@ -39,7 +41,7 @@ pub(crate) fn open<'a>(data: &'a [u8], policy: &PreviewPolicy) -> Result<Doc<'a>
     match sniff(data) {
         Magic::Empty => Err(PreviewError::Unsupported(FileFormat::Empty)),
         Magic::Executable(_) => Err(PreviewError::Unsupported(FileFormat::Executable)),
-        Magic::Jet(f) => Err(PreviewError::Unsupported(f)),
+        Magic::Jet(format) => Ok(Doc::Access { data, format }),
         Magic::Unknown => Err(PreviewError::Unsupported(FileFormat::Unknown)),
         Magic::Zip => open_zip(data, policy),
         Magic::Ole2 => open_cfb(data, policy),
@@ -159,6 +161,10 @@ pub(crate) fn extract(doc: Doc<'_>, sink: &mut Sink<'_>) -> Result<FileFormat, P
         Doc::Pdf(data) => {
             crate::pdf::extract(data, sink)?;
             Ok(FileFormat::Pdf)
+        }
+        Doc::Access { data, format } => {
+            crate::access::extract(data, format, sink)?;
+            Ok(format)
         }
     }
 }
