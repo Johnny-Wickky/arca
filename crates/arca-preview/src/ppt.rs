@@ -10,8 +10,12 @@
 //!   and from the document's text lists (`SlideListWithTexts`), which hold the text of
 //!   placeholders. Text that no shape refers to is shown too — nothing is silently lost;
 //! * **hidden slides** and **hidden or deleted shapes** are shown and labelled;
+//! * **bold, italic and underline** come from the character runs of the text, **links inside
+//!   the text** from its interactive-info records (their targets are also listed in their own
+//!   section);
+//! * a **table** is how PowerPoint 97–2003 stores it, a group of one rectangle per cell; a group
+//!   whose cells line up in rows and columns is shown as a table;
 //! * **speaker notes** follow the slide's content;
-//! * **hyperlink targets** are listed in their own section;
 //! * pictures, embedded objects, macros (VBA) and animations are never interpreted.
 //!
 //! Password-protected presentations are reported, not opened. All offsets and counts come from
@@ -23,7 +27,9 @@ use arca_container::bytes::{slice, u16_le, u32_le};
 use arca_container::cfb::CompoundFile;
 
 use crate::PreviewError;
-use crate::model::{Align, Block, ImageInfo, NoticeKind, ParaStyle, Paragraph, SectionKind, style};
+use crate::model::{
+    Align, Block, Cell, ImageInfo, NoticeKind, ParaStyle, Paragraph, Row, SectionKind, Table, style,
+};
 use crate::sink::{ParaBuilder, Sink};
 
 /// Revisions followed in the edit chain.
@@ -42,6 +48,10 @@ const MAX_UNITS: usize = 4 << 20;
 const MAX_FORMAT_RUNS: usize = 1 << 16;
 /// Hyperlinks listed.
 const MAX_LINKS: usize = 4_096;
+/// Links inside one text.
+const MAX_TEXT_LINKS: usize = 256;
+/// Shapes of a group looked at as the cells of a table.
+const MAX_TABLE_SHAPES: usize = 4_096;
 
 const RT_DOCUMENT: u16 = 0x03E8;
 const RT_SLIDE: u16 = 0x03EE;
@@ -66,6 +76,10 @@ const RT_RTF_DATE_FIELD: u16 = 0x1015;
 const RT_EX_EMBED: u16 = 0x0FCC;
 const RT_EX_CONTROL: u16 = 0x0FEE;
 const RT_EX_HYPERLINK: u16 = 0x0FD7;
+const RT_EX_HYPERLINK_ATOM: u16 = 0x0FD3;
+const RT_INTERACTIVE_INFO: u16 = 0x0FF2;
+const RT_INTERACTIVE_INFO_ATOM: u16 = 0x0FF3;
+const RT_TX_INTERACTIVE_INFO: u16 = 0x0FDF;
 const RT_LIST_WITH_TEXTS: u16 = 0x0FF0;
 const RT_USER_EDIT: u16 = 0x0FF5;
 const RT_EX_OLE_STORAGE: u16 = 0x1011;
@@ -75,6 +89,9 @@ const ESC_SP: u16 = 0xF00A;
 const ESC_OPT: u16 = 0xF00B;
 const ESC_CLIENT_TEXTBOX: u16 = 0xF00D;
 const ESC_SP_CONTAINER: u16 = 0xF004;
+const ESC_SPGR_CONTAINER: u16 = 0xF003;
+const ESC_CLIENT_ANCHOR: u16 = 0xF010;
+const ESC_CHILD_ANCHOR: u16 = 0xF00F;
 
 /// `Current User` header token of an unencrypted presentation.
 const TOKEN_PLAIN: u32 = 0xE391_C05F;
@@ -148,6 +165,24 @@ struct PfRun {
     align: Option<u16>,
 }
 
+/// Character formatting of a run of characters; `None` where the run does not say.
+#[derive(Debug, Clone, Copy, Default)]
+struct CfRun {
+    /// Where the run ends (the characters before it, in all runs so far).
+    end: usize,
+    bold: Option<bool>,
+    italic: Option<bool>,
+    underline: Option<bool>,
+}
+
+/// A link inside a text: the characters `start..end` lead to hyperlink `id`.
+#[derive(Debug, Clone, Copy)]
+struct TextLink {
+    start: usize,
+    end: usize,
+    id: u32,
+}
+
 /// The text of one text box or placeholder.
 #[derive(Debug, Clone, Default)]
 struct TextItem {
@@ -155,6 +190,8 @@ struct TextItem {
     ty: u32,
     units: Vec<u16>,
     pf: Vec<PfRun>,
+    cf: Vec<CfRun>,
+    links: Vec<TextLink>,
     /// Positions of characters that stand for a field (slide number, date, …) and its label.
     fields: Vec<(usize, &'static str)>,
 }
@@ -167,12 +204,15 @@ enum Item {
 }
 
 /// Reads the paragraph formatting of a `StyleTextPropAtom`: indent level, bullet and alignment.
+/// Also says where the character runs that follow begin, if the paragraph runs were read to
+/// their end.
 ///
 /// Stops quietly at anything it cannot follow; the text is shown either way.
-fn parse_pf(data: &[u8], text_units: usize) -> Vec<PfRun> {
+fn parse_pf(data: &[u8], text_units: usize) -> (Vec<PfRun>, Option<usize>) {
     let mut out = Vec::new();
     let mut pos = 0usize;
     let mut covered = 0usize;
+    let mut complete = true;
     // The paragraph runs cover the text and its terminating paragraph mark.
     while covered <= text_units && out.len() < MAX_FORMAT_RUNS {
         let (Some(count), Some(indent), Some(mask)) = (
@@ -235,9 +275,61 @@ fn parse_pf(data: &[u8], text_units: usize) -> Vec<PfRun> {
             take(2, &mut pos);
         }
         if !ok {
+            complete = false;
             break;
         }
         covered = covered.saturating_add(run.count.max(1));
+        out.push(run);
+    }
+    // Ending for any other reason (no more data, too many runs) leaves nothing to follow.
+    let complete = complete && covered > text_units;
+    (out, complete.then_some(pos))
+}
+
+/// Reads the character runs of a `StyleTextPropAtom` from where the paragraph runs end: bold,
+/// italic and underline. The other settings are skipped over.
+fn parse_cf(data: &[u8], mut pos: usize, text_units: usize) -> Vec<CfRun> {
+    let mut out = Vec::new();
+    let mut covered = 0usize;
+    while covered <= text_units && out.len() < MAX_FORMAT_RUNS {
+        let (Some(count), Some(mask)) = (u32_le(data, pos), u32_le(data, pos.saturating_add(4)))
+        else {
+            break;
+        };
+        pos = pos.saturating_add(8);
+        let count = usz(count);
+        let mut run = CfRun::default();
+        // The style bits themselves, present if any of the style masks is.
+        if mask & 0x3EB7 != 0 {
+            let Some(style) = u16_le(data, pos) else { break };
+            pos = pos.saturating_add(2);
+            let flag = |bit: u32| (mask & bit != 0).then_some(u32::from(style) & bit != 0);
+            run.bold = flag(0x1);
+            run.italic = flag(0x2);
+            run.underline = flag(0x4);
+        }
+        // Font, old east-asian font, ANSI font, symbol font, size (2 bytes each); colour (4);
+        // position (2).
+        let mut skip = 0usize;
+        for (bit, size) in [
+            (0x1_0000u32, 2usize),
+            (0x20_0000, 2),
+            (0x40_0000, 2),
+            (0x80_0000, 2),
+            (0x2_0000, 2),
+            (0x4_0000, 4),
+            (0x8_0000, 2),
+        ] {
+            if mask & bit != 0 {
+                skip += size;
+            }
+        }
+        pos = pos.saturating_add(skip);
+        if pos > data.len() {
+            break;
+        }
+        covered = covered.saturating_add(count.max(1));
+        run.end = covered;
         out.push(run);
     }
     out
@@ -247,6 +339,7 @@ fn parse_pf(data: &[u8], text_units: usize) -> Vec<PfRun> {
 fn read_items<'a>(recs: impl Iterator<Item = Rec<'a>>) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
     let mut ty: Option<u32> = None;
+    let mut pending_link: Option<u32> = None;
     for r in recs {
         match r.typ {
             RT_TEXT_HEADER => ty = u32_le(r.data, 0),
@@ -265,8 +358,7 @@ fn read_items<'a>(recs: impl Iterator<Item = Rec<'a>>) -> Vec<Item> {
                 items.push(Item::Text(TextItem {
                     ty: ty.take().unwrap_or(4),
                     units,
-                    pf: Vec::new(),
-                    fields: Vec::new(),
+                    ..TextItem::default()
                 }));
             }
             RT_TEXT_BYTES => {
@@ -275,15 +367,36 @@ fn read_items<'a>(recs: impl Iterator<Item = Rec<'a>>) -> Vec<Item> {
                 items.push(Item::Text(TextItem {
                     ty: ty.take().unwrap_or(4),
                     units,
-                    pf: Vec::new(),
-                    fields: Vec::new(),
+                    ..TextItem::default()
                 }));
             }
             RT_STYLE_TEXT => {
                 if let Some(Item::Text(t)) = items.last_mut()
                     && t.pf.is_empty()
                 {
-                    t.pf = parse_pf(r.data, t.units.len());
+                    let (pf, rest) = parse_pf(r.data, t.units.len());
+                    t.pf = pf;
+                    if let Some(at) = rest {
+                        t.cf = parse_cf(r.data, at, t.units.len());
+                    }
+                }
+            }
+            // The hyperlink of a stretch of text: first the container that names it, then the
+            // atom that says which characters it covers.
+            RT_INTERACTIVE_INFO => {
+                pending_link = r
+                    .children()
+                    .find(|c| c.typ == RT_INTERACTIVE_INFO_ATOM)
+                    .and_then(|c| u32_le(c.data, 4))
+                    .filter(|&id| id != 0);
+            }
+            RT_TX_INTERACTIVE_INFO => {
+                if let Some(id) = pending_link.take()
+                    && let Some(Item::Text(t)) = items.last_mut()
+                    && let (Some(start), Some(end)) = (u32_le(r.data, 0), u32_le(r.data, 4))
+                    && t.links.len() < MAX_TEXT_LINKS
+                {
+                    t.links.push(TextLink { start: usz(start), end: usz(end), id });
                 }
             }
             RT_OUTLINE_REF => {
@@ -363,28 +476,68 @@ struct Shape {
     hidden: bool,
     deleted: bool,
     picture: bool,
+    /// The shape stands for a group (it has no content of its own).
+    is_group: bool,
+    /// Shape type (`msosptRectangle` 1, `msosptLine` 20, `msosptTextBox` 202, …).
+    kind: u16,
+    /// The group the shape is in: 0 for the slide itself, otherwise a number per nested group.
+    group: u32,
+    /// Left, top, right and bottom, in the units of the shape's group.
+    anchor: Option<[i32; 4]>,
     items: Vec<Item>,
+}
+
+/// Where the walk through a drawing is.
+struct Walk<'a> {
+    budget: &'a mut usize,
+    /// The last group number handed out.
+    groups: u32,
+    out: &'a mut Vec<Shape>,
 }
 
 /// Reads the shapes of a drawing in document order.
 fn walk_drawing(data: &[u8], depth: usize, budget: &mut usize, out: &mut Vec<Shape>) {
+    let mut w = Walk { budget, groups: 0, out };
+    walk(&mut w, data, depth, 0, false);
+}
+
+fn walk(w: &mut Walk<'_>, data: &[u8], depth: usize, group: u32, in_group: bool) {
     if depth > MAX_DEPTH {
         return;
     }
     for r in (Recs { buf: data, pos: 0 }) {
-        if *budget == 0 {
+        if *w.budget == 0 {
             return;
         }
-        *budget -= 1;
+        *w.budget -= 1;
         if r.ver != 0xF {
             continue;
         }
         if r.typ == ESC_SP_CONTAINER {
-            out.push(read_shape(&r));
+            let mut shape = read_shape(&r);
+            shape.group = group;
+            w.out.push(shape);
+        } else if r.typ == ESC_SPGR_CONTAINER {
+            // The first group of a drawing is the slide; the ones inside it are real groups.
+            if in_group {
+                w.groups = w.groups.saturating_add(1);
+                let id = w.groups;
+                walk(w, r.data, depth + 1, id, true);
+            } else {
+                walk(w, r.data, depth + 1, 0, true);
+            }
         } else {
-            walk_drawing(r.data, depth + 1, budget, out);
+            walk(w, r.data, depth + 1, group, in_group);
         }
     }
+}
+
+fn i32_le(data: &[u8], at: usize) -> Option<i32> {
+    u32_le(data, at).map(|v| i32::from_le_bytes(v.to_le_bytes()))
+}
+
+fn i16_le(data: &[u8], at: usize) -> Option<i32> {
+    u16_le(data, at).map(|v| i32::from(i16::from_le_bytes(v.to_le_bytes())))
 }
 
 fn read_shape(sp: &Rec<'_>) -> Shape {
@@ -392,8 +545,11 @@ fn read_shape(sp: &Rec<'_>) -> Shape {
     for r in sp.children() {
         match r.typ {
             ESC_SP => {
-                // fDeleted
-                shape.deleted |= u32_le(r.data, 4).is_some_and(|f| f & 0x08 != 0);
+                shape.kind = r.inst;
+                let flags = u32_le(r.data, 4).unwrap_or(0);
+                // fGroup, fDeleted
+                shape.is_group = flags & 0x01 != 0;
+                shape.deleted |= flags & 0x08 != 0;
             }
             ESC_OPT => {
                 let count = usize::from(r.inst).min(r.data.len() / 6);
@@ -410,6 +566,29 @@ fn read_shape(sp: &Rec<'_>) -> Shape {
                         0x0104 => shape.picture = true,
                         _ => {}
                     }
+                }
+            }
+            // Inside a group: left, top, right, bottom.
+            ESC_CHILD_ANCHOR if r.data.len() == 16 => {
+                if let (Some(l), Some(t), Some(rt), Some(b)) =
+                    (i32_le(r.data, 0), i32_le(r.data, 4), i32_le(r.data, 8), i32_le(r.data, 12))
+                {
+                    shape.anchor = Some([l, t, rt, b]);
+                }
+            }
+            // On the slide: top, left, right, bottom, as 16 or 32 bits.
+            ESC_CLIENT_ANCHOR if r.data.len() == 8 => {
+                if let (Some(t), Some(l), Some(rt), Some(b)) =
+                    (i16_le(r.data, 0), i16_le(r.data, 2), i16_le(r.data, 4), i16_le(r.data, 6))
+                {
+                    shape.anchor = Some([l, t, rt, b]);
+                }
+            }
+            ESC_CLIENT_ANCHOR if r.data.len() == 16 => {
+                if let (Some(t), Some(l), Some(rt), Some(b)) =
+                    (i32_le(r.data, 0), i32_le(r.data, 4), i32_le(r.data, 8), i32_le(r.data, 12))
+                {
+                    shape.anchor = Some([l, t, rt, b]);
                 }
             }
             ESC_CLIENT_TEXTBOX => shape.items.extend(read_items(r.children())),
@@ -450,39 +629,84 @@ fn read_notes(rec: &Rec<'_>, budget: &mut usize) -> Vec<Shape> {
     shapes
 }
 
-/// The text of the paragraph `start..end` with field characters replaced by their labels.
-/// The flag is set if nothing but fields (and blanks) is in the paragraph.
-fn paragraph_text(t: &TextItem, start: usize, end: usize) -> (String, bool) {
-    let units = t.units.get(start..end).unwrap_or(&[]);
-    if t.fields.is_empty() {
-        return (String::from_utf16_lossy(units).replace('\u{B}', "\n"), false);
+/// Style bits of the character run that covers `pos`.
+fn cf_bits(t: &TextItem, pos: usize) -> u16 {
+    let i = t.cf.partition_point(|r| r.end <= pos);
+    let Some(run) = t.cf.get(i) else { return 0 };
+    let mut bits = 0;
+    if run.bold == Some(true) {
+        bits |= style::BOLD;
     }
-    let mut out = String::new();
-    let mut plain = String::new();
-    let mut run: Vec<u16> = Vec::new();
-    let flush = |run: &mut Vec<u16>, out: &mut String, plain: &mut String| {
-        if !run.is_empty() {
-            let s = String::from_utf16_lossy(run).replace('\u{B}', "\n");
-            plain.push_str(&s);
-            out.push_str(&s);
-            run.clear();
+    if run.italic == Some(true) {
+        bits |= style::ITALIC;
+    }
+    if run.underline == Some(true) {
+        bits |= style::UNDERLINE;
+    }
+    bits
+}
+
+/// Adds the text of the paragraph `start..end` to `b`, run by run: field characters become
+/// their labels, bold/italic/underline and links follow the character runs. The result says
+/// whether the paragraph holds any text of its own (a page number is not).
+fn paragraph_runs(
+    t: &TextItem,
+    start: usize,
+    end: usize,
+    bits: u16,
+    links: &BTreeMap<u32, String>,
+    b: &mut ParaBuilder,
+) -> bool {
+    // Where the formatting, a link or a field starts or stops.
+    let mut cuts: Vec<usize> = vec![start, end];
+    let first = t.cf.partition_point(|r| r.end <= start);
+    for r in t.cf.iter().skip(first) {
+        if r.end >= end {
+            break;
         }
-    };
-    for (i, &u) in units.iter().enumerate() {
-        if let Some((_, label)) = t.fields.iter().find(|(p, _)| *p == start + i) {
-            flush(&mut run, &mut out, &mut plain);
-            out.push_str(label);
-        } else {
-            run.push(u);
+        cuts.push(r.end);
+    }
+    for l in &t.links {
+        cuts.extend([l.start, l.end].into_iter().filter(|&p| p > start && p < end));
+    }
+    for &(p, _) in &t.fields {
+        if p >= start && p < end {
+            cuts.extend([p, p + 1]);
         }
     }
-    flush(&mut run, &mut out, &mut plain);
-    let only = plain.trim().is_empty();
-    (out, only)
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut real = false;
+    for (&a, &z) in cuts.iter().zip(cuts.iter().skip(1)) {
+        if a >= z || a < start || z > end {
+            continue;
+        }
+        if let Some((_, label)) = t.fields.iter().find(|(p, _)| *p == a) {
+            b.text(label, bits, "");
+            continue;
+        }
+        let units = t.units.get(a..z).unwrap_or(&[]);
+        let text = String::from_utf16_lossy(units).replace('\u{B}', "\n");
+        real |= !text.trim().is_empty();
+        let href = t
+            .links
+            .iter()
+            .find(|l| l.start <= a && a < l.end)
+            .and_then(|l| links.get(&l.id))
+            .map_or("", String::as_str);
+        b.text(&text, bits | cf_bits(t, a), href);
+    }
+    real
 }
 
 /// Appends the paragraphs of a text item.
-fn text_blocks(t: &TextItem, bits: u16, notes: bool, out: &mut Vec<(bool, Block)>) {
+fn text_blocks(
+    t: &TextItem,
+    bits: u16,
+    notes: bool,
+    links: &BTreeMap<u32, String>,
+    out: &mut Vec<(bool, Block)>,
+) {
     let units = &t.units;
     let mut start = 0usize;
     // Index of the formatting run that covers `start`, and where it ends.
@@ -499,14 +723,13 @@ fn text_blocks(t: &TextItem, bits: u16, notes: bool, out: &mut Vec<(bool, Block)
             run_end = run_end.saturating_add(t.pf.get(run_idx).map_or(0, |r| r.count.max(1)));
         }
         let pf = t.pf.get(run_idx).copied();
-        let (text, only_fields) = paragraph_text(t, start, end);
+        let mut b = ParaBuilder::new();
+        let real = paragraph_runs(t, start, end, bits, links, &mut b);
         start = end.saturating_add(1);
         // A paragraph that is nothing but a page number or a date carries no content.
-        if text.trim().is_empty() || only_fields {
+        if !real {
             continue;
         }
-        let mut b = ParaBuilder::new();
-        b.text(&text, bits, "");
         let is_title = !notes && matches!(t.ty, 0 | 6);
         let st = if notes {
             ParaStyle::Note
@@ -535,38 +758,179 @@ fn text_blocks(t: &TextItem, bits: u16, notes: bool, out: &mut Vec<(bool, Block)
     }
 }
 
+/// Style bits that a shape's flags put on all its text.
+fn shape_bits(shape: Option<&Shape>) -> u16 {
+    let mut bits = 0u16;
+    if let Some(s) = shape {
+        if s.hidden {
+            bits |= style::HIDDEN;
+        }
+        if s.deleted {
+            bits |= style::DELETED;
+        }
+    }
+    bits
+}
+
+/// Groups the values (sorted) into stretches whose members are within `tol` of the first.
+fn cluster(mut v: Vec<i32>, tol: i32) -> Vec<i32> {
+    v.sort_unstable();
+    let mut out: Vec<i32> = Vec::new();
+    for x in v {
+        if out.last().is_none_or(|&c| x.saturating_sub(c) > tol) {
+            out.push(x);
+        }
+    }
+    out
+}
+
+/// The cluster `v` belongs to.
+fn slot(clusters: &[i32], v: i32, tol: i32) -> Option<usize> {
+    clusters.iter().position(|&c| (v.saturating_sub(c)).abs() <= tol)
+}
+
+/// A group of shapes that line up in rows and columns, the way PowerPoint 97–2003 stores a
+/// table: one rectangle per cell, spanning cells wider than one column.
+fn table_of(
+    group: &[Shape],
+    outline: &[Item],
+    used: &mut [bool],
+    links: &BTreeMap<u32, String>,
+) -> Option<Table> {
+    // Lines are borders; the group's own shape has nothing in it.
+    let cells: Vec<(&Shape, [i32; 4])> = group
+        .iter()
+        .filter(|s| !s.is_group && !s.picture && s.kind != 20)
+        .filter_map(|s| s.anchor.map(|a| (s, a)))
+        .collect();
+    if cells.len() < 4 || cells.len() > MAX_TABLE_SHAPES {
+        return None;
+    }
+    let min_of = |f: &dyn Fn(&[i32; 4]) -> i32| cells.iter().map(|(_, a)| f(a)).min().unwrap_or(0);
+    let max_of = |f: &dyn Fn(&[i32; 4]) -> i32| cells.iter().map(|(_, a)| f(a)).max().unwrap_or(0);
+    let tol_x = (max_of(&|a| a[2]).saturating_sub(min_of(&|a| a[0])) / 200).max(8);
+    let tol_y = (max_of(&|a| a[3]).saturating_sub(min_of(&|a| a[1])) / 200).max(8);
+    let cols = cluster(cells.iter().map(|(_, a)| a[0]).collect(), tol_x);
+    let rows = cluster(cells.iter().map(|(_, a)| a[1]).collect(), tol_y);
+    let (nr, nc) = (rows.len(), cols.len());
+    // Needs at least two rows and two columns, and mostly filled in.
+    if nr < 2 || nc < 2 || nr.saturating_mul(nc) > cells.len().saturating_mul(4) / 3 + 1 {
+        return None;
+    }
+    // Which shape sits in which slot, and how many columns it covers.
+    let mut at: Vec<Option<(usize, usize)>> = vec![None; nr.saturating_mul(nc)];
+    for (k, (_, a)) in cells.iter().enumerate() {
+        let r = slot(&rows, a[1], tol_y)?;
+        let c = slot(&cols, a[0], tol_x)?;
+        let span = cols
+            .iter()
+            .enumerate()
+            .filter(|&(i, &x)| {
+                i >= c && x >= a[0].saturating_sub(tol_x) && x < a[2].saturating_sub(tol_x)
+            })
+            .count()
+            .max(1);
+        for i in 0..span {
+            let cell = at.get_mut(r * nc + c + i)?;
+            if cell.is_some() {
+                return None;
+            }
+            *cell = Some((k, if i == 0 { span } else { 0 }));
+        }
+    }
+    let mut table = Table::default();
+    for r in 0..nr {
+        let mut row = Row::default();
+        for c in 0..nc {
+            match at.get(r * nc + c).copied().flatten() {
+                // Covered by the cell to the left.
+                Some((_, 0)) => {}
+                Some((k, span)) => {
+                    let (shape, _) = cells.get(k)?;
+                    let mut blocks: Vec<(bool, Block)> = Vec::new();
+                    for item in &shape.items {
+                        match item {
+                            Item::Text(t) => {
+                                text_blocks(t, shape_bits(Some(shape)), false, links, &mut blocks);
+                            }
+                            Item::Ref(i) => {
+                                if let Some(Item::Text(t)) = outline.get(*i)
+                                    && let Some(u) = used.get_mut(*i)
+                                    && !*u
+                                {
+                                    *u = true;
+                                    text_blocks(
+                                        t,
+                                        shape_bits(Some(shape)),
+                                        false,
+                                        links,
+                                        &mut blocks,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    let paras = blocks
+                        .into_iter()
+                        .filter_map(|(_, b)| match b {
+                            Block::Para(p) => Some(p),
+                            _ => None,
+                        })
+                        .collect();
+                    row.cells.push(Cell {
+                        span: u16::try_from(span).unwrap_or(1),
+                        header: false,
+                        paras,
+                    });
+                }
+                None => row.cells.push(Cell { span: 1, header: false, paras: Vec::new() }),
+            }
+        }
+        table.rows.push(row);
+    }
+    Some(table)
+}
+
 /// Turns the shapes of a slide or notes page into blocks. Text that no shape refers to follows.
 fn shape_blocks(
     shapes: &[Shape],
     outline: &[Item],
     notes: bool,
+    links: &BTreeMap<u32, String>,
     images: &mut u64,
 ) -> Vec<(bool, Block)> {
     let mut out: Vec<(bool, Block)> = Vec::new();
     let mut used = vec![false; outline.len()];
-    let emit = |shape: Option<&Shape>, t: &TextItem, out: &mut Vec<(bool, Block)>| {
-        let mut bits = 0u16;
-        if let Some(s) = shape {
-            if s.hidden {
-                bits |= style::HIDDEN;
+    let mut i = 0usize;
+    // Shapes of a group that did not make a table are shown one by one.
+    let mut no_table_until = 0usize;
+    while let Some(shape) = shapes.get(i) {
+        if shape.group != 0 && i >= no_table_until && !notes {
+            let end = shapes
+                .iter()
+                .enumerate()
+                .skip(i)
+                .find(|(_, s)| s.group != shape.group)
+                .map_or(shapes.len(), |(j, _)| j);
+            let run = shapes.get(i..end).unwrap_or(&[]);
+            if let Some(table) = table_of(run, outline, &mut used, links) {
+                out.push((false, Block::Table(table)));
+                i = end;
+                continue;
             }
-            if s.deleted {
-                bits |= style::DELETED;
-            }
+            no_table_until = end;
         }
-        text_blocks(t, bits, notes, out);
-    };
-    for shape in shapes {
+        i += 1;
         for item in &shape.items {
             match item {
-                Item::Text(t) => emit(Some(shape), t, &mut out),
-                Item::Ref(i) => {
-                    if let Some(Item::Text(t)) = outline.get(*i)
-                        && let Some(u) = used.get_mut(*i)
+                Item::Text(t) => text_blocks(t, shape_bits(Some(shape)), notes, links, &mut out),
+                Item::Ref(r) => {
+                    if let Some(Item::Text(t)) = outline.get(*r)
+                        && let Some(u) = used.get_mut(*r)
                         && !*u
                     {
                         *u = true;
-                        emit(Some(shape), t, &mut out);
+                        text_blocks(t, shape_bits(Some(shape)), notes, links, &mut out);
                     }
                 }
             }
@@ -586,7 +950,7 @@ fn shape_blocks(
     }
     for (item, u) in outline.iter().zip(&used) {
         if !*u && let Item::Text(t) = item {
-            emit(None, t, &mut out);
+            text_blocks(t, 0, notes, links, &mut out);
         }
     }
     out
@@ -665,6 +1029,8 @@ struct DocInfo {
     slide_list: TextList,
     notes_list: TextList,
     links: Vec<(String, String)>,
+    /// Where each hyperlink (by the id that texts refer to it with) leads.
+    link_targets: BTreeMap<u32, String>,
     embedded: bool,
 }
 
@@ -698,7 +1064,11 @@ fn read_document(doc: &Rec<'_>) -> DocInfo {
                             }
                             let (mut name, mut target, mut location) =
                                 (String::new(), String::new(), String::new());
+                            let mut id = 0u32;
                             for c in e.children() {
+                                if c.typ == RT_EX_HYPERLINK_ATOM {
+                                    id = u32_le(c.data, 0).unwrap_or(0);
+                                }
                                 if c.typ != RT_CSTRING {
                                     continue;
                                 }
@@ -712,6 +1082,9 @@ fn read_document(doc: &Rec<'_>) -> DocInfo {
                                 target = location;
                             } else if !location.is_empty() {
                                 target = format!("{target}#{location}");
+                            }
+                            if id != 0 && !target.is_empty() {
+                                info.link_targets.insert(id, target.clone());
                             }
                             if !target.is_empty() || !name.is_empty() {
                                 info.links.push((name, target));
@@ -878,13 +1251,15 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
             break;
         }
         let slide = read_slide(&plan.slide, &mut budget);
-        let mut blocks = shape_blocks(&slide.shapes, &plan.outline, false, &mut images);
+        let mut blocks =
+            shape_blocks(&slide.shapes, &plan.outline, false, &info.link_targets, &mut images);
         if let Some((notes_rec, notes_items)) = &plan.notes {
             let shapes = read_notes(notes_rec, &mut budget);
-            let notes: Vec<(bool, Block)> = shape_blocks(&shapes, notes_items, true, &mut images)
-                .into_iter()
-                .filter(|(_, b)| !matches!(b, Block::Image(_)))
-                .collect();
+            let notes: Vec<(bool, Block)> =
+                shape_blocks(&shapes, notes_items, true, &info.link_targets, &mut images)
+                    .into_iter()
+                    .filter(|(_, b)| !matches!(b, Block::Image(_)))
+                    .collect();
             // Titles first, then the rest in document order, then the notes.
             let (titles, rest): (Vec<_>, Vec<_>) = blocks.drain(..).partition(|(t, _)| *t);
             blocks = titles.into_iter().chain(rest).chain(notes).collect();
@@ -1378,6 +1753,248 @@ mod tests {
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown && n.count == 1));
     }
 
+    /// A `StyleTextPropAtom`: one paragraph run over `units` characters (and the paragraph mark),
+    /// and character runs `(count, mask, style bits)`.
+    fn style_atom(units: u32, cfs: &[(u32, u32, u16)]) -> Vec<u8> {
+        let mut d = (units + 1).to_le_bytes().to_vec();
+        d.extend(0u16.to_le_bytes()); // indent
+        d.extend(0u32.to_le_bytes()); // no paragraph settings
+        for &(count, mask, bits) in cfs {
+            d.extend(count.to_le_bytes());
+            d.extend(mask.to_le_bytes());
+            if mask & 0x3EB7 != 0 {
+                d.extend(bits.to_le_bytes());
+            }
+            // Size and colour, to be skipped over.
+            if mask & 0x2_0000 != 0 {
+                d.extend(24u16.to_le_bytes());
+            }
+            if mask & 0x4_0000 != 0 {
+                d.extend([1, 2, 3, 4]);
+            }
+        }
+        rec(0, 0, RT_STYLE_TEXT, &d)
+    }
+
+    #[test]
+    fn character_runs_give_bold_italic_and_underline() {
+        // "ab" bold, "\r", "cd" bold+italic with size and colour, "ef " nothing said, "g" underline.
+        let text = "ab\rcdef g";
+        let cfs = [
+            (2, 0x1, 0x1),
+            (1, 0x0, 0),
+            (2, 0x3 | 0x2_0000 | 0x4_0000, 0x3),
+            (2, 0x0, 0),
+            (1, 0x0, 0),
+            (2, 0x4, 0x4),
+        ];
+        let t = vec![header(1), chars(text), style_atom(9, &cfs)];
+        let p = ok(&deck(vec![(false, vec![shape(t)], None)], vec![]));
+        let ps = paragraphs(section_of(&p, SectionKind::Slide).expect("a slide"));
+        assert_eq!(ps.len(), 2);
+        assert_eq!((ps[0].runs[0].text.as_str(), ps[0].runs[0].style), ("ab", style::BOLD));
+        let second: Vec<(&str, u16)> =
+            ps[1].runs.iter().map(|r| (r.text.as_str(), r.style)).collect();
+        assert_eq!(
+            second,
+            vec![("cd", style::BOLD | style::ITALIC), ("ef ", 0), ("g", style::UNDERLINE)]
+        );
+    }
+
+    #[test]
+    fn the_rich_deck_made_by_libreoffice_has_its_table_styles_and_link() {
+        let data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/deck-rich.ppt"
+        ))
+        .expect("the fixture");
+        let p = ok(&data);
+        let table = p
+            .sections
+            .iter()
+            .flat_map(|s| &s.blocks)
+            .find_map(|b| match b {
+                Block::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("the table slide");
+        let cells: Vec<Vec<String>> = table
+            .rows
+            .iter()
+            .map(|r| {
+                r.cells.iter().map(|c| c.paras.iter().map(Paragraph::text).collect()).collect()
+            })
+            .collect();
+        assert_eq!(
+            cells,
+            vec![
+                vec!["R1C1", "R1C2", "R1C3"],
+                vec!["R2C1", "R2C2", "R2C3"],
+                vec!["R3C1", "R3C2", "R3C3"]
+            ]
+        );
+        let runs: Vec<&crate::model::Run> = p
+            .sections
+            .iter()
+            .flat_map(|s| &s.blocks)
+            .filter_map(|b| match b {
+                Block::Para(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| &p.runs)
+            .collect();
+        assert!(
+            runs.iter()
+                .any(|r| r.text == "Жирный курсив" && r.style == style::BOLD | style::ITALIC),
+            "{runs:?}"
+        );
+        assert!(
+            runs.iter()
+                .any(|r| r.text.contains("Перейти") && r.href == "https://example.org/path?q=1"),
+            "{runs:?}"
+        );
+    }
+
+    #[test]
+    fn a_link_inside_the_text_carries_its_target() {
+        let links = container(
+            0,
+            RT_EX_OBJ_LIST,
+            &[
+                hyperlink(7, "x", "https://example.org/a"),
+                hyperlink(8, "y", "https://example.org/b"),
+            ],
+        );
+        // "see here and there": "here" -> 7, "there" -> 8.
+        let info = |id: u32| {
+            let mut atom = vec![0u8; 16];
+            atom[4..8].copy_from_slice(&id.to_le_bytes());
+            container(0, RT_INTERACTIVE_INFO, &[rec(0, 0, RT_INTERACTIVE_INFO_ATOM, &atom)])
+        };
+        let range = |a: u32, b: u32| {
+            let mut d = a.to_le_bytes().to_vec();
+            d.extend(b.to_le_bytes());
+            rec(0, 0, RT_TX_INTERACTIVE_INFO, &d)
+        };
+        let t = vec![
+            header(1),
+            chars("see here and there"),
+            info(7),
+            range(4, 8),
+            info(8),
+            range(13, 18),
+            // A link to a hyperlink that does not exist, and a broken range: nothing invented.
+            info(99),
+            range(0, 3),
+            info(8),
+            range(u32::MAX, 3),
+        ];
+        let p = ok(&deck(vec![(false, vec![shape(t)], None)], vec![links]));
+        let para = &paragraphs(section_of(&p, SectionKind::Slide).expect("a slide"))[0];
+        let runs: Vec<(&str, &str)> =
+            para.runs.iter().map(|r| (r.text.as_str(), r.href.as_str())).collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("see ", ""),
+                ("here", "https://example.org/a"),
+                (" and ", ""),
+                ("there", "https://example.org/b")
+            ]
+        );
+    }
+
+    /// A shape with a position inside a group (`ChildAnchor`: left, top, right, bottom).
+    fn cell_shape(anchor: [i32; 4], s: &str) -> Vec<u8> {
+        let mut a = Vec::new();
+        for v in anchor {
+            a.extend(v.to_le_bytes());
+        }
+        shape_with(&[], 0, vec![rec(0, 0, ESC_CHILD_ANCHOR, &a), textbox(text(4, s))])
+    }
+
+    /// A nested group: its own shape, then `cells`.
+    fn group_of(cells: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut kids = vec![shape_with(&[], 1, vec![])];
+        kids.extend(cells);
+        container(0, ESC_SPGR_CONTAINER, &kids)
+    }
+
+    #[test]
+    fn a_group_of_aligned_cells_is_a_table() {
+        let x = [0, 1000, 2000, 3000];
+        let y = [0, 400, 800];
+        let mut cells = Vec::new();
+        for (r, top) in y.iter().enumerate() {
+            for (c, left) in x.iter().take(3).enumerate() {
+                if r == 1 && c == 1 {
+                    // A cell that spans the second and third columns.
+                    cells.push(cell_shape([*left, *top, 3000, top + 400], "wide"));
+                    continue;
+                }
+                if r == 1 && c == 2 {
+                    continue;
+                }
+                cells.push(cell_shape([*left, *top, left + 1000, top + 400], &format!("r{r}c{c}")));
+            }
+        }
+        let table = group_of(cells);
+        let p = ok(&deck(
+            vec![(false, vec![shape(text(0, "Title")), table, shape(text(1, "after"))], None)],
+            vec![],
+        ));
+        let s = section_of(&p, SectionKind::Slide).expect("a slide");
+        let t = s
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("a table");
+        let rows: Vec<Vec<(String, u16)>> = t
+            .rows
+            .iter()
+            .map(|r| {
+                r.cells
+                    .iter()
+                    .map(|c| (c.paras.iter().map(Paragraph::text).collect::<String>(), c.span))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                vec![("r0c0".to_owned(), 1), ("r0c1".to_owned(), 1), ("r0c2".to_owned(), 1)],
+                vec![("r1c0".to_owned(), 1), ("wide".to_owned(), 2)],
+                vec![("r2c0".to_owned(), 1), ("r2c1".to_owned(), 1), ("r2c2".to_owned(), 1)],
+            ]
+        );
+        // The shapes around it are still there, in order.
+        let text: String = paragraphs(s).iter().map(|p| p.text()).collect::<Vec<_>>().join("|");
+        assert!(text.contains("Title") && text.contains("after"), "{text}");
+    }
+
+    #[test]
+    fn groups_that_are_not_tables_stay_as_text() {
+        // Two boxes side by side, and four boxes on a diagonal: no rows and columns.
+        let side = group_of(vec![
+            cell_shape([0, 0, 1000, 400], "left"),
+            cell_shape([1000, 0, 2000, 400], "right"),
+        ]);
+        let diagonal = group_of(vec![
+            cell_shape([0, 0, 500, 200], "d1"),
+            cell_shape([600, 300, 1100, 500], "d2"),
+            cell_shape([1200, 600, 1700, 800], "d3"),
+            cell_shape([1800, 900, 2300, 1100], "d4"),
+        ]);
+        let p = ok(&deck(vec![(false, vec![side, diagonal], None)], vec![]));
+        let s = section_of(&p, SectionKind::Slide).expect("a slide");
+        assert!(!s.blocks.iter().any(|b| matches!(b, Block::Table(_))));
+        let text: String = paragraphs(s).iter().map(|p| p.text()).collect::<Vec<_>>().join("|");
+        assert_eq!(text, "left|right|d1|d2|d3|d4");
+    }
+
     #[test]
     fn hyperlinks_are_listed_with_their_targets() {
         let links = container(
@@ -1525,7 +2142,7 @@ mod tests {
         d.extend(1u32.to_le_bytes()); // final run: 1 char
         d.extend(0u16.to_le_bytes());
         d.extend(0u32.to_le_bytes());
-        let runs = parse_pf(&d, 5);
+        let runs = parse_pf(&d, 5).0;
         assert_eq!(runs.len(), 2);
         assert_eq!(
             (runs[0].count, runs[0].indent, runs[0].bullet, runs[0].align),
@@ -1561,12 +2178,13 @@ mod tests {
         full.extend(1u32.to_le_bytes());
         full.extend(7u16.to_le_bytes()); // second run: indent 7
         full.extend(0u32.to_le_bytes());
-        let runs = parse_pf(&full, 3);
+        let (runs, rest) = parse_pf(&full, 3);
+        assert_eq!(rest, Some(full.len()), "the character runs would follow");
         assert_eq!(runs.len(), 2, "{runs:?}");
         assert_eq!((runs[0].bullet, runs[0].align, runs[1].indent), (Some(true), Some(2), 7));
         // Truncated and hostile input: no panic, nothing invented.
-        assert!(parse_pf(&full[..12], 3).len() <= 1);
-        assert!(parse_pf(&[], 3).is_empty());
+        assert!(parse_pf(&full[..12], 3).0.len() <= 1);
+        assert!(parse_pf(&[], 3).0.is_empty());
         let huge = [0xFF; 64];
         let _ = parse_pf(&huge, 1 << 20);
     }

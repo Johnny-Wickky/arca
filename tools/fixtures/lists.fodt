@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text">
+<office:automatic-styles>
+<text:list-style style:name="Roman"><text:list-level-style-number text:level="1" style:num-suffix="." style:num-format="I"/><text:list-level-style-number text:level="2" style:num-suffix=")" style:num-format="a"/><text:list-level-style-number text:level="3" style:num-suffix="." style:num-format="1" text:display-levels="3"/></text:list-style>
+<text:list-style style:name="Letters"><text:list-level-style-number text:level="1" style:num-suffix=")" style:num-format="a"/></text:list-style>
+<text:list-style style:name="Upper"><text:list-level-style-number text:level="1" style:num-suffix="." style:num-format="A"/></text:list-style>
+<text:list-style style:name="Outline"><text:list-level-style-number text:level="1" style:num-suffix="." style:num-format="1"/><text:list-level-style-number text:level="2" style:num-suffix="." style:num-format="1" text:display-levels="2"/><text:list-level-style-number text:level="3" style:num-suffix="." style:num-format="1" text:display-levels="3"/></text:list-style>
+<text:list-style style:name="Bullets"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/><text:list-level-style-bullet text:level="2" text:bullet-char="–"/></text:list-style>
+</office:automatic-styles>
+<office:body><office:text>
+<text:p>Римские и буквы</text:p>
+<text:list text:style-name="Roman">
+<text:list-item><text:p>римский один</text:p></text:list-item>
+<text:list-item><text:p>римский два</text:p><text:list><text:list-item><text:p>буква а</text:p></text:list-item><text:list-item><text:p>буква б</text:p><text:list><text:list-item><text:p>глубоко</text:p></text:list-item></text:list></text:list-item></text:list></text:list-item>
+<text:list-item><text:p>римский три</text:p></text:list-item>
+</text:list>
+<text:p>Строчные буквы, потом заглавные</text:p>
+<text:list text:style-name="Letters"><text:list-item><text:p>раз</text:p></text:list-item><text:list-item><text:p>два</text:p></text:list-item></text:list>
+<text:list text:style-name="Upper"><text:list-item><text:p>Alpha</text:p></text:list-item><text:list-item><text:p>Beta</text:p></text:list-item><text:list-item><text:p>Gamma</text:p></text:list-item></text:list>
+<text:p>Многоуровневая нумерация 1.1.1</text:p>
+<text:list text:style-name="Outline">
+<text:list-item><text:p>глава</text:p><text:list><text:list-item><text:p>раздел</text:p><text:list><text:list-item><text:p>пункт</text:p></text:list-item><text:list-item><text:p>пункт два</text:p></text:list-item></text:list></text:list-item><text:list-item><text:p>раздел два</text:p></text:list-item></text:list></text:list-item>
+<text:list-item><text:p>глава вторая</text:p></text:list-item>
+</text:list>
+<text:p>Перезапуск с 5</text:p>
+<text:list text:style-name="Outline"><text:list-item text:start-value="5"><text:p>начало с пяти</text:p></text:list-item><text:list-item><text:p>шесть</text:p></text:list-item></text:list>
+<text:p>Маркеры</text:p>
+<text:list text:style-name="Bullets"><text:list-item><text:p>маркер</text:p><text:list><text:list-item><text:p>вложенный маркер</text:p></text:list-item></text:list></text:list-item></text:list>
+</office:text></office:body></office:document>

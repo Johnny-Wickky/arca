@@ -575,12 +575,56 @@ struct Pap {
     in_table: bool,
     /// End-of-row mark.
     ttp: bool,
+    /// The paragraph mark ends a cell of a table nested in a cell (`sprmPFInnerTableCell`).
+    inner_cell: bool,
     /// Nesting depth of tables (`0` outside).
     itap: u8,
     jc: u8,
     ilfo: u16,
     ilvl: u8,
     outline: Option<u8>,
+}
+
+impl TableAcc {
+    /// Ends the row of a nested table: its cells become one paragraph of the outer cell.
+    fn flush_inner(&mut self) {
+        if !self.inner_paras.is_empty() {
+            let cell = std::mem::take(&mut self.inner_paras);
+            self.inner_cells.push(cell);
+        }
+        let cells = std::mem::take(&mut self.inner_cells);
+        let mut para = Paragraph::default();
+        for (i, cell) in cells.into_iter().enumerate() {
+            if i > 0 {
+                para.runs.push(crate::model::Run {
+                    text: " │ ".to_owned(),
+                    style: 0,
+                    href: String::new(),
+                });
+            }
+            for (k, p) in cell.into_iter().enumerate() {
+                if k > 0 {
+                    para.runs.push(crate::model::Run {
+                        text: " ".to_owned(),
+                        style: 0,
+                        href: String::new(),
+                    });
+                }
+                if !p.marker.is_empty() {
+                    para.runs.push(crate::model::Run {
+                        text: format!("{} ", p.marker),
+                        style: 0,
+                        href: String::new(),
+                    });
+                }
+                para.runs.extend(p.runs);
+            }
+        }
+        if !para.runs.is_empty() {
+            self.count = self.count.saturating_add(para.runs.len());
+            self.paras.push(para);
+        }
+    }
 }
 
 impl Pap {
@@ -606,6 +650,7 @@ fn parse_pap(istd: u16, prl: &[u8]) -> Pap {
             0x4600 => p.istd = u16_le(arg, 0).unwrap_or(p.istd),
             0x2416 => p.in_table = b & 1 == 1,
             0x2417 | 0x244C => p.ttp = b & 1 == 1,
+            0x244B => p.inner_cell = b & 1 == 1,
             0x6649 => p.itap = u8::try_from(u32_le(arg, 0).unwrap_or(0).min(255)).unwrap_or(0),
             0x2403 | 0x2461 => p.jc = b,
             0x460B => p.ilfo = u16_le(arg, 0).unwrap_or(0),
@@ -749,12 +794,39 @@ struct ListLevel {
     text: Vec<u16>,
 }
 
+/// A list in use (`LFO`): which definition, and what the paragraph's list overrides in it.
+#[derive(Debug, Clone, Default)]
+struct Instance {
+    lsid: u32,
+    /// Level restarted at another number (`LFOLVL.iStartAt`).
+    starts: [Option<u32>; 9],
+    /// Level defined again for this instance only.
+    formats: Vec<(u8, ListLevel)>,
+}
+
 /// Numbered and bulleted lists: `PlfLst` (definitions) and `PlfLfo` (instances).
 #[derive(Debug, Default)]
 struct Lists {
     defs: BTreeMap<u32, Vec<ListLevel>>,
-    /// `lsid` of each list instance; `ilfo` is a one-based index.
-    instances: Vec<u32>,
+    /// The list instances; `ilfo` is a one-based index.
+    instances: Vec<Instance>,
+}
+
+/// One `LVL`: 28 fixed bytes, the character and paragraph properties of the number, and the
+/// number text. Returns it with the position after it.
+fn parse_level(blob: &[u8], pos: usize) -> Option<(ListLevel, usize)> {
+    let start = u32_le(blob, pos)?;
+    let nfc = blob.get(pos.saturating_add(4)).copied().unwrap_or(0);
+    let cb_chpx = usize::from(blob.get(pos.saturating_add(24)).copied().unwrap_or(0));
+    let cb_papx = usize::from(blob.get(pos.saturating_add(25)).copied().unwrap_or(0));
+    let mut at = pos.saturating_add(28).saturating_add(cb_chpx).saturating_add(cb_papx);
+    let cch = usize::from(u16_le(blob, at)?).min(256);
+    at = at.saturating_add(2);
+    let text: Vec<u16> = (0..cch).filter_map(|k| u16_le(blob, at.saturating_add(k * 2))).collect();
+    Some((
+        ListLevel { start: u32::try_from(start.cast_signed()).unwrap_or(1), nfc, text },
+        at.saturating_add(cch * 2),
+    ))
 }
 
 impl Lists {
@@ -769,17 +841,47 @@ impl Lists {
         if let Some((fc, lcb)) = fib.pair(pair::PLF_LFO)
             && let Some(blob) = slice(table, fc, lcb)
         {
-            let n = usz(u32_le(blob, 0).unwrap_or(0)).min(65_536);
-            for i in 0..n {
-                let Some(lsid) =
-                    i.checked_mul(16).and_then(|o| u32_le(blob, 4usize.saturating_add(o)))
-                else {
-                    break;
-                };
-                me.instances.push(lsid);
-            }
+            me.parse_instances(blob);
         }
         me
+    }
+
+    /// `PlfLfo`: the `LFO` records, then for each one the overrides (`LFOData`) it announces.
+    fn parse_instances(&mut self, blob: &[u8]) {
+        let n = usz(u32_le(blob, 0).unwrap_or(0)).min(65_536);
+        let mut counts: Vec<usize> = Vec::new();
+        for i in 0..n {
+            let Some(at) = i.checked_mul(16).map(|o| o.saturating_add(4)) else { break };
+            let Some(lsid) = u32_le(blob, at) else { break };
+            self.instances.push(Instance { lsid, ..Instance::default() });
+            counts.push(usize::from(blob.get(at.saturating_add(12)).copied().unwrap_or(0)));
+        }
+        let mut pos = n.saturating_mul(16).saturating_add(4);
+        'all: for (inst, count) in self.instances.iter_mut().zip(counts) {
+            // `LFOData`: a position in the text, then the overridden levels.
+            pos = pos.saturating_add(4);
+            for _ in 0..count {
+                let (Some(start), Some(flags)) =
+                    (u32_le(blob, pos), blob.get(pos.saturating_add(4)))
+                else {
+                    break 'all;
+                };
+                pos = pos.saturating_add(8);
+                let ilvl = usize::from(flags & 0x0F);
+                if flags & 0x10 != 0
+                    && let Some(slot) = inst.starts.get_mut(ilvl)
+                {
+                    *slot = Some(start);
+                }
+                if flags & 0x20 != 0 {
+                    let Some((level, next)) = parse_level(blob, pos) else { break 'all };
+                    pos = next;
+                    if inst.formats.len() < 9 {
+                        inst.formats.push((flags & 0x0F, level));
+                    }
+                }
+            }
+        }
     }
 
     fn parse_defs(&mut self, head: &[u8], blob: &[u8]) {
@@ -798,22 +900,9 @@ impl Lists {
         for (lsid, levels) in heads {
             let mut list = Vec::new();
             for _ in 0..levels {
-                let Some(start) = u32_le(blob, pos) else { return };
-                let nfc = blob.get(pos.saturating_add(4)).copied().unwrap_or(0);
-                let cb_chpx = usize::from(blob.get(pos.saturating_add(24)).copied().unwrap_or(0));
-                let cb_papx = usize::from(blob.get(pos.saturating_add(25)).copied().unwrap_or(0));
-                let mut at = pos.saturating_add(28).saturating_add(cb_chpx).saturating_add(cb_papx);
-                let Some(cch) = u16_le(blob, at) else { return };
-                at = at.saturating_add(2);
-                let cch = usize::from(cch).min(256);
-                let text: Vec<u16> =
-                    (0..cch).filter_map(|k| u16_le(blob, at.saturating_add(k * 2))).collect();
-                pos = at.saturating_add(cch * 2);
-                list.push(ListLevel {
-                    start: u32::try_from(start.cast_signed()).unwrap_or(1),
-                    nfc,
-                    text,
-                });
+                let Some((level, next)) = parse_level(blob, pos) else { return };
+                pos = next;
+                list.push(level);
             }
             self.defs.insert(lsid, list);
         }
@@ -826,14 +915,23 @@ impl Lists {
         ilvl: u8,
         counters: &mut BTreeMap<u16, [u32; 9]>,
     ) -> Option<(String, u8)> {
-        let lsid = *self.instances.get(usize::from(ilfo).checked_sub(1)?)?;
-        let levels = self.defs.get(&lsid)?;
+        let inst = self.instances.get(usize::from(ilfo).checked_sub(1)?)?;
+        let levels = self.defs.get(&inst.lsid)?;
         let li = usize::from(ilvl).min(8);
-        let level = levels.get(li).or_else(|| levels.first())?;
+        // The level as this instance has it: its own definition if it redefines the level.
+        let level_at = |k: usize| -> Option<&ListLevel> {
+            inst.formats
+                .iter()
+                .find(|(l, _)| usize::from(*l) == k)
+                .map(|(_, l)| l)
+                .or_else(|| levels.get(k))
+        };
+        let level = level_at(li).or_else(|| levels.first())?;
         let level_no = u8::try_from(li + 1).unwrap_or(9);
         let c = counters.entry(ilfo).or_insert([0; 9]);
         let slot = c.get_mut(li)?;
-        *slot = if *slot == 0 { level.start } else { slot.saturating_add(1) };
+        let first = inst.starts.get(li).copied().flatten().unwrap_or(level.start);
+        *slot = if *slot == 0 { first } else { slot.saturating_add(1) };
         for deeper in c.iter_mut().skip(li + 1) {
             *deeper = 0;
         }
@@ -844,7 +942,7 @@ impl Lists {
         }
         let number = |k: usize, c: &[u32; 9]| -> String {
             let n = c.get(k).copied().unwrap_or(0).max(1);
-            let nfc = levels.get(k).map_or(level.nfc, |l| l.nfc);
+            let nfc = level_at(k).map_or(level.nfc, |l| l.nfc);
             number_text(nfc, n)
         };
         let mut s = String::new();
@@ -954,6 +1052,10 @@ struct TableAcc {
     rows: Vec<Row>,
     cells: Vec<Cell>,
     paras: Vec<Paragraph>,
+    /// The cell of a nested table being read, and the cells of its row so far. The model has no
+    /// table inside a table, so a nested row becomes one paragraph with `│` between its cells.
+    inner_paras: Vec<Paragraph>,
+    inner_cells: Vec<Vec<Paragraph>>,
     count: usize,
     /// The table outgrew the output budget; the rest of it is dropped.
     dead: bool,
@@ -1234,6 +1336,8 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
             self.images = 0;
             if depth == 1 {
                 self.close_row();
+            } else if let Some(acc) = self.table.as_mut() {
+                acc.flush_inner();
             }
             return;
         }
@@ -1244,11 +1348,22 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
         if acc.dead {
             return;
         }
-        if let Some(p) = para {
+        if depth >= 2 {
+            // In a table inside a cell: collect the cell; its row ends at the row mark.
+            if let Some(p) = para {
+                acc.count = acc.count.saturating_add(p.runs.len().max(1));
+                acc.inner_paras.push(p);
+            }
+            if mark == 0x07 || pap.inner_cell {
+                let cell = std::mem::take(&mut acc.inner_paras);
+                acc.inner_cells.push(cell);
+            }
+        } else if let Some(p) = para {
             acc.count = acc.count.saturating_add(p.runs.len().max(1));
             acc.paras.push(p);
         }
         if mark == 0x07 && depth == 1 {
+            acc.flush_inner();
             let paras = std::mem::take(&mut acc.paras);
             acc.cells.push(Cell { span: 1, header: false, paras });
             acc.count = acc.count.saturating_add(1);
@@ -1263,6 +1378,7 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
 
     fn close_row(&mut self) {
         if let Some(acc) = self.table.as_mut() {
+            acc.flush_inner();
             if !acc.paras.is_empty() {
                 let paras = std::mem::take(&mut acc.paras);
                 acc.cells.push(Cell { span: 1, header: false, paras });
@@ -2070,6 +2186,57 @@ mod tests {
     }
 
     #[test]
+    fn a_word_97_file_with_a_nested_table_keeps_the_nested_cells_apart() {
+        // tools/fixtures/make_nested.py, converted by LibreOffice.
+        let data =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/nested.doc"))
+                .expect("the fixture");
+        let p = ok(&data);
+        let Some(Block::Table(t)) = body(&p).blocks.iter().find(|b| matches!(b, Block::Table(_)))
+        else {
+            panic!("no table")
+        };
+        let cell =
+            t.rows.get(1).and_then(|r| r.cells.get(1)).expect("the cell with the inner table");
+        let paras: Vec<String> = cell.paras.iter().map(|q| q.text()).collect();
+        assert_eq!(paras, ["O11", "I00 │ I01", "I10 │ I11", "после вложенной"]);
+        let markers: Vec<String> = paragraphs(body(&p))
+            .iter()
+            .map(|q| q.marker.clone())
+            .filter(|m| !m.is_empty())
+            .collect();
+        assert_eq!(markers, ["1.", "2.", "1.", "2.", "3."]);
+    }
+
+    #[test]
+    fn a_nested_row_keeps_its_cells_apart() {
+        // Word ends a nested cell with a plain paragraph mark that carries sprmPFInnerTableCell
+        // and a nested row with one that carries sprmPFInnerTtp.
+        let text = "pre\rI1\rI2\r\rJ1\rJ2\r\r\x07\x07";
+        let outer = sp1(0x2416, 1);
+        let cell = [sp1(0x2416, 1), sp4(0x6649, 2), sp1(0x244B, 1)].concat();
+        let row = [sp1(0x2416, 1), sp4(0x6649, 2), sp1(0x244C, 1)].concat();
+        let ttp = [sp1(0x2416, 1), sp1(0x2417, 1)].concat();
+        let w = W::new()
+            .piece(text, true)
+            .pap(0, 4, 0, outer.clone())
+            .pap(4, 10, 0, cell.clone())
+            .pap(10, 11, 0, row.clone())
+            .pap(11, 17, 0, cell)
+            .pap(17, 18, 0, row)
+            .pap(18, 19, 0, outer)
+            .pap(19, 20, 0, ttp);
+        let p = ok(&w.build());
+        let Some(Block::Table(t)) = body(&p).blocks.first() else { panic!("no table") };
+        let cell = t.rows.first().and_then(|r| r.cells.first()).expect("a cell");
+        let paras: Vec<String> = cell.paras.iter().map(|q| q.text()).collect();
+        assert_eq!(
+            paras,
+            vec!["pre", "I1 │ I2", "J1 │ J2"].into_iter().map(String::from).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn headings_come_from_style_identifiers_and_outline_levels() {
         // Style sheet with Normal, "Heading 1" (istd 1) and a custom Title-like style (sti 62).
         let std = |sti: u16, base: u16| {
@@ -2128,6 +2295,64 @@ mod tests {
         lfo.extend(77u32.to_le_bytes());
         lfo.extend([0u8; 12]);
         (lst.into_iter().chain(Vec::new()).collect::<Vec<u8>>(), [lvl, lfo].concat())
+    }
+
+    /// One `LVL` as stored: the 28 fixed bytes and the number text.
+    fn lvl(start: i32, nfc: u8, text: &[u16]) -> Vec<u8> {
+        let mut v = start.to_le_bytes().to_vec();
+        v.push(nfc);
+        v.extend([0u8; 23]);
+        v.extend((text.len() as u16).to_le_bytes());
+        for u in text {
+            v.extend(u.to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    fn a_list_instance_can_restart_a_level_and_redefine_it() {
+        // Definition 5: a simple decimal list. Instance 1 uses it as is, instance 2 restarts at 7,
+        // instance 3 numbers with capital letters instead.
+        let mut head = 1u16.to_le_bytes().to_vec();
+        head.extend(5u32.to_le_bytes());
+        head.extend(0u32.to_le_bytes());
+        head.extend([0xFFu8, 0x0F].repeat(9));
+        head.push(1);
+        head.push(0);
+        let defs = lvl(1, 0, &[0, u16::from(b'.')]);
+        let mut lfo = 3u32.to_le_bytes().to_vec();
+        for clfolvl in [0u8, 1, 1] {
+            lfo.extend(5u32.to_le_bytes());
+            lfo.extend([0u8; 8]);
+            lfo.push(clfolvl);
+            lfo.extend([0u8; 3]);
+        }
+        // LFOData of instance 2: restart level 0 at 7. Of instance 3: a new level definition.
+        lfo.extend(0u32.to_le_bytes()); // instance 1: cp, no overrides
+        lfo.extend(0u32.to_le_bytes());
+        lfo.extend(7u32.to_le_bytes());
+        lfo.extend([0x10, 0, 0, 0]);
+        lfo.extend(0u32.to_le_bytes());
+        lfo.extend(1u32.to_le_bytes());
+        lfo.extend([0x20, 0, 0, 0]);
+        lfo.extend(lvl(1, 3, &[0, u16::from(b')')]));
+        let mut lists = Lists::default();
+        lists.parse_defs(&head, &defs);
+        lists.parse_instances(&lfo);
+        assert_eq!(lists.instances.len(), 3);
+        let mut counters = BTreeMap::new();
+        let mut marks =
+            |ilfo: u16| lists.marker(ilfo, 0, &mut counters).map(|m| m.0).expect("marker");
+        assert_eq!((marks(1), marks(1)), ("1.".to_owned(), "2.".to_owned()));
+        assert_eq!((marks(2), marks(2)), ("7.".to_owned(), "8.".to_owned()));
+        assert_eq!((marks(3), marks(3)), ("A)".to_owned(), "B)".to_owned()));
+        // Hostile: counts that run past the data, nothing to panic about.
+        let mut broken = Lists::default();
+        broken.parse_defs(&head, &defs);
+        broken.parse_instances(&lfo[..lfo.len() - 9]);
+        let mut again = Lists::default();
+        again.parse_instances(&[0xFF; 40]);
+        assert!(again.instances.len() <= 65_536);
     }
 
     #[test]

@@ -12,6 +12,8 @@ not by Arca's own writers, so the parsers are exercised on layouts they did not 
 | `slides.ppt` `.pptx` `.odp` `slides-impress.pdf` | two slides with bullets, a text box and speaker notes |
 | `deck-rich.ppt` `.pptx` | title/bullets/links/table/picture slides, a hidden slide, notes |
 | `formulas.xlsx` | a workbook as a library writes it (`tools/fixtures/make_formulas.py`, openpyxl): formulas and **no stored results**, so the viewer has to calculate them; one formula (`TODAY()`) cannot be and must stay text |
+| `nested.doc` | Word 97: a table with a table inside one cell, and a two-level numbered list (`tools/fixtures/make_nested.py` + LibreOffice) |
+| `body.rtf` `body.rtf.lzfu` | a 29 kB RTF body in Windows-1251 escapes and the same compressed (RTF-LZ "LZFu", as in Outlook messages) by the independent `compressed_rtf` Python package — the oracle for the decompressor |
 | `drawing.vsdx` | a Visio drawing with two pages (one a background page), shapes with text and fields, shape data, a hyperlink, a group, a picture and connectors. **Hand-assembled from the VSDX schema** by `tools/fixtures/make_visio.py` — there is no Visio, and LibreOffice cannot export VSDX — so unlike the others it was not made by real software |
 | `lo-rich.doc` `lo-latin.doc` | Word 97 files: `lo-rich.doc` has styles, a table, hidden text, tracked changes, footnotes and endnotes, a comment, a hyperlink and a frame; `lo-latin.doc` is Windows-1252 text (curly quotes, euro sign, ellipsis) |
 

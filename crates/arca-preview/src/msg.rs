@@ -8,10 +8,11 @@
 //!   and comments dropped, never rendered), else the compressed RTF body;
 //! * **links** found in the HTML body, shown as display-only targets;
 //! * the **attachments**: names, sizes and kinds are listed; attachments are never opened,
-//!   unpacked or previewed.
+//!   unpacked or previewed — except an attached *message*, which is a message of its own and is
+//!   shown like one, a few levels deep and no more than a few dozen of them.
 
 use arca_container::bytes::{u16_le, u32_le};
-use arca_container::cfb::CompoundFile;
+use arca_container::cfb::{CompoundFile, EntryKind};
 use arca_container::text::{CodePage, decode_codepage, utf16le_until_nul};
 
 use crate::PreviewError;
@@ -24,6 +25,10 @@ const MAX_ITEMS: usize = 4_096;
 const MAX_BODY: usize = 16 << 20;
 /// Links listed.
 const MAX_LINKS: usize = 2_048;
+/// Messages inside messages: how deep.
+const MAX_NESTING: usize = 3;
+/// Messages inside messages: how many in all.
+const MAX_ATTACHED_MESSAGES: usize = 32;
 
 const PT_UNICODE: u16 = 0x001F;
 const PT_ANSI: u16 = 0x001E;
@@ -443,22 +448,45 @@ fn address(name: Option<&str>, email: Option<&str>) -> String {
     }
 }
 
+/// What the walk over a message and the messages inside it has used.
+#[derive(Default)]
+struct Walk {
+    /// Attached messages opened so far.
+    attached: usize,
+}
+
 /// Extracts an Outlook message into `sink`.
 pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), PreviewError> {
     if cf.find("__properties_version1.0").is_none() {
         return Err(malformed("the property stream is missing"));
     }
-    let props = props_of(cf, None, 32);
+    let Some(sec) = sink.open_section(SectionKind::Body, "", false) else { return Ok(()) };
+    message(cf, None, 32, 0, &mut Walk::default(), sink, sec)
+}
+
+/// The message stored in `store` (`None`: the whole file) written into section `sec`. `header` is
+/// the size of the head of its property stream (32 for a file, 24 for an attached message).
+fn message(
+    cf: &CompoundFile<'_>,
+    store: Option<usize>,
+    header: usize,
+    depth: usize,
+    walk: &mut Walk,
+    sink: &mut Sink<'_>,
+    sec: crate::sink::SectionId,
+) -> Result<(), PreviewError> {
+    let props = props_of(cf, store, header);
     let cp = codepage_of(
         int_prop(&props, tag::INTERNET_CPID).or_else(|| int_prop(&props, tag::MESSAGE_CPID)),
     );
-    let get = |id: u16| text_prop(cf, None, id, cp);
+    let get = |id: u16| text_prop(cf, store, id, cp);
 
-    // Recipients and attachments live in numbered sub-storages of the root.
+    // Recipients and attachments live in numbered sub-storages of the message.
+    let parent = store.unwrap_or(0);
     let mut recipients: Vec<(u32, String)> = Vec::new();
     let mut attachments: Vec<usize> = Vec::new();
     for (i, e) in cf.entries().iter().enumerate() {
-        if e.parent != Some(0) {
+        if e.parent != Some(parent) {
             continue;
         }
         if e.name.starts_with("__recip_version1.0_") && recipients.len() < MAX_ITEMS {
@@ -475,7 +503,6 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
     }
 
-    let Some(sec) = sink.open_section(SectionKind::Body, "", false) else { return Ok(()) };
     if let Some(subject) = get(tag::SUBJECT) {
         let mut b = ParaBuilder::new();
         b.text(&subject, 0, "");
@@ -516,7 +543,7 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
         body_shown = true;
     }
-    if let Some((ty, data)) = raw_prop(cf, None, tag::HTML, &[PT_BINARY, PT_UNICODE, PT_ANSI]) {
+    if let Some((ty, data)) = raw_prop(cf, store, tag::HTML, &[PT_BINARY, PT_UNICODE, PT_ANSI]) {
         let data = data.get(..MAX_BODY.min(data.len())).unwrap_or(&[]);
         let html =
             if ty == PT_UNICODE { utf16le_until_nul(data) } else { decode_codepage(data, cp) };
@@ -535,57 +562,102 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
             body_shown = !text.trim().is_empty();
         }
     }
-    if !body_shown && let Some((_, data)) = raw_prop(cf, None, tag::RTF_COMPRESSED, &[PT_BINARY]) {
+    if !body_shown && let Some((_, data)) = raw_prop(cf, store, tag::RTF_COMPRESSED, &[PT_BINARY]) {
         match decompress_rtf(&data, MAX_BODY) {
             Some(rtf) if crate::rtf::extract(&rtf, sink).is_ok() => {}
             _ => sink.skipped("rtf body"),
         }
     }
 
-    if !links.is_empty()
-        && let Some(ls) = sink.open_section(SectionKind::Notes, "Links", false)
-    {
-        for l in &links {
-            let mut b = ParaBuilder::new();
-            b.text(l, 0, l);
-            if !sink.para(ls, b.take(ParaStyle::Body)) {
-                break;
+    // Links and attachments: their own sections for the message itself, lines at the end of the
+    // section for a message that was attached.
+    let nested = depth > 0;
+    if !links.is_empty() {
+        let target =
+            if nested { Some(sec) } else { sink.open_section(SectionKind::Notes, "Links", false) };
+        if let Some(ls) = target {
+            for l in &links {
+                let mut b = ParaBuilder::new();
+                if nested {
+                    b.text("Link: ", style::BOLD, "");
+                }
+                b.text(l, 0, l);
+                if !sink.para(ls, b.take(ParaStyle::Body)) {
+                    break;
+                }
             }
         }
     }
 
-    if !attachments.is_empty()
-        && let Some(asec) = sink.open_section(SectionKind::Notes, "Attachments", false)
-    {
-        for &a in &attachments {
-            let ap = props_of(cf, Some(a), 8);
-            let name = text_prop(cf, Some(a), tag::ATTACH_LONG_NAME, cp)
-                .or_else(|| text_prop(cf, Some(a), tag::ATTACH_NAME, cp))
-                .or_else(|| text_prop(cf, Some(a), tag::DISPLAY_NAME, cp))
-                .unwrap_or_else(|| "(unnamed)".to_owned());
-            let size = [PT_BINARY, 0x000D]
-                .iter()
-                .find_map(|&ty| {
-                    cf.child(a, &format!("__substg1.0_{:04X}{ty:04X}", tag::ATTACH_DATA))
-                })
-                .and_then(|i| cf.entries().get(i))
-                .map(|e| e.size);
-            let kind = match int_prop(&ap, tag::ATTACH_METHOD) {
-                Some(1) | None => "",
-                Some(5) => ", embedded message",
-                Some(6) => ", embedded object",
-                Some(_) => ", link",
-            };
-            let mut b = ParaBuilder::new();
-            match size {
-                Some(n) => b.text(&format!("{name} ({n} bytes{kind})"), 0, ""),
-                None => b.text(&format!("{name} (no data{kind})"), 0, ""),
+    // Attached messages, to be shown after the list.
+    let mut inner: Vec<usize> = Vec::new();
+    if !attachments.is_empty() {
+        let target = if nested {
+            Some(sec)
+        } else {
+            sink.open_section(SectionKind::Notes, "Attachments", false)
+        };
+        if let Some(asec) = target {
+            for &a in &attachments {
+                let ap = props_of(cf, Some(a), 8);
+                let name = text_prop(cf, Some(a), tag::ATTACH_LONG_NAME, cp)
+                    .or_else(|| text_prop(cf, Some(a), tag::ATTACH_NAME, cp))
+                    .or_else(|| text_prop(cf, Some(a), tag::DISPLAY_NAME, cp))
+                    .unwrap_or_else(|| "(unnamed)".to_owned());
+                let method = int_prop(&ap, tag::ATTACH_METHOD);
+                let object = cf
+                    .child(a, &format!("__substg1.0_{:04X}000D", tag::ATTACH_DATA))
+                    .filter(|&i| cf.entries().get(i).is_some_and(|e| e.kind == EntryKind::Storage));
+                let size = [PT_BINARY, 0x000D]
+                    .iter()
+                    .find_map(|&ty| {
+                        cf.child(a, &format!("__substg1.0_{:04X}{ty:04X}", tag::ATTACH_DATA))
+                    })
+                    .and_then(|i| cf.entries().get(i))
+                    .map(|e| e.size);
+                let kind = match method {
+                    Some(1) | None => "",
+                    Some(5) => ", embedded message",
+                    Some(6) => ", embedded object",
+                    Some(_) => ", link",
+                };
+                if method == Some(5)
+                    && let Some(i) = object
+                {
+                    inner.push(i);
+                }
+                let mut b = ParaBuilder::new();
+                if nested {
+                    b.text("Attachment: ", style::BOLD, "");
+                }
+                match (size, object) {
+                    (_, Some(_)) if method == Some(5) => {
+                        b.text(&format!("{name} (message)"), 0, "")
+                    }
+                    (Some(n), _) => b.text(&format!("{name} ({n} bytes{kind})"), 0, ""),
+                    (None, _) => b.text(&format!("{name} (no data{kind})"), 0, ""),
+                }
+                if !sink.para(asec, b.take(ParaStyle::Body)) {
+                    break;
+                }
             }
-            if !sink.para(asec, b.take(ParaStyle::Body)) {
-                break;
+            if !nested {
+                sink.note(NoticeKind::Unsupported, "attachments are listed, not opened");
             }
         }
-        sink.note(NoticeKind::Unsupported, "attachments are listed, not opened");
+    }
+    // An attached message is a message: read like one, within limits.
+    for store in inner {
+        if depth >= MAX_NESTING || walk.attached >= MAX_ATTACHED_MESSAGES {
+            sink.note(NoticeKind::Truncated, "attached messages inside attached messages");
+            break;
+        }
+        walk.attached += 1;
+        let nested_cp = codepage_of(None);
+        let name = text_prop(cf, Some(store), tag::SUBJECT, nested_cp)
+            .map_or_else(|| "Attached message".to_owned(), |s| format!("Attached message: {s}"));
+        let Some(nsec) = sink.open_section(SectionKind::Notes, &name, false) else { break };
+        message(cf, Some(store), 24, depth + 1, walk, sink, nsec)?;
     }
     Ok(())
 }
@@ -896,6 +968,117 @@ mod tests {
         let m = Msg::default().text(0x0037, "Rtf only").binary(0x1009, &rtf);
         let all = texts(&ok(&m.build()));
         assert!(all.iter().any(|l| l.contains("Body from RTF")), "{all:?}");
+    }
+
+    /// A message with `depth` messages inside it, each attached to the one before. Message `n`
+    /// has the subject `level n` and the body `body of level n`.
+    fn matryoshka(depth: usize) -> Vec<u8> {
+        let mut b = CfbBuilder::new();
+        let mut props = vec![0u8; 32];
+        props.extend(prop_entry(0x0039, 0x0040, filetime_of(1_709_210_096)));
+        assert!(b.add_stream("__properties_version1.0", props).is_ok());
+        assert!(b.add_stream("__substg1.0_0037001F", utf16("level 0")).is_ok());
+        assert!(b.add_stream("__substg1.0_1000001F", utf16("body of level 0")).is_ok());
+        let mut prefix = String::new();
+        for level in 1..=depth {
+            let attach = format!("{prefix}__attach_version1.0_#00000000");
+            assert!(b.add_storage(&attach, NO_CLSID).is_ok());
+            let mut ap = vec![0u8; 8];
+            ap.extend(prop_entry(
+                0x3705,
+                0x0003,
+                [5u32.to_le_bytes().as_slice(), &[0; 4]].concat().try_into().expect("8"),
+            ));
+            assert!(b.add_stream(&format!("{attach}/__properties_version1.0"), ap).is_ok());
+            assert!(
+                b.add_stream(
+                    &format!("{attach}/__substg1.0_3707001F"),
+                    utf16(&format!("m{level}.msg"))
+                )
+                .is_ok()
+            );
+            let object = format!("{attach}/__substg1.0_3701000D");
+            assert!(b.add_storage(&object, NO_CLSID).is_ok());
+            // An attached message has 24 bytes in front of its properties, not 32.
+            assert!(
+                b.add_stream(&format!("{object}/__properties_version1.0"), vec![0u8; 24]).is_ok()
+            );
+            assert!(
+                b.add_stream(
+                    &format!("{object}/__substg1.0_0037001F"),
+                    utf16(&format!("level {level}"))
+                )
+                .is_ok()
+            );
+            assert!(
+                b.add_stream(
+                    &format!("{object}/__substg1.0_1000001F"),
+                    utf16(&format!("body of level {level}"))
+                )
+                .is_ok()
+            );
+            prefix = format!("{object}/");
+        }
+        b.finish().unwrap_or_default()
+    }
+
+    #[test]
+    fn an_attached_message_is_shown_like_a_message() {
+        let p = ok(&matryoshka(2));
+        let all = texts(&p);
+        for want in [
+            "level 0",
+            "body of level 0",
+            "level 1",
+            "body of level 1",
+            "level 2",
+            "body of level 2",
+        ] {
+            assert!(all.iter().any(|l| l == want), "{want} in {all:?}");
+        }
+        // The list names them as messages, and each has a section of its own.
+        assert!(all.iter().any(|l| l == "m1.msg (message)"), "{all:?}");
+        let names: Vec<&str> = p.sections.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Attached message: level 1"), "{names:?}");
+        assert!(names.contains(&"Attached message: level 2"), "{names:?}");
+    }
+
+    #[test]
+    fn messages_inside_messages_stop_at_the_limit() {
+        let p = ok(&matryoshka(MAX_NESTING + 3));
+        let all = texts(&p);
+        assert!(all.iter().any(|l| l == &format!("body of level {MAX_NESTING}")), "{all:?}");
+        assert!(!all.iter().any(|l| l == &format!("body of level {}", MAX_NESTING + 1)), "{all:?}");
+        assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Truncated));
+    }
+
+    #[test]
+    fn compressed_rtf_from_an_independent_encoder() {
+        // The `compressed_rtf` Python package compressed a 29 kB body written in Windows-1251
+        // escapes: far past the 4 kB dictionary, so the window wraps many times.
+        let rtf =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/body.rtf"))
+                .expect("fixture");
+        let packed = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/body.rtf.lzfu"
+        ))
+        .expect("fixture");
+        assert_eq!(decompress_rtf(&packed, MAX_BODY).as_deref(), Some(rtf.as_slice()));
+        // And the message built around it reads as the Russian text.
+        let m = Msg::default().text(0x0037, "Отчёт").binary(0x1009, &packed);
+        let all = texts(&ok(&m.build())).join("\n");
+        assert!(
+            all.contains("Здравствуйте коллеги отчёт готов 0"),
+            "{}",
+            all.chars().take(120).collect::<String>()
+        );
+        assert!(all.contains("End почты."), "the \\u escapes follow");
+        // Cut anywhere, it never panics and never yields more than was there.
+        for cut in [0, 1, 15, 16, 17, 100, 4_096, packed.len() - 1] {
+            let out = decompress_rtf(&packed[..cut], MAX_BODY);
+            assert!(out.is_none_or(|o| o.len() <= rtf.len()));
+        }
     }
 
     #[test]
