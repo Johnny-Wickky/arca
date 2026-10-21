@@ -16,6 +16,7 @@ import java.util.zip.ZipOutputStream;
 
 import org.arca.viewer.Native;
 import org.arca.viewer.core.Capabilities;
+import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Model;
 
@@ -302,6 +303,17 @@ public final class ContractTest {
             for (int h = 0; h < ds.hitCount(); h++) {
                 check(ds.hitItem(h) >= 0 && ds.hitItem(h) < sizes[ds.hitSection(h)], name + ": hit outside its section");
             }
+        }
+        DocOutline outline = new DocOutline(sizes, loader, direct, direct, quiet);
+        outline.start();
+        check(outline.done() && !outline.failed(), name + ": outline did not finish");
+        for (DocOutline.Entry en : outline.entries()) {
+            check(en.section >= 0 && en.section < sizes.length && en.item >= 0 && en.item < sizes[en.section]
+                && !en.text.isEmpty(), name + ": outline entry outside the document");
+        }
+        if (name.startsWith("report.") && !name.endsWith(".csv") && !name.endsWith(".txt") && !name.endsWith(".pdf")
+            && !name.endsWith(".rtf")) {
+            check(!outline.entries().isEmpty(), name + ": a report has headings");
         }
         DocSearch none = new DocSearch("zzqq-nowhere-" + name, sizes, loader, direct, direct, quiet);
         none.start();

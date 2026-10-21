@@ -22,7 +22,7 @@ import java.util.concurrent.Executor;
  *
  * <p>No Android dependencies; tested on a desktop JVM.
  */
-public final class DocSearch {
+public final class DocSearch extends PageScanner {
     /** Matches kept; further ones are counted as "more". */
     public static final int MAX_HITS = 5_000;
     /** Shortest query worth searching for. */
@@ -31,33 +31,18 @@ public final class DocSearch {
     public static final int MAX_QUERY = 200;
 
     /** Fetches items; runs on the worker, may block. */
-    public interface Loader {
-        /** At most {@code count} items of {@code section} starting at item {@code from}. */
-        List<Model.Item> load(int section, long from, int count) throws Exception;
-    }
+    public interface Loader extends PageScanner.Loader {}
 
     /** Told (on the UI executor) when matches were added or the search ended. */
-    public interface Listener {
-        void onChanged();
-    }
+    public interface Listener extends PageScanner.Listener {}
 
     private final String needle;
-    private final long[] sectionItems;
-    private final Loader loader;
-    private final Executor worker;
-    private final Executor ui;
-    private final Listener listener;
-    private final long totalItems;
 
     // Hits, in document order. Touched on the UI executor only.
     private int[] hitSection = new int[64];
     private long[] hitItem = new long[64];
     private int hits;
     private boolean capped;
-    private long scanned;
-    private boolean done;
-    private boolean failed;
-    private volatile boolean cancelled;
 
     /**
      * @param query         what to look for (trimmed by the caller; may be anything)
@@ -65,17 +50,11 @@ public final class DocSearch {
      */
     public DocSearch(String query, long[] sectionItems, Loader loader, Executor worker, Executor ui,
                      Listener listener) {
+        super(sectionItems, loader, worker, ui, listener);
         this.needle = fold(clip(query));
-        this.sectionItems = sectionItems.clone();
-        this.loader = loader;
-        this.worker = worker;
-        this.ui = ui;
-        this.listener = listener;
-        long sum = 0;
-        for (long n : sectionItems) {
-            sum += Math.max(0, n);
+        if (needle.isEmpty()) {
+            disable();
         }
-        this.totalItems = sum;
     }
 
     private static String clip(String s) {
@@ -217,85 +196,20 @@ public final class DocSearch {
         return sb.toString();
     }
 
-    // ---- running ----------------------------------------------------------------------------
+    // ---- scanning ---------------------------------------------------------------------------
 
-    /** Starts the background scan. Call once, on the UI thread. */
-    public void start() {
-        int first = 0;
-        while (first < sectionItems.length && sectionItems[first] <= 0) {
-            first++;
-        }
-        if (needle.isEmpty() || first >= sectionItems.length) {
-            done = true;
-            return;
-        }
-        step(first, 0);
+    @Override
+    protected Object examine(Model.Item item) {
+        int n = occurrences(textOf(item), needle).length;
+        return n == 0 ? null : Integer.valueOf(n);
     }
 
-    /** Stops the scan; no further callbacks are made. */
-    public void cancel() {
-        cancelled = true;
-    }
-
-    private void step(final int section, final long from) {
-        worker.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (cancelled) {
-                    return;
-                }
-                List<Model.Item> items = null;
-                boolean error = false;
-                long count = Math.min(PageCache.PAGE, sectionItems[section] - from);
-                try {
-                    items = loader.load(section, from, (int) count);
-                } catch (Exception e) {
-                    error = true;
-                }
-                final List<int[]> found = new ArrayList<>();
-                if (items != null) {
-                    for (int i = 0; i < items.size(); i++) {
-                        int[] at = occurrences(textOf(items.get(i)), needle);
-                        if (at.length > 0) {
-                            found.add(new int[] {i, at.length});
-                        }
-                    }
-                }
-                final long taken = items == null ? count : Math.max(items.size(), 1);
-                final boolean broke = error || items == null;
-                ui.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (cancelled) {
-                            return;
-                        }
-                        for (int[] f : found) {
-                            for (int k = 0; k < f[1]; k++) {
-                                add(section, from + f[0]);
-                            }
-                        }
-                        scanned += taken;
-                        if (broke) {
-                            failed = true;
-                        }
-                        // Next page: this section, the next one, or the end.
-                        long nextFrom = from + taken;
-                        int nextSection = section;
-                        while (nextSection < sectionItems.length && nextFrom >= sectionItems[nextSection]) {
-                            nextSection++;
-                            nextFrom = 0;
-                        }
-                        if (broke || nextSection >= sectionItems.length || capped) {
-                            done = true;
-                        }
-                        listener.onChanged();
-                        if (!done) {
-                            step(nextSection, nextFrom);
-                        }
-                    }
-                });
-            }
-        });
+    @Override
+    protected boolean accept(int section, long item, Object found) {
+        for (int k = 0; k < (Integer) found; k++) {
+            add(section, item);
+        }
+        return !capped;
     }
 
     private void add(int section, long item) {
@@ -332,26 +246,6 @@ public final class DocSearch {
     /** More matches exist than {@link #MAX_HITS}. */
     public boolean capped() {
         return capped;
-    }
-
-    /** The scan has finished (or was stopped by the cap or a failure). */
-    public boolean done() {
-        return done;
-    }
-
-    /** A page could not be read; the matches found before it are still valid. */
-    public boolean failed() {
-        return failed;
-    }
-
-    /** Items looked at so far. */
-    public long scanned() {
-        return scanned;
-    }
-
-    /** Items to look at. */
-    public long total() {
-        return totalItems;
     }
 
     /** Index of the first match at or after the given place, or -1 if there is none yet. */

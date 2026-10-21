@@ -33,6 +33,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
@@ -49,10 +51,13 @@ import org.arca.viewer.MainActivity;
 import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
 import org.arca.viewer.Session;
+import org.arca.viewer.core.Bookmarks;
+import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Model;
 import org.arca.viewer.core.PageCache;
+import org.arca.viewer.core.Zoom;
 
 import java.util.List;
 import java.util.Locale;
@@ -93,6 +98,13 @@ public final class PreviewScreen extends Screen {
     /** The screen on display: the one the search tells about new matches. */
     private static PreviewScreen live;
 
+    // The headings and bookmarks of the document on display (memory only, dropped with it).
+    private static DocOutline outline;
+    private static final Bookmarks BOOKMARKS = new Bookmarks();
+    /** Redraws the lists of the open contents dialog, if there is one. */
+    private static Runnable contentsRefresh;
+    private static AlertDialog contentsDialog;
+
     private final float scale;
     private Model.PreviewMeta metaShown;
     private long outcomeShown;
@@ -107,7 +119,7 @@ public final class PreviewScreen extends Screen {
 
     public PreviewScreen(MainActivity act) {
         super(act);
-        this.scale = Prefs.textScale(act);
+        this.scale = Prefs.textScale(act) * Prefs.zoom(act);
     }
 
     @Override
@@ -197,6 +209,7 @@ public final class PreviewScreen extends Screen {
             section = 0;
             savedPosition = 0;
             resetSearch();
+            resetOutline();
         }
         metaShown = meta;
         outcomeShown = outcome;
@@ -211,6 +224,7 @@ public final class PreviewScreen extends Screen {
                 public void onClick(View v) {
                     // The run replaces the preview, and the matches belong to the old one.
                     resetSearch();
+                    resetOutline();
                     s.startPreview(!st.reveal);
                 }
             });
@@ -223,7 +237,14 @@ public final class PreviewScreen extends Screen {
                 act.refresh();
             }
         });
-        View head = meta.sections.isEmpty() ? header(title, true, reveal) : header(title, true, find, reveal);
+        View contents = ui.iconButton(R.drawable.ic_list, R.string.contents_open, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showContents();
+            }
+        });
+        View head = meta.sections.isEmpty() ? header(title, true, reveal)
+            : header(title, true, find, contents, reveal);
 
         LinearLayout body = ui.vbox();
         if (searchOpen && !meta.sections.isEmpty()) {
@@ -502,6 +523,239 @@ public final class PreviewScreen extends Screen {
         return sb;
     }
 
+    // ---- contents, bookmarks, zoom ----------------------------------------------------------
+
+    private static void resetOutline() {
+        if (outline != null) {
+            outline.cancel();
+        }
+        outline = null;
+        BOOKMARKS.clear();
+        contentsRefresh = null;
+        if (contentsDialog != null) {
+            contentsDialog.dismiss();
+            contentsDialog = null;
+        }
+    }
+
+    private long[] sectionSizes() {
+        long[] sizes = new long[metaShown.sections.size()];
+        for (int i = 0; i < sizes.length; i++) {
+            sizes[i] = metaShown.sections.get(i).items;
+        }
+        return sizes;
+    }
+
+    /** Starts collecting the headings (once per preview). */
+    private void ensureOutline() {
+        if (outline != null || metaShown == null) {
+            return;
+        }
+        final Session s = Session.get();
+        final long outcome = outcomeShown;
+        outline = new DocOutline(sectionSizes(), new DocOutline.Loader() {
+            @Override
+            public List<Model.Item> load(int sec, long from, int count) {
+                return s.loadItems(outcome, sec, from, count);
+            }
+        }, s.pageExecutor(), s.mainExecutor(), new DocOutline.Listener() {
+            @Override
+            public void onChanged() {
+                Runnable refresh = contentsRefresh;
+                if (refresh != null) {
+                    refresh.run();
+                }
+            }
+        });
+        outline.start();
+    }
+
+    /** A line of the contents dialog. */
+    private View contentsRow(CharSequence text, int indentDp, View.OnClickListener open, int trailingIcon,
+                             int trailingDesc, View.OnClickListener trailing) {
+        LinearLayout row = ui.hbox();
+        row.setMinimumHeight(ui.dp(44));
+        TextView t = ui.text(text, Ui.BODY);
+        t.setPadding(ui.dp(indentDp), ui.dp(8), ui.dp(8), ui.dp(8));
+        t.setClickable(true);
+        t.setFocusable(true);
+        t.setOnClickListener(open);
+        row.addView(t, ui.weight(1f));
+        if (trailing != null) {
+            row.addView(ui.iconButton(trailingIcon, trailingDesc, trailing));
+        }
+        return row;
+    }
+
+    /**
+     * The screen that is on display. The dialogs outlive a rebuild of the screen (zooming rebuilds
+     * it under the open dialog), so their buttons must act on the current screen, not on the one
+     * that created them.
+     */
+    private PreviewScreen current() {
+        return live != null ? live : this;
+    }
+
+    private String labelOf(int sec, long item) {
+        String text = "";
+        PreviewScreen me = current();
+        if (me.cache != null && metaShown != null && sec < metaShown.sections.size()) {
+            text = DocSearch.textOf(me.cache.get(sec, item, metaShown.sections.get(sec).items)).trim();
+        }
+        if (text.isEmpty() && metaShown != null && sec < metaShown.sections.size()) {
+            text = ui.str(R.string.bookmark_place, sectionName(sec, metaShown.sections.get(sec)), item + 1);
+        }
+        return text;
+    }
+
+    /** Takes the reader to a place of the document. */
+    private void goToPlace(int sec, long item) {
+        if (contentsDialog != null) {
+            contentsDialog.dismiss();
+        }
+        PreviewScreen me = current();
+        if (sec == section && me.list != null) {
+            me.list.setSelectionFromTop((int) Math.min(item, Integer.MAX_VALUE), ui.dp(24));
+            return;
+        }
+        section = sec;
+        savedPosition = (int) Math.min(item, Integer.MAX_VALUE);
+        act.refresh();
+    }
+
+    private void showContents() {
+        if (metaShown == null) {
+            return;
+        }
+        ensureOutline();
+        final LinearLayout root = ui.vbox();
+        int p = ui.dp(16);
+        root.setPadding(p, ui.dp(4), p, ui.dp(8));
+
+        // Zoom: buttons for those who cannot pinch.
+        root.addView(ui.text(R.string.zoom_label, Ui.CAPTION));
+        LinearLayout zoomRow = ui.hbox();
+        final TextView zoomValue = ui.heading(ui.str(R.string.zoom_value, Zoom.percent(Prefs.zoom(act))), Ui.TITLE);
+        zoomValue.setGravity(Gravity.CENTER);
+        zoomRow.addView(ui.iconButton(R.drawable.ic_minus, R.string.zoom_out, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                applyZoom(Zoom.step(Prefs.zoom(act), -1), zoomValue);
+            }
+        }));
+        zoomRow.addView(zoomValue, new LinearLayout.LayoutParams(ui.dp(80), ViewGroup.LayoutParams.WRAP_CONTENT));
+        zoomRow.addView(ui.iconButton(R.drawable.ic_plus, R.string.zoom_in, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                applyZoom(Zoom.step(Prefs.zoom(act), 1), zoomValue);
+            }
+        }));
+        zoomRow.addView(ui.hspace(8));
+        zoomRow.addView(ui.button(R.string.zoom_reset, Ui.TEXT_ONLY, 0, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                applyZoom(Zoom.DEFAULT, zoomValue);
+            }
+        }));
+        root.addView(zoomRow);
+        root.addView(ui.space(8));
+
+        // Bookmarks.
+        root.addView(ui.button(R.string.bookmark_add, Ui.TONAL, 0, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!BOOKMARKS.add(section, savedPosition, labelOf(section, savedPosition))) {
+                    android.widget.Toast.makeText(act, R.string.bookmark_full, android.widget.Toast.LENGTH_SHORT).show();
+                }
+                if (contentsRefresh != null) {
+                    contentsRefresh.run();
+                }
+            }
+        }), ui.fillWidth());
+        root.addView(ui.space(8));
+        root.addView(ui.text(R.string.bookmarks_title, Ui.LABEL));
+        final LinearLayout marks = ui.vbox();
+        root.addView(marks, ui.fillWidth());
+        root.addView(ui.space(8));
+        root.addView(ui.text(R.string.headings_title, Ui.LABEL));
+        final LinearLayout heads = ui.vbox();
+        root.addView(heads, ui.fillWidth());
+
+        contentsRefresh = new Runnable() {
+            @Override
+            public void run() {
+                marks.removeAllViews();
+                if (BOOKMARKS.size() == 0) {
+                    marks.addView(ui.text(R.string.bookmark_none, Ui.SMALL));
+                }
+                for (int i = 0; i < BOOKMARKS.size(); i++) {
+                    final int index = i;
+                    final Bookmarks.Mark m = BOOKMARKS.list().get(i);
+                    marks.addView(contentsRow(Fmt.safe(m.label), 0, new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            goToPlace(m.section, m.item);
+                        }
+                    }, R.drawable.ic_close, R.string.bookmark_remove, new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            BOOKMARKS.remove(index);
+                            if (contentsRefresh != null) {
+                                contentsRefresh.run();
+                            }
+                        }
+                    }));
+                }
+                heads.removeAllViews();
+                DocOutline o = outline;
+                if (o == null || (o.entries().isEmpty() && !o.done())) {
+                    heads.addView(ui.text(R.string.headings_scanning, Ui.SMALL));
+                } else if (o.entries().isEmpty()) {
+                    heads.addView(ui.text(R.string.headings_none, Ui.SMALL));
+                }
+                if (o != null) {
+                    for (final DocOutline.Entry e : o.entries()) {
+                        heads.addView(contentsRow(e.text, 12 * Math.max(0, e.level - 1), new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                goToPlace(e.section, e.item);
+                            }
+                        }, 0, 0, null));
+                    }
+                    if (!o.done() && !o.entries().isEmpty()) {
+                        heads.addView(ui.text(R.string.headings_scanning, Ui.SMALL));
+                    }
+                    if (o.capped()) {
+                        heads.addView(ui.text(ui.str(R.string.headings_capped, DocOutline.MAX_ENTRIES), Ui.SMALL));
+                    }
+                }
+            }
+        };
+        contentsRefresh.run();
+
+        android.widget.ScrollView sv = new android.widget.ScrollView(act);
+        sv.addView(root);
+        contentsDialog = new AlertDialog.Builder(act)
+            .setTitle(R.string.contents_title)
+            .setView(sv)
+            .setNegativeButton(R.string.close, null)
+            .create();
+        contentsDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+            @Override
+            public void onDismiss(DialogInterface d) {
+                contentsRefresh = null;
+                contentsDialog = null;
+            }
+        });
+        contentsDialog.show();
+    }
+
+    private void applyZoom(float zoom, TextView label) {
+        Prefs.setZoom(act, zoom);
+        label.setText(ui.str(R.string.zoom_value, Zoom.percent(zoom)));
+        act.refresh();
+    }
+
     // ---- notices ----------------------------------------------------------------------------
 
     private View notices(Model.PreviewMeta meta, Session.PreviewState st) {
@@ -704,7 +958,7 @@ public final class PreviewScreen extends Screen {
             HorizontalScrollView hs = new HorizontalScrollView(act);
             hs.setFillViewport(true);
             hs.addView(list, new FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.MATCH_PARENT));
-            return hs;
+            return pinchable(hs);
         }
         int pad = ui.dp(Adaptive.padding(act));
         list.setPadding(pad, ui.dp(8), pad, ui.dp(32));
@@ -713,7 +967,21 @@ public final class PreviewScreen extends Screen {
         FrameLayout outer = new FrameLayout(act);
         outer.addView(frame, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL));
-        return outer;
+        return pinchable(outer);
+    }
+
+    /** Makes a two-finger pinch on {@code content} change the text zoom. */
+    private View pinchable(View content) {
+        PinchFrame frame = new PinchFrame(act, Prefs.zoom(act), new PinchFrame.Listener() {
+            @Override
+            public void onPinch(float factor) {
+                Prefs.setZoom(act, Zoom.pinch(Prefs.zoom(act), factor));
+                act.refresh();
+            }
+        });
+        frame.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT));
+        return frame;
     }
 
     private int columnPx(int col) {
@@ -1163,6 +1431,7 @@ public final class PreviewScreen extends Screen {
     @Override
     public void onLeave() {
         resetSearch();
+        resetOutline();
         if (live == this) {
             live = null;
         }

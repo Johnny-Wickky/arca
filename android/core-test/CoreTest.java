@@ -9,13 +9,16 @@ import java.util.Map;
 import java.util.concurrent.Executor;
 
 import org.arca.viewer.core.Breakpoints;
+import org.arca.viewer.core.Bookmarks;
 import org.arca.viewer.core.Capabilities;
+import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Json;
 import org.arca.viewer.core.Model;
 import org.arca.viewer.core.Names;
 import org.arca.viewer.core.PageCache;
+import org.arca.viewer.core.Zoom;
 
 /** Unit tests of the pure-Java core (no Android, no JUnit: a plain runner, see run.sh). */
 public final class CoreTest {
@@ -774,9 +777,123 @@ public final class CoreTest {
 
     // ---------------------------------------------------------------------------------------
 
+    static void outlineBookmarksZoom() {
+        // Heading levels.
+        eq(0, DocOutline.levelOf("Title"), "title is level 0");
+        eq(1, DocOutline.levelOf("Heading1"), "heading 1");
+        eq(6, DocOutline.levelOf("Heading6"), "heading 6");
+        eq(-1, DocOutline.levelOf("Heading7"), "no heading 7");
+        eq(-1, DocOutline.levelOf("Heading"), "bare Heading");
+        eq(-1, DocOutline.levelOf("Subtitle"), "subtitle is not a heading");
+        eq(-1, DocOutline.levelOf("Body"), "body");
+        eq(-1, DocOutline.levelOf(null), "null");
+
+        // A document of two sections whose headings sit among other items.
+        final long[] sizes = {70, 3};
+        final Queue worker = new Queue();
+        final Queue ui = new Queue();
+        final int[] told = {0};
+        DocOutline outline = new DocOutline(sizes, new DocOutline.Loader() {
+            @Override
+            public List<Model.Item> load(int section, long from, int count) {
+                StringBuilder sb = new StringBuilder("[");
+                for (int i = 0; i < count; i++) {
+                    long item = from + i;
+                    String style = "Body";
+                    String text = "text";
+                    if (section == 0 && item == 0) { style = "Title"; text = "The title"; }
+                    if (section == 0 && item == 10) { style = "Heading1"; text = "  One\\nline  "; }
+                    if (section == 0 && item == 66) { style = "Heading2"; text = "Deep"; }
+                    if (section == 0 && item == 67) { style = "Heading3"; text = "   "; }
+                    if (section == 0 && item == 68) { style = "Subtitle"; text = "not a heading"; }
+                    if (section == 1 && item == 2) { style = "Heading1"; text = "Second"; }
+                    sb.append(i == 0 ? "" : ",").append("{\"k\":\"p\",\"s\":\"").append(style)
+                        .append("\",\"r\":[[\"").append(text).append("\",0]]}");
+                }
+                return Model.parseItems(sb.append("]").toString().getBytes(StandardCharsets.UTF_8));
+            }
+        }, worker, ui, new DocOutline.Listener() {
+            @Override
+            public void onChanged() {
+                told[0]++;
+            }
+        });
+        outline.start();
+        int rounds = 0;
+        while (!outline.done() && rounds++ < 50) {
+            worker.drain();
+            ui.drain();
+        }
+        check(outline.done() && !outline.failed(), "the outline scan finishes");
+        List<DocOutline.Entry> e = outline.entries();
+        eq(4, e.size(), "title, two headings and the second section's one (blank and subtitle skipped)");
+        eq("The title", e.get(0).text, "title text");
+        eq(0, e.get(0).level, "title level");
+        eq(10L, e.get(1).item, "heading place");
+        eq("One line", e.get(1).text, "line breaks become spaces, ends are trimmed");
+        eq(1, e.get(1).level, "heading level");
+        eq("Deep", e.get(2).text, "a heading in the second page");
+        eq(2, e.get(2).level, "heading 2");
+        eq(1, e.get(3).section, "heading in the second section");
+        eq(2L, e.get(3).item, "its item");
+        check(!outline.capped(), "not capped");
+        check(told[0] >= 2, "told after pages");
+
+        // Bookmarks: kept in document order, one per place, limited.
+        Bookmarks b = new Bookmarks();
+        check(b.add(1, 5, "later"), "add");
+        check(b.add(0, 9, "first\nline"), "add earlier place");
+        check(b.add(0, 9, "renewed"), "marking the same place again renews it");
+        eq(2, b.size(), "no duplicates");
+        eq("renewed", b.list().get(0).label, "sorted by place; label renewed");
+        eq(1, b.list().get(1).section, "second bookmark");
+        check(b.has(1, 5) && !b.has(1, 6), "has");
+        b.remove(0);
+        eq(1, b.size(), "removed");
+        b.remove(5);
+        b.remove(-1);
+        eq(1, b.size(), "out-of-range removal is ignored");
+        Bookmarks clipped = new Bookmarks();
+        clipped.add(0, 0, new String(new char[500]).replace('\0', 'x'));
+        eq(Bookmarks.MAX_LABEL, clipped.list().get(0).label.length(), "labels are clipped");
+        Bookmarks full = new Bookmarks();
+        for (int i = 0; i < Bookmarks.MAX; i++) {
+            check(full.add(0, i, "m" + i), "room for " + i);
+        }
+        check(!full.add(0, 999, "one too many"), "the list is full");
+        check(full.add(0, 3, "renew when full"), "a known place can still be renewed when full");
+        full.clear();
+        eq(0, full.size(), "cleared");
+
+        // Zoom.
+        eq(1.0f, Zoom.clamp(1.0f), "100%");
+        eq(0.6f, Zoom.clamp(0.1f), "lower bound");
+        eq(3.0f, Zoom.clamp(99f), "upper bound");
+        eq(1.0f, Zoom.clamp(Float.NaN), "NaN is 100%");
+        eq(1.0f, Zoom.clamp(Float.POSITIVE_INFINITY), "infinity is 100%");
+        eq(1.15f, Zoom.clamp(1.1337f), "rounded to 5%");
+        eq(1.1f, Zoom.step(1.0f, 1), "zoom in");
+        eq(0.9f, Zoom.step(1.0f, -1), "zoom out");
+        eq(3.0f, Zoom.step(3.0f, 1), "no zoom beyond the top");
+        eq(0.6f, Zoom.step(0.6f, -1), "no zoom below the bottom");
+        eq(1.5f, Zoom.pinch(1.0f, 1.5f), "pinch out");
+        eq(0.6f, Zoom.pinch(1.0f, 0.01f), "pinch in, clamped");
+        eq(1.0f, Zoom.pinch(1.0f, Float.NaN), "NaN factor is ignored");
+        eq(1.0f, Zoom.pinch(1.0f, -3f), "negative factor is ignored");
+        eq(120, Zoom.percent(1.2f), "percent");
+        eq(60, Zoom.percent(0f), "percent is clamped");
+        float z = 1.0f;
+        for (int i = 0; i < 100; i++) {
+            z = Zoom.step(z, 1);
+        }
+        eq(3.0f, z, "100 presses stop at the top");
+    }
+
+    // ---------------------------------------------------------------------------------------
+
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -792,6 +909,7 @@ public final class CoreTest {
                     case "capabilities": capabilities(); break;
                     case "chunks": chunks(); break;
                     case "search": search(); break;
+                    case "outlineBookmarksZoom": outlineBookmarksZoom(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

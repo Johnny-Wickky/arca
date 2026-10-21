@@ -30,6 +30,7 @@ public final class Prefs {
     private static final String K_THEME = "theme";
     private static final String K_LANG = "lang";
     private static final String K_TEXT = "text_scale";
+    private static final String K_ZOOM = "zoom_pct";
     private static final String K_REVEAL = "reveal_hidden";
     private static final String K_SECURE = "secure_screen";
     private static final String K_PASSPORT = "passport";
@@ -71,6 +72,15 @@ public final class Prefs {
             case 3: return 1.45f;
             default: return 1.0f;
         }
+    }
+
+    /** The zoom of the preview text on top of {@link #textScale(Context)}: 0.6 to 3.0, 1.0 by default. */
+    public static float zoom(Context c) {
+        return org.arca.viewer.core.Zoom.clamp(sp(c).getInt(K_ZOOM, 100) / 100f);
+    }
+
+    public static void setZoom(Context c, float zoom) {
+        sp(c).edit().putInt(K_ZOOM, org.arca.viewer.core.Zoom.percent(zoom)).apply();
     }
 
     /** Whether hidden content (hidden text, sheets, slides) is shown by default in the preview. */
