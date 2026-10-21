@@ -34,6 +34,7 @@ mod bidi;
 mod detect;
 mod doc;
 mod docx;
+mod export;
 mod listfmt;
 pub mod model;
 mod msg;
@@ -58,6 +59,7 @@ use arca_container::cfb::CfbLimits;
 use arca_container::xml::XmlLimits;
 use arca_container::zip::ZipLimits;
 
+pub use export::{LegacyOptions, sanitize_legacy};
 pub use model::{FileFormat, Preview};
 
 /// Resource limits for one preview.

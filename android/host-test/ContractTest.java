@@ -246,6 +246,12 @@ public final class ContractTest {
                 if (status == Native.OK) {
                     Model.SanitizedInfo si = Model.parseSanitized(Native.sanitizedInfo(outcome));
                     check(si.size > 0, name + ": empty sterile copy");
+                    // The old formats come out as their OOXML successors.
+                    String successor = "Doc".equals(format) || "Rtf".equals(format) ? "Docx"
+                        : "Xls".equals(format) ? "Xlsx" : "Ppt".equals(format) ? "Pptx" : null;
+                    if (strict && successor != null) {
+                        check(successor.equals(si.format), name + ": sterile copy is " + si.format + ", not " + successor);
+                    }
                     check(si.verdict == Model.Verdict.CLEAN || si.verdict == Model.Verdict.UNVERIFIED,
                         name + ": sterile copy verdict " + si.verdict);
                 } else {

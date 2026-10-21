@@ -85,8 +85,10 @@ public final class SanitizeScreen extends Screen {
         String format = s.report() == null ? "" : s.report().format;
         boolean pdf = "Pdf".equals(format);
         boolean odf = format.startsWith("Od");
-        if (pdf || odf) {
-            col.addView(ui.text(pdf ? R.string.sanitize_note_pdf : R.string.sanitize_note_odf, Ui.SMALL), ui.fillWidth());
+        boolean legacy = "Doc".equals(format) || "Xls".equals(format) || "Ppt".equals(format) || "Rtf".equals(format);
+        if (pdf || odf || legacy) {
+            int note = pdf ? R.string.sanitize_note_pdf : legacy ? R.string.sanitize_note_legacy : R.string.sanitize_note_odf;
+            col.addView(ui.text(note, Ui.SMALL), ui.fillWidth());
             col.addView(ui.space(12));
         }
 
@@ -94,7 +96,7 @@ public final class SanitizeScreen extends Screen {
         opt.addView(ui.heading(ui.str(R.string.sanitize_options_title), Ui.LABEL));
         opt.addView(ui.space(4));
         opt.addView(option(R.string.opt_metadata, R.string.opt_metadata_desc, Native.SANITIZE_STRIP_METADATA));
-        if (!pdf && !odf) {
+        if (!pdf && !odf && !legacy) {
             opt.addView(option(R.string.opt_custom_xml, R.string.opt_custom_xml_desc, Native.SANITIZE_REMOVE_CUSTOM_XML));
         }
         opt.addView(option(R.string.opt_comments, R.string.opt_comments_desc, Native.SANITIZE_REMOVE_COMMENTS));

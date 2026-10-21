@@ -184,22 +184,22 @@ pub fn sanitize(
 }
 
 /// Produces a sterile copy of a document whose format this crate cannot rebuild itself: the
-/// caller's `rebuild` does it (it gets the original bytes and returns the new file and the
-/// changes made), and the result goes through exactly the same checks as every other copy.
+/// caller's `rebuild` does it (it gets the original bytes and returns the new file, its format
+/// and the changes made), and the result goes through exactly the same checks as every other copy.
 ///
 /// # Errors
 /// See [`SanitizeError`]; whatever `rebuild` returns is passed on.
 pub fn sanitize_with(
     data: &[u8],
     policy: &ScanPolicy,
-    rebuild: impl FnOnce(&[u8]) -> Result<(Vec<u8>, Vec<SanitizeAction>), SanitizeError>,
+    rebuild: impl FnOnce(&[u8]) -> Result<(Vec<u8>, FileFormat, Vec<SanitizeAction>), SanitizeError>,
 ) -> Result<SanitizedDocument, SanitizeError> {
     let before = scan(data, policy);
     if before.verdict == Verdict::Rejected {
         return Err(SanitizeError::Rejected(before.rejection));
     }
-    let (bytes, actions) = rebuild(data)?;
-    verified(bytes, before.format, actions, policy)
+    let (bytes, format, actions) = rebuild(data)?;
+    verified(bytes, format, actions, policy)
 }
 
 /// Re-scans a rebuilt file; it is returned only if nothing active, remote or unreadable is left.

@@ -96,6 +96,13 @@ fn sanitize(document: &[u8], request_flags: u32) -> (i32, Vec<u8>) {
         Err(SanitizeError::Unsupported(FileFormat::Pdf)) => {
             return sanitize_pdf(document, &options);
         }
+        // The binary Office formats and RTF come out as OOXML, written from what the viewer
+        // reads of them (a copy that has never had a macro, an OLE object or a field in it).
+        Err(SanitizeError::Unsupported(
+            FileFormat::Doc | FileFormat::Xls | FileFormat::Ppt | FileFormat::Rtf,
+        )) => {
+            return sanitize_legacy(document, &options);
+        }
         other => other,
     };
     sanitize_result(result)
@@ -108,7 +115,27 @@ fn sanitize_pdf(document: &[u8], options: &SanitizeOptions) -> (i32, Vec<u8>) {
     };
     let mut encrypted = false;
     let result = arca_xray::sanitize::sanitize_with(document, &ScanPolicy::default(), |data| {
-        arca_preview::sanitize_pdf(data, &pdf_options).map_err(|e| {
+        arca_preview::sanitize_pdf(data, &pdf_options)
+            .map(|(bytes, actions)| (bytes, FileFormat::Pdf, actions))
+            .map_err(|e| {
+                encrypted = matches!(e, PreviewError::Encrypted);
+                SanitizeError::Rebuild(e.to_string())
+            })
+    });
+    if encrypted {
+        return (status::ENCRYPTED, error_envelope("the document is password protected"));
+    }
+    sanitize_result(result)
+}
+
+fn sanitize_legacy(document: &[u8], options: &SanitizeOptions) -> (i32, Vec<u8>) {
+    let legacy = arca_preview::LegacyOptions {
+        accept_revisions: options.accept_revisions,
+        remove_comments: options.remove_comments,
+    };
+    let mut encrypted = false;
+    let result = arca_xray::sanitize::sanitize_with(document, &ScanPolicy::default(), |data| {
+        arca_preview::sanitize_legacy(data, &legacy).map_err(|e| {
             encrypted = matches!(e, PreviewError::Encrypted);
             SanitizeError::Rebuild(e.to_string())
         })
@@ -506,6 +533,28 @@ mod tests {
         enc.splice(at..at, b"/Encrypt 9 0 R ".iter().copied());
         let (code, _) = process(&request_for(Op::Sanitize, flags::SANITIZE_ALL, &enc));
         assert!(code == status::ENCRYPTED || code == status::DOCUMENT_REJECTED, "{code}");
+    }
+
+    #[test]
+    fn legacy_office_and_rtf_get_an_ooxml_copy() {
+        let rtf: &[u8] = br"{\rtf1\ansi Before {\object\objemb{\*\objclass Equation.3}{\*\objdata 0105000002000000}}After}";
+        let doc =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/report.doc"))
+                .unwrap();
+        for (input, format) in [(rtf, FileFormat::Docx), (doc.as_slice(), FileFormat::Docx)] {
+            let (code, env) = process(&request_for(Op::Sanitize, flags::SANITIZE_ALL, input));
+            assert_eq!(code, status::OK);
+            let (kind, payload) = open(&env);
+            let sd = decode_sanitized(kind, payload).unwrap();
+            assert_eq!(sd.format, format);
+            assert!(sd.bytes.starts_with(b"PK"));
+            assert_eq!(sd.verification.verdict, Verdict::Clean);
+            assert!(!sd.actions.is_empty());
+            let (code, env) = process(&request_for(Op::Preview, 0, &sd.bytes));
+            assert_eq!(code, status::OK);
+            let (kind, payload) = open(&env);
+            assert!(decode_preview(kind, payload).is_ok());
+        }
     }
 
     #[test]

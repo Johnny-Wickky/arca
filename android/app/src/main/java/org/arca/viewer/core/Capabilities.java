@@ -43,7 +43,10 @@ public final class Capabilities {
         "Vsdx", "Vsdm", "VisioTemplateOrStencil",
         "Odt", "Ods", "Odp", "Odg", "OdfOther",
         // PDF is rebuilt from its pages
-        "Pdf");
+        "Pdf",
+        // the binary Office formats and RTF come out as .docx / .xlsx / .pptx written from what
+        // the viewer reads of them
+        "Doc", "Xls", "Ppt", "Rtf");
 
     /** Whether the engine can build a safe preview of {@code format}. */
     public static boolean canPreview(String format) {
