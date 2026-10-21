@@ -214,6 +214,31 @@ fn sanitized_document_survives_the_wire() {
     assert_eq!(back, out);
 }
 
+#[test]
+fn a_large_sterile_copy_survives_the_wire() {
+    // The host reads the guest's answer with these limits (`limits_for` in the guest crate):
+    // a sterile copy over 1 Mi bytes used to be refused, because its bytes were read as items.
+    let mut out =
+        sanitize(&docm_with_macro().build(), &ScanPolicy::default(), &SanitizeOptions::default())
+            .unwrap();
+    out.bytes = (0..3_000_000u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
+    let limits = arca_abi::wire::DecodeLimits {
+        max_string_bytes: 1 << 30,
+        max_items: 1 << 20,
+        max_depth: 16,
+    };
+    let bytes = arca_abi::wire::to_bytes(&out).unwrap();
+    let back: SanitizedDocument = arca_abi::wire::from_bytes(&bytes, limits).unwrap();
+    assert_eq!(back, out);
+    // The layout did not change: a copy written the old way (a sequence of bytes) reads the same.
+    let mut old = arca_abi::wire::Writer::new();
+    old.put(&out.format);
+    old.put(&out.bytes);
+    old.put(&out.actions);
+    old.put(&out.verification);
+    assert_eq!(old.finish().unwrap(), bytes);
+}
+
 /// Writes kitchen-sink inputs and their sterile copies to `$ARCA_DUMP_DIR`.
 #[test]
 fn dump_sanitized_for_external_validation() {

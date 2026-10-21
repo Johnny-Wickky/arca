@@ -215,8 +215,15 @@ impl Engine {
         &self.config
     }
 
-    /// Sandbox policy for one operation on a document of `len` bytes.
-    fn policy_for(&self, op: Op, len: usize) -> SandboxPolicy {
+    /// Sandbox policy for one operation on a document of `len` bytes that an earlier scan found
+    /// to expand to `inflated` bytes (`0` if unknown).
+    ///
+    /// A preview or a sterile copy touches everything the scan unpacked again, so a large,
+    /// well-compressed workbook needs time and memory in proportion to what it *expands to*,
+    /// not to its size on disk. The scan's own figure is used to scale both; it comes out of the
+    /// sandbox, so it cannot raise anything above the fixed ceilings (fuel and the device's
+    /// memory limit), and the wall-clock limits stay what they were.
+    pub(crate) fn policy_for(&self, op: Op, len: usize, inflated: u64) -> SandboxPolicy {
         let c = &self.config;
         let mut policy = SandboxPolicy {
             max_input_bytes: c
@@ -235,6 +242,15 @@ impl Engine {
             // Extraction and rebuilding keep the decompressed parts next to the result.
             policy.memory_base_bytes = 192 << 20;
             policy.memory_per_input_byte = 8;
+            let (fuel, memory) = match op {
+                Op::Sanitize => (FUEL_PER_INFLATED_SANITIZE, MEMORY_PER_INFLATED_SANITIZE),
+                _ => (FUEL_PER_INFLATED_PREVIEW, MEMORY_PER_INFLATED_PREVIEW),
+            };
+            let inflated = inflated.min(MAX_INFLATED_HINT);
+            policy.fuel.base = policy.fuel.base.saturating_add(inflated.saturating_mul(fuel));
+            policy.memory_base_bytes = policy.memory_base_bytes.saturating_add(
+                usize::try_from(inflated).unwrap_or(usize::MAX).saturating_mul(memory),
+            );
         }
         policy
     }
@@ -249,10 +265,26 @@ impl Engine {
         document: &[u8],
         cancel: &CancelToken,
     ) -> RunOutput {
+        self.run_scaled(op, op_flags, password, document, cancel, 0)
+    }
+
+    /// As [`Engine::run`], for a document an earlier scan found to expand to `inflated` bytes:
+    /// the budget of a preview or a sterile copy grows with it (see `policy_for`).
+    #[must_use]
+    pub fn run_scaled(
+        &self,
+        op: Op,
+        op_flags: u32,
+        password: &[u8],
+        document: &[u8],
+        cancel: &CancelToken,
+        inflated: u64,
+    ) -> RunOutput {
         if op_flags & !op.known_flags() != 0 {
             return RunOutput::failure(Status::BadArgument, "unknown flag bits");
         }
-        let sandbox = Sandbox::new(self.policy_for(op, document.len()), [self.module.pin()]);
+        let sandbox =
+            Sandbox::new(self.policy_for(op, document.len(), inflated), [self.module.pin()]);
         let options = RunOptions::new().cancel_token(cancel.clone());
         let Some(prefix) = request::prefix(op, op_flags, password) else {
             return RunOutput::failure(Status::BadArgument, "the password is too long");
@@ -361,6 +393,8 @@ struct Document {
     state: Mutex<DocState>,
     /// What the reader typed for an encrypted document; wiped when the document goes.
     password: Mutex<Zeroizing<Vec<u8>>>,
+    /// Bytes the last scan found the document to expand to (`0` before any scan).
+    inflated: AtomicU64,
 }
 
 /// What a finished run keeps for the app to query.
@@ -394,6 +428,18 @@ pub struct Host {
 /// Size of the chunks used when reading a file descriptor.
 const READ_CHUNK: usize = 1 << 20;
 
+/// Fuel a preview needs per byte the document expands to (measured ≈ 700 on spreadsheets; with
+/// a margin).
+const FUEL_PER_INFLATED_PREVIEW: u64 = 1_500;
+/// Fuel a sterile copy needs per expanded byte (measured ≈ 4 700; with a margin).
+const FUEL_PER_INFLATED_SANITIZE: u64 = 6_000;
+/// Memory a preview needs per expanded byte.
+const MEMORY_PER_INFLATED_PREVIEW: usize = 2;
+/// Memory a sterile copy needs per expanded byte (the parts are held next to the rebuilt copy).
+const MEMORY_PER_INFLATED_SANITIZE: usize = 4;
+/// The scan's figure is used up to this much (the engine's own ceilings apply on top).
+const MAX_INFLATED_HINT: u64 = 1 << 30;
+
 impl Host {
     /// A host around `engine`.
     #[must_use]
@@ -418,6 +464,7 @@ impl Host {
             limit,
             state: Mutex::new(DocState::Loading(Zeroizing::new(Vec::new()))),
             password: Mutex::new(Zeroizing::new(Vec::new())),
+            inflated: AtomicU64::new(0),
         })
     }
 
@@ -547,9 +594,15 @@ impl Host {
             let p = d.password.lock().unwrap_or_else(PoisonError::into_inner);
             Zeroizing::new(p.to_vec())
         };
-        let out = self.engine.run(op, op_flags, &password, &bytes, &token);
+        let hint = self.docs.get(doc).map_or(0, |d| d.inflated.load(Ordering::Relaxed));
+        let out = self.engine.run_scaled(op, op_flags, &password, &bytes, &token, hint);
         let body = match out.data {
-            Some(Output::Report(r)) => Body::Report(r),
+            Some(Output::Report(r)) => {
+                if let Some(d) = self.docs.get(doc) {
+                    d.inflated.store(r.stats.bytes_inflated, Ordering::Relaxed);
+                }
+                Body::Report(r)
+            }
             Some(Output::Preview(p)) => Body::Preview(Box::new(PreviewIndex::new(*p))),
             Some(Output::Sanitized(s)) => {
                 let mut s: SanitizedDocument = *s;

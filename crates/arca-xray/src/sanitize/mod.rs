@@ -118,7 +118,27 @@ pub struct SanitizedDocument {
     /// X-ray of the produced file (verification).
     pub verification: XRayReport,
 }
-wire_struct!(SanitizedDocument { format, bytes, actions, verification });
+
+// Written out instead of `wire_struct!`: a `Vec<u8>` field would be decoded one element at a time
+// and held to the limit on the *number of items* (1 Mi), which refused every sterile copy larger
+// than 1 MiB. `bytes` is read as a byte string, whose limit is the one meant for it. The layout
+// is the same (a length, then the bytes).
+impl arca_abi::wire::Wire for SanitizedDocument {
+    fn encode(&self, w: &mut arca_abi::wire::Writer) {
+        w.put(&self.format);
+        w.bytes(&self.bytes);
+        w.put(&self.actions);
+        w.put(&self.verification);
+    }
+
+    fn decode(r: &mut arca_abi::wire::Reader<'_>) -> Result<Self, arca_abi::wire::WireError> {
+        r.enter()?;
+        let v =
+            Self { format: r.get()?, bytes: r.bytes()?, actions: r.get()?, verification: r.get()? };
+        r.leave();
+        Ok(v)
+    }
+}
 
 /// Why a sterile copy could not be produced.
 #[derive(Debug, Clone, PartialEq, Eq)]

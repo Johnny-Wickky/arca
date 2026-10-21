@@ -16,6 +16,8 @@ use arca_preview::model::{
 
 use crate::json::check::{Value, parse};
 use crate::render::{self, PreviewIndex};
+use arca_abi::request::Op;
+
 use crate::{Engine, EngineConfig, Host, Status, op};
 
 fn required() -> bool {
@@ -589,4 +591,31 @@ fn concurrent_runs_do_not_interfere() {
         }
     });
     assert_eq!(h.live_objects(), (0, 0, 0));
+}
+
+#[test]
+fn the_budget_of_a_preview_or_a_sterile_copy_grows_with_what_the_scan_unpacked() {
+    let engine = Engine::new(vec![0u8; 8], EngineConfig::default());
+    let len = 3 << 20;
+    let none_preview = engine.policy_for(Op::Preview, len, 0);
+    let none_sanitize = engine.policy_for(Op::Sanitize, len, 0);
+    // 44 MB of XML in a 3 MB workbook (the figure the scan reports).
+    let inflated = 44 << 20;
+    let preview = engine.policy_for(Op::Preview, len, inflated);
+    let sanitize = engine.policy_for(Op::Sanitize, len, inflated);
+    assert!(preview.fuel.for_input(len) > none_preview.fuel.for_input(len));
+    assert!(sanitize.fuel.for_input(len) > 2 * none_sanitize.fuel.for_input(len));
+    // A sterile copy of such a workbook measured 4 700 fuel per expanded byte: it now fits.
+    assert!(sanitize.fuel.for_input(len) > 4_700 * inflated);
+    assert!(sanitize.memory_limit_for(len) > none_sanitize.memory_limit_for(len));
+    // A scan has no earlier figure to go by and keeps its budget whatever is passed.
+    assert_eq!(
+        engine.policy_for(Op::Scan, len, inflated).fuel,
+        engine.policy_for(Op::Scan, len, 0).fuel
+    );
+    // The fixed ceilings stay: fuel, the device's memory limit and the wall-clock limits.
+    let huge = engine.policy_for(Op::Sanitize, len, u64::MAX);
+    assert!(huge.fuel.for_input(len) <= huge.fuel.max);
+    assert!(huge.memory_limit_for(len) <= engine.config().max_memory_bytes);
+    assert_eq!(huge.max_wall_time, none_sanitize.max_wall_time);
 }

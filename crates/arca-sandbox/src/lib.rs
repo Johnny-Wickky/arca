@@ -64,6 +64,9 @@ impl FuelPolicy {
     /// | spreadsheet, 5:1 deflate (random numbers) | 0.1 – 2 MB | ≈ 6 000 |
     /// | spreadsheet, 10:1 deflate (repetitive cells) | 650 KB | ≈ 15 000 |
     ///
+    /// The engine adds to this budget for a preview or a sterile copy once a scan has said how
+    /// much the document expands to (`arca-engine`, `policy_for`).
+    ///
     /// Spreadsheets are the worst case (many tiny elements, ≈ 1 400 fuel per
     /// XML byte). `32 000` per input byte therefore admits tables compressing
     /// up to roughly 20:1 and still stops a runaway guest after seconds, not
