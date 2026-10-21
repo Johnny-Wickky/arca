@@ -551,11 +551,11 @@ public final class CoreTest {
         for (String f : noPreview) {
             check(!Capabilities.canPreview(f), "no preview of " + f);
         }
-        String[] sterile = {"Docx", "Xlsx", "Pptx", "Docm", "Potx", "Vsdx", "Odt", "Ods", "Odp"};
+        String[] sterile = {"Docx", "Xlsx", "Pptx", "Docm", "Potx", "Vsdx", "Odt", "Ods", "Odp", "Pdf"};
         for (String f : sterile) {
             check(Capabilities.canSanitize(f), "sterile copy of " + f);
         }
-        String[] noSterile = {"Doc", "Xls", "Ppt", "Pdf", "Rtf", "Msg", "Csv", "Exe"};
+        String[] noSterile = {"Doc", "Xls", "Ppt", "Rtf", "Msg", "Csv", "Exe"};
         for (String f : noSterile) {
             check(!Capabilities.canSanitize(f), "no sterile copy of " + f);
         }

@@ -180,6 +180,35 @@ pub fn sanitize(
     } else {
         opc::rebuild(data, policy, options, before.format)?
     };
+    verified(bytes, format, actions, policy)
+}
+
+/// Produces a sterile copy of a document whose format this crate cannot rebuild itself: the
+/// caller's `rebuild` does it (it gets the original bytes and returns the new file and the
+/// changes made), and the result goes through exactly the same checks as every other copy.
+///
+/// # Errors
+/// See [`SanitizeError`]; whatever `rebuild` returns is passed on.
+pub fn sanitize_with(
+    data: &[u8],
+    policy: &ScanPolicy,
+    rebuild: impl FnOnce(&[u8]) -> Result<(Vec<u8>, Vec<SanitizeAction>), SanitizeError>,
+) -> Result<SanitizedDocument, SanitizeError> {
+    let before = scan(data, policy);
+    if before.verdict == Verdict::Rejected {
+        return Err(SanitizeError::Rejected(before.rejection));
+    }
+    let (bytes, actions) = rebuild(data)?;
+    verified(bytes, before.format, actions, policy)
+}
+
+/// Re-scans a rebuilt file; it is returned only if nothing active, remote or unreadable is left.
+fn verified(
+    bytes: Vec<u8>,
+    format: FileFormat,
+    actions: Vec<SanitizeAction>,
+    policy: &ScanPolicy,
+) -> Result<SanitizedDocument, SanitizeError> {
     let verification = scan(&bytes, policy);
     if verification.verdict == Verdict::Rejected {
         return Err(SanitizeError::Verification(format!(

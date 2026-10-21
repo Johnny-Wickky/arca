@@ -153,6 +153,49 @@ impl core::fmt::Display for PreviewError {
 
 impl core::error::Error for PreviewError {}
 
+/// What [`sanitize_pdf`] may be asked to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PdfSanitizeOptions {
+    /// Drop the document information (author, producer, dates); otherwise it is kept.
+    pub strip_metadata: bool,
+    /// Leave out review comments (notes, highlights, drawings); otherwise their look is kept.
+    pub remove_comments: bool,
+}
+
+impl Default for PdfSanitizeOptions {
+    fn default() -> Self {
+        Self { strip_metadata: true, remove_comments: true }
+    }
+}
+
+/// Builds a sterile copy of a PDF: a new file made only of what the pages need (their content,
+/// fonts, pictures and the look of their annotations), with no scripts, actions, links, forms,
+/// attachments, signatures, metadata or old revisions. Nothing is decoded or run.
+///
+/// Returns the new file and the changes made. The caller verifies the result (for the sandbox
+/// guest that is `arca_xray::sanitize::sanitize_with`).
+///
+/// # Errors
+/// [`PreviewError::Encrypted`] for a password-protected file; [`PreviewError::Malformed`] when
+/// the file has no pages or is too large to rebuild.
+pub fn sanitize_pdf(
+    data: &[u8],
+    options: &PdfSanitizeOptions,
+) -> Result<(Vec<u8>, Vec<arca_xray::sanitize::SanitizeAction>), PreviewError> {
+    let policy = PreviewPolicy::default();
+    if data.len() > policy.max_input_bytes {
+        return Err(PreviewError::TooLarge(policy.max_input_bytes));
+    }
+    pdf::clean(
+        data,
+        &policy,
+        pdf::CleanOptions {
+            strip_metadata: options.strip_metadata,
+            remove_comments: options.remove_comments,
+        },
+    )
+}
+
 /// Extracts the visible content of `data`.
 ///
 /// The format is determined from content only; the file name is never used.

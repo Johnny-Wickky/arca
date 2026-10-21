@@ -196,6 +196,8 @@
     <string name="sanitize_intro">Arca rebuilds the document from its safe parts only and checks the result again. The copy opens in any program without macros, remote content or other active parts.</string>
     <string name="sanitize_always_title">Always removed</string>
     <string name="sanitize_always_text">Macros and scripts, embedded and linked objects, ActiveX, remote templates and images, links that load by themselves, data connections, DDE and risky formulas, and anything the container hides.</string>
+    <string name="sanitize_note_pdf">A PDF is rebuilt from its pages: text, pictures and fonts stay exactly as they are. Bookmarks, links, attachments, forms, signatures and old revisions do not; the look of form fields and stamps stays as part of the page.</string>
+    <string name="sanitize_note_odf">Embedded objects (including charts), thumbnails and signatures are removed from OpenDocument files.</string>
     <string name="sanitize_options_title">Also remove</string>
     <string name="opt_metadata">Author and document properties</string>
     <string name="opt_metadata_desc">Names, company, paths, printer and editing history.</string>

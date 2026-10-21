@@ -81,13 +81,26 @@ public final class SanitizeScreen extends Screen {
         col.addView(always, ui.fillWidth());
         col.addView(ui.space(12));
 
+        // What a copy of this kind of file cannot keep, and which options mean something for it.
+        String format = s.report() == null ? "" : s.report().format;
+        boolean pdf = "Pdf".equals(format);
+        boolean odf = format.startsWith("Od");
+        if (pdf || odf) {
+            col.addView(ui.text(pdf ? R.string.sanitize_note_pdf : R.string.sanitize_note_odf, Ui.SMALL), ui.fillWidth());
+            col.addView(ui.space(12));
+        }
+
         LinearLayout opt = ui.card();
         opt.addView(ui.heading(ui.str(R.string.sanitize_options_title), Ui.LABEL));
         opt.addView(ui.space(4));
         opt.addView(option(R.string.opt_metadata, R.string.opt_metadata_desc, Native.SANITIZE_STRIP_METADATA));
-        opt.addView(option(R.string.opt_custom_xml, R.string.opt_custom_xml_desc, Native.SANITIZE_REMOVE_CUSTOM_XML));
+        if (!pdf && !odf) {
+            opt.addView(option(R.string.opt_custom_xml, R.string.opt_custom_xml_desc, Native.SANITIZE_REMOVE_CUSTOM_XML));
+        }
         opt.addView(option(R.string.opt_comments, R.string.opt_comments_desc, Native.SANITIZE_REMOVE_COMMENTS));
-        opt.addView(option(R.string.opt_revisions, R.string.opt_revisions_desc, Native.SANITIZE_ACCEPT_REVISIONS));
+        if (!pdf) {
+            opt.addView(option(R.string.opt_revisions, R.string.opt_revisions_desc, Native.SANITIZE_ACCEPT_REVISIONS));
+        }
         col.addView(opt, ui.fillWidth());
         col.addView(ui.space(12));
 

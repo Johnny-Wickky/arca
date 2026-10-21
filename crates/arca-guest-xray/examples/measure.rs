@@ -53,8 +53,12 @@ fn main() -> ExitCode {
         let t = Instant::now();
         let native = arca_xray::scan_default(&data);
         let native_ms = t.elapsed().as_millis();
-        for op in [Op::Scan, Op::Preview] {
-            let op_flags = if op == Op::Preview { flags::REVEAL_HIDDEN } else { 0 };
+        for op in [Op::Scan, Op::Preview, Op::Sanitize] {
+            let op_flags = match op {
+                Op::Preview => flags::REVEAL_HIDDEN,
+                Op::Sanitize => flags::SANITIZE_ALL,
+                Op::Scan => 0,
+            };
             match sandbox.run_request(&module, &header(op, op_flags), &data, &RunOptions::new()) {
                 Ok(out) => {
                     let per_byte =

@@ -32,7 +32,7 @@ use arca_abi::wire::{self, DecodeLimits, WireError};
 use arca_abi::{ABI_VERSION, status};
 use arca_preview::{Preview, PreviewError, PreviewPolicy};
 use arca_xray::sanitize::{SanitizeError, SanitizeOptions, SanitizedDocument};
-use arca_xray::{ScanPolicy, XRayReport};
+use arca_xray::{FileFormat, ScanPolicy, XRayReport};
 
 #[derive(Default)]
 struct State {
@@ -90,7 +90,37 @@ fn sanitize(document: &[u8], request_flags: u32) -> (i32, Vec<u8>) {
         strip_metadata: request_flags & flags::STRIP_METADATA != 0,
         remove_custom_xml: request_flags & flags::REMOVE_CUSTOM_XML != 0,
     };
-    match arca_xray::sanitize::sanitize(document, &ScanPolicy::default(), &options) {
+    let result = match arca_xray::sanitize::sanitize(document, &ScanPolicy::default(), &options) {
+        // A PDF is rebuilt by the preview crate, which has the PDF parser; the result goes
+        // through the same verification as every other sterile copy.
+        Err(SanitizeError::Unsupported(FileFormat::Pdf)) => {
+            return sanitize_pdf(document, &options);
+        }
+        other => other,
+    };
+    sanitize_result(result)
+}
+
+fn sanitize_pdf(document: &[u8], options: &SanitizeOptions) -> (i32, Vec<u8>) {
+    let pdf_options = arca_preview::PdfSanitizeOptions {
+        strip_metadata: options.strip_metadata,
+        remove_comments: options.remove_comments,
+    };
+    let mut encrypted = false;
+    let result = arca_xray::sanitize::sanitize_with(document, &ScanPolicy::default(), |data| {
+        arca_preview::sanitize_pdf(data, &pdf_options).map_err(|e| {
+            encrypted = matches!(e, PreviewError::Encrypted);
+            SanitizeError::Rebuild(e.to_string())
+        })
+    });
+    if encrypted {
+        return (status::ENCRYPTED, error_envelope("the document is password protected"));
+    }
+    sanitize_result(result)
+}
+
+fn sanitize_result(result: Result<SanitizedDocument, SanitizeError>) -> (i32, Vec<u8>) {
+    match result {
         Ok(doc) => {
             seal(PayloadKind::SanitizedDocument, &doc, "could not encode the sterile document")
         }
@@ -418,6 +448,64 @@ mod tests {
         // A different payload kind is not mistaken for another.
         assert!(matches!(decode_report(kind, payload), Err(DecodeError::UnexpectedKind(_))));
         assert!(matches!(decode_preview(kind, payload), Err(DecodeError::UnexpectedKind(_))));
+    }
+
+    fn pdf_with_script() -> Vec<u8> {
+        // Catalog with an open action that runs JavaScript, one page of text.
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R /OpenAction << /S /JavaScript /JS (app.alert\\(1\\)) >> >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            "<< /Length 40 >>\nstream\nBT /F1 12 Tf 10 100 Td (Sterile text) Tj ET\nendstream",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).bytes());
+        for o in offsets {
+            out.extend(format!("{o:010} 00000 n \n").bytes());
+        }
+        out.extend(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn a_pdf_gets_a_sterile_copy_too() {
+        let doc = pdf_with_script();
+        let before = process(&request_for(Op::Scan, 0, &doc));
+        assert_eq!(before.0, status::OK);
+        let (code, env) = process(&request_for(Op::Sanitize, flags::SANITIZE_ALL, &doc));
+        assert_eq!(code, status::OK);
+        let (kind, payload) = open(&env);
+        let sd = decode_sanitized(kind, payload).unwrap();
+        assert_eq!(sd.format, FileFormat::Pdf);
+        assert!(sd.bytes.starts_with(b"%PDF-"));
+        assert!(!sd.bytes.windows(10).any(|w| w == b"JavaScript"));
+        assert_eq!(sd.verification.verdict, Verdict::Clean);
+        assert!(sd.actions.iter().any(|a| a.target.contains("OpenAction")));
+        // The copy is itself a document the viewer can show.
+        let (code, env) = process(&request_for(Op::Preview, 0, &sd.bytes));
+        assert_eq!(code, status::OK);
+        let (kind, payload) = open(&env);
+        let p = decode_preview(kind, payload).unwrap();
+        assert!(format!("{:?}", p.sections).contains("Sterile text"));
+        // A password-protected PDF says so instead of failing.
+        let mut enc = pdf_with_script();
+        let at = enc.windows(8).position(|w| w == b"/Size 6 ").unwrap();
+        enc.splice(at..at, b"/Encrypt 9 0 R ".iter().copied());
+        let (code, _) = process(&request_for(Op::Sanitize, flags::SANITIZE_ALL, &enc));
+        assert!(code == status::ENCRYPTED || code == status::DOCUMENT_REJECTED, "{code}");
     }
 
     #[test]

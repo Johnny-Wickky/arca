@@ -41,7 +41,9 @@ public final class Capabilities {
         "Xlsx", "Xlsm", "Xltx", "Xltm", "Xlam",
         "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm",
         "Vsdx", "Vsdm", "VisioTemplateOrStencil",
-        "Odt", "Ods", "Odp", "Odg", "OdfOther");
+        "Odt", "Ods", "Odp", "Odg", "OdfOther",
+        // PDF is rebuilt from its pages
+        "Pdf");
 
     /** Whether the engine can build a safe preview of {@code format}. */
     public static boolean canPreview(String format) {

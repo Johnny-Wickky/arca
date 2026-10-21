@@ -604,6 +604,11 @@ impl<'a> PdfFile<'a> {
         filter::apply(raw, &specs, max, &mut self.budget)
     }
 
+    /// The raw (still encoded) bytes of a stream, exactly as they lie in the file.
+    pub(super) fn raw(&self, s: &Stream) -> &[u8] {
+        self.data.get(s.start..s.end).unwrap_or(&[])
+    }
+
     /// Raw (encoded) length of a stream, for picture placeholders.
     pub(super) fn raw_len(&self, s: &Stream) -> usize {
         s.end.saturating_sub(s.start)
