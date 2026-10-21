@@ -362,6 +362,10 @@ public final class Session {
         });
 
         long outcome = Native.run(jobHandle, docHandle, Native.OP_SCAN, 0);
+        // The job only lives as long as its run: startPreview/startSanitize replace the field with
+        // their own job, and the scan's handle would be lost (and leaked) if it were kept for close().
+        clearJob(ep, jobHandle);
+        Native.jobFree(jobHandle);
         if (outcome <= 0) {
             fail(ep, (int) -outcome, "run");
             return;
