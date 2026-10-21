@@ -469,6 +469,7 @@ impl<'p> Sink<'p> {
                     for row in &mut g.rows {
                         for c in &mut row.cells {
                             clean_in_place(&mut c.text, counts, max_cell);
+                            clean_in_place(&mut c.href, counts, max_href);
                         }
                     }
                 }
@@ -630,6 +631,17 @@ impl GridBuilder {
 
     /// Adds a cell to the current row. Returns `false` once the grid is full.
     pub(crate) fn cell(&mut self, col: u32, kind: crate::model::CellKind, text: String) -> bool {
+        self.linked_cell(col, kind, text, String::new())
+    }
+
+    /// Like [`cell`](Self::cell), for a cell that links somewhere (the address is only shown).
+    pub(crate) fn linked_cell(
+        &mut self,
+        col: u32,
+        kind: crate::model::CellKind,
+        text: String,
+        href: String,
+    ) -> bool {
         if col >= self.max_cols || text.is_empty() {
             if col >= self.max_cols {
                 self.grid.truncated = true;
@@ -641,7 +653,7 @@ impl GridBuilder {
             return false;
         }
         let Some(row) = self.current.as_mut() else { return false };
-        row.cells.push(GridCell { col, kind, text });
+        row.cells.push(GridCell { col, kind, text, href });
         self.cells = self.cells.saturating_add(1);
         self.grid.cols = self.grid.cols.max(col.saturating_add(1));
         true
@@ -659,6 +671,75 @@ impl GridBuilder {
         self.flush_row();
         self.grid
     }
+}
+
+/// A hyperlink of a range of spreadsheet cells (rows one-based, columns zero-based, inclusive).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CellLink {
+    pub(crate) row1: u32,
+    pub(crate) row2: u32,
+    pub(crate) col1: u32,
+    pub(crate) col2: u32,
+    pub(crate) href: String,
+}
+
+/// Links kept per sheet.
+const MAX_LINKS: usize = 20_000;
+/// Rows of one link that are looked up (a link over a whole column covers only its first rows).
+const MAX_LINK_ROWS: u32 = 256;
+/// Row/link pairs in total, and cells examined while attaching them: the work is bounded
+/// whatever the file declares.
+const MAX_LINK_ROW_PAIRS: usize = 100_000;
+const MAX_LINK_CELL_CHECKS: usize = 2_000_000;
+
+impl Grid {
+    /// Attaches hyperlinks to the cells they cover. Only cells that exist are marked (a link on an
+    /// empty cell has nothing to show), the first link of a cell wins, and the work is bounded.
+    pub(crate) fn attach_links(&mut self, links: &[CellLink]) {
+        if links.is_empty() {
+            return;
+        }
+        let mut by_row: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        let mut pairs = 0usize;
+        'links: for (i, l) in links.iter().enumerate().take(MAX_LINKS) {
+            let last = l.row1.saturating_add(l.row2.saturating_sub(l.row1).min(MAX_LINK_ROWS));
+            for r in l.row1..=last {
+                if pairs >= MAX_LINK_ROW_PAIRS {
+                    break 'links;
+                }
+                by_row.entry(r).or_default().push(i);
+                pairs += 1;
+            }
+        }
+        let mut checks = 0usize;
+        for row in &mut self.rows {
+            let Some(ids) = by_row.get(&row.index) else { continue };
+            for &i in ids {
+                let Some(l) = links.get(i) else { continue };
+                for cell in &mut row.cells {
+                    checks += 1;
+                    if checks > MAX_LINK_CELL_CHECKS {
+                        return;
+                    }
+                    if cell.col >= l.col1 && cell.col <= l.col2 && cell.href.is_empty() {
+                        cell.href.clone_from(&l.href);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Cuts a link target to `max` bytes at a character boundary.
+pub(crate) fn clip_href(href: &str, max: usize) -> String {
+    if href.len() <= max {
+        return href.to_owned();
+    }
+    let mut end = max;
+    while end > 0 && !href.is_char_boundary(end) {
+        end -= 1;
+    }
+    href.get(..end).unwrap_or_default().to_owned()
 }
 
 #[cfg(test)]
@@ -731,12 +812,22 @@ mod tests {
                 GridRow {
                     index: 1,
                     hidden: false,
-                    cells: vec![GridCell { col: 0, kind: CellKind::Text, text: "a".into() }],
+                    cells: vec![GridCell {
+                        col: 0,
+                        kind: CellKind::Text,
+                        text: "a".into(),
+                        href: String::new(),
+                    }],
                 },
                 GridRow {
                     index: 2,
                     hidden: true,
-                    cells: vec![GridCell { col: 0, kind: CellKind::Text, text: "b".into() }],
+                    cells: vec![GridCell {
+                        col: 0,
+                        kind: CellKind::Text,
+                        text: "b".into(),
+                        href: String::new(),
+                    }],
                 },
             ],
             truncated: false,
@@ -794,7 +885,12 @@ mod tests {
             rows: vec![GridRow {
                 index: 1,
                 hidden: false,
-                cells: vec![GridCell { col: 0, kind: CellKind::Text, text: "g\u{202A}".into() }],
+                cells: vec![GridCell {
+                    col: 0,
+                    kind: CellKind::Text,
+                    text: "g\u{202A}".into(),
+                    href: "http://c\u{0}d".into(),
+                }],
             }],
             truncated: false,
         });
@@ -812,13 +908,62 @@ mod tests {
         assert_eq!(para.runs.first().map(|r| r.href.as_str()), Some("http://ab"));
         // Unknown style bits are masked off.
         assert_eq!(para.runs.first().map(|r| r.style), Some(style::HIDDEN));
+        let Some(Block::Grid(g)) = section.blocks.get(2) else { panic!("no grid") };
+        let cell = g.rows.first().and_then(|r| r.cells.first()).expect("a cell");
+        assert_eq!((cell.text.as_str(), cell.href.as_str()), ("g", "http://cd"));
         let Some(Block::Table(t)) = section.blocks.get(1) else { panic!("no table") };
         assert_eq!(t.rows.first().and_then(|r| r.cells.first()).map(|c| c.span), Some(1));
-        assert!(out.notices.iter().any(|n| n.kind == NoticeKind::InvisibleRemoved && n.count == 7));
+        assert!(out.notices.iter().any(|n| n.kind == NoticeKind::InvisibleRemoved && n.count == 8));
         assert!(out.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown && n.count == 1));
         assert!(
             out.notices.iter().any(|n| n.kind == NoticeKind::HiddenShown && n.detail == "text")
         );
+    }
+
+    #[test]
+    fn links_are_attached_to_the_cells_they_cover() {
+        let cell = |col: u32, text: &str| GridCell {
+            col,
+            kind: CellKind::Text,
+            text: text.into(),
+            href: String::new(),
+        };
+        let mut g = Grid {
+            cols: 4,
+            rows: vec![
+                GridRow { index: 1, hidden: false, cells: vec![cell(0, "a"), cell(2, "c")] },
+                GridRow { index: 3, hidden: false, cells: vec![cell(1, "x"), cell(3, "y")] },
+            ],
+            truncated: false,
+        };
+        let link = |r1, r2, c1, c2, h: &str| CellLink {
+            row1: r1,
+            row2: r2,
+            col1: c1,
+            col2: c2,
+            href: h.into(),
+        };
+        g.attach_links(&[
+            link(1, 1, 0, 0, "https://a.example/"),
+            link(1, 3, 1, 3, "https://range.example/"),
+            link(1, 1, 0, 0, "https://second.example/"),
+            link(9, 9, 0, 0, "https://nowhere.example/"),
+        ]);
+        let href = |r: usize, c: usize| g.rows[r].cells[c].href.as_str();
+        assert_eq!(href(0, 0), "https://a.example/", "the first link of a cell wins");
+        assert_eq!(href(0, 1), "https://range.example/");
+        assert_eq!(href(1, 0), "https://range.example/", "a range reaches later rows");
+        assert_eq!(href(1, 1), "https://range.example/");
+        // No links, and a link far beyond any row: nothing happens.
+        let mut same = g.clone();
+        same.attach_links(&[]);
+        same.attach_links(&[link(u32::MAX - 1, u32::MAX, 0, u32::MAX, "https://far.example/")]);
+        assert_eq!(same, g);
+        // A link over a whole column is bounded, not expanded to a million rows.
+        let mut many = Grid::default();
+        many.attach_links(&[link(1, 1_048_576, 0, 16_383, "https://col.example/")]);
+        assert_eq!(clip_href("https://é.example/", 9), "https://");
+        assert_eq!(clip_href("short", 99), "short");
     }
 
     #[test]

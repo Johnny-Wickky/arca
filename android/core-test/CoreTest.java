@@ -274,7 +274,7 @@ public final class CoreTest {
         String items ="[{\"k\":\"p\",\"s\":\"Heading1\",\"a\":1,\"l\":2,\"m\":\"1.\",\"r\":[[\"Hello \",1],[\"link\",4,\"https://x.test\"]]},"
             + "{\"k\":\"tr\",\"n\":3,\"first\":true,\"last\":false,\"cells\":[{\"c\":2,\"h\":true,\"p\":[{\"r\":[[\"a\",0]]}]},{\"c\":1,\"h\":false,\"p\":[]}]},"
             + "{\"k\":\"gh\",\"cols\":3,\"w\":[8,12,6],\"rows\":120,\"trunc\":false},"
-            + "{\"k\":\"gr\",\"i\":7,\"h\":true,\"c\":[[0,0,\"text\"],[2,1,\"1,5\"]]},"
+            + "{\"k\":\"gr\",\"i\":7,\"h\":true,\"c\":[[0,0,\"text\",\"https://cell.test/x\"],[2,1,\"1,5\"]]},"
             + "{\"k\":\"i\",\"alt\":\"logo\",\"media\":\"png\",\"bytes\":1234,\"ext\":true},"
             + "{\"k\":\"r\"},{\"k\":\"zzz\"},{\"nokind\":1}]";
         List<Model.Item> list = Model.parseItems(items.getBytes(StandardCharsets.UTF_8));
@@ -306,6 +306,8 @@ public final class CoreTest {
         eq(2, gr.cells.get(1).col, "cell column");
         eq(Model.CELL_NUMBER, gr.cells.get(1).kind, "cell kind");
         eq("1,5", gr.cells.get(1).text, "cell text");
+        eq("https://cell.test/x", gr.cells.get(0).href, "link of a cell");
+        eq("", gr.cells.get(1).href, "a cell without a link has an empty address");
         Model.ImageItem img = (Model.ImageItem) list.get(4);
         eq("logo", img.alt, "image alt");
         eq(true, img.external, "external image");

@@ -401,11 +401,14 @@ public final class Model {
         public final int col;
         public final int kind;
         public final String text;
+        /** Where the cell links to (shown to the reader, never followed); empty for none. */
+        public final String href;
 
-        GridCell(int col, int kind, String text) {
+        GridCell(int col, int kind, String text, String href) {
             this.col = col;
             this.kind = kind;
             this.text = text;
+            this.href = href;
         }
     }
 
@@ -517,7 +520,7 @@ public final class Model {
                         List<Object> c = Json.arr(co);
                         if (c.size() >= 3) {
                             g.cells.add(new GridCell((int) Json.num(c.get(0), 0L), (int) Json.num(c.get(1), 0L),
-                                Json.str(c.get(2), "")));
+                                Json.str(c.get(2), ""), c.size() >= 4 ? Json.str(c.get(3), "") : ""));
                         }
                     }
                     out.add(g);

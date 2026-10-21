@@ -84,8 +84,18 @@ fn sample_preview() -> Preview {
                 index: i * 10,
                 hidden: i == 2,
                 cells: vec![
-                    GridCell { col: 0, kind: CellKind::Text, text: format!("name {i}") },
-                    GridCell { col: 3, kind: CellKind::Number, text: "1 234,5".into() },
+                    GridCell {
+                        col: 0,
+                        kind: CellKind::Text,
+                        text: format!("name {i}"),
+                        href: format!("https://x.example/{i}"),
+                    },
+                    GridCell {
+                        col: 3,
+                        kind: CellKind::Number,
+                        text: "1 234,5".into(),
+                        href: String::new(),
+                    },
                 ],
             })
             .collect(),
@@ -242,6 +252,11 @@ fn item_shapes_are_what_the_app_expects() {
         gr.get("c").and_then(|c| c.at(1)).and_then(|c| c.at(2)).and_then(Value::str),
         Some("1 234,5")
     );
+    // A cell with a link carries its address as a fourth element; one without has three.
+    let linked = gr.get("c").and_then(|c| c.at(0)).unwrap();
+    assert_eq!(linked.len(), 4);
+    assert_eq!(linked.at(3).and_then(Value::str), Some("https://x.example/2"));
+    assert_eq!(gr.get("c").and_then(|c| c.at(1)).map(Value::len), Some(3));
 }
 
 #[test]
@@ -268,7 +283,12 @@ fn a_huge_sparse_grid_is_indexed_without_materialising_it() {
             .map(|i| GridRow {
                 index: i,
                 hidden: false,
-                cells: vec![GridCell { col: 1, kind: CellKind::Number, text: i.to_string() }],
+                cells: vec![GridCell {
+                    col: 1,
+                    kind: CellKind::Number,
+                    text: i.to_string(),
+                    href: String::new(),
+                }],
             })
             .collect(),
         truncated: false,

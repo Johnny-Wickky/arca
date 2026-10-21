@@ -1366,6 +1366,9 @@ public final class PreviewScreen extends Screen {
         for (int i = 0; i < cols; i++) {
             TextView c = (TextView) row.getChildAt(i + 1);
             c.setText("");
+            c.setOnClickListener(null);
+            c.setClickable(false);
+            c.setPaintFlags(c.getPaintFlags() & ~Paint.UNDERLINE_TEXT_FLAG);
             c.setAlpha(r.hidden ? 0.5f : 1f);
             c.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             c.setTypeface(Typeface.MONOSPACE);
@@ -1397,6 +1400,18 @@ public final class PreviewScreen extends Screen {
                     break;
             }
             final String text = cell.text;
+            if (!cell.href.isEmpty()) {
+                // A link of the document is only shown: the address, with a button to copy it.
+                final String href = cell.href;
+                c.setTextColor(ui.color(R.color.arca_link));
+                c.setPaintFlags(c.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+                c.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        ui.showText(act, ui.str(R.string.link_dialog_title), Fmt.safe(href), "link");
+                    }
+                });
+            }
             c.setOnLongClickListener(new View.OnLongClickListener() {
                 @Override
                 public boolean onLongClick(View v) {

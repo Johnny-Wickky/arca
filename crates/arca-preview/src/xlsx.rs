@@ -12,7 +12,7 @@ use crate::PreviewError;
 use crate::model::{CellKind, ParaStyle, Paragraph, Run, SectionKind, style};
 use crate::numfmt::{self, Format};
 use crate::opc::Package;
-use crate::sink::{GridBuilder, Sink};
+use crate::sink::{CellLink, GridBuilder, Sink, clip_href};
 use crate::xml::{self, Flow, Handler, Tag, XmlError, unescape};
 
 // ---------------------------------------------------------------------------
@@ -201,8 +201,24 @@ fn parse_ref(r: &str) -> Option<(u32, u32)> {
     Some((col.checked_sub(1)?, row))
 }
 
+/// A `<hyperlink>` of a worksheet as written: the cells, the relationship and the location.
+struct RawLink {
+    cells: String,
+    rid: String,
+    location: String,
+}
+
+/// `A1` or `A1:B2` → (first row, last row, first column, last column); rows one-based.
+fn link_range(r: &str) -> Option<(u32, u32, u32, u32)> {
+    let (a, b) = r.split_once(':').unwrap_or((r, r));
+    let (c1, r1) = parse_ref(a.trim())?;
+    let (c2, r2) = parse_ref(b.trim())?;
+    Some((r1.min(r2), r1.max(r2), c1.min(c2), c1.max(c2)))
+}
+
 struct SheetHandler<'a> {
     grid: GridBuilder,
+    links: Vec<RawLink>,
     sst: &'a [String],
     formats: &'a mut Formats,
     date1904: bool,
@@ -311,6 +327,13 @@ impl Handler for SheetHandler<'_> {
             "is" if self.in_cell => self.in_is = true,
             "t" if self.in_is => self.in_t = true,
             "rPh" => return Flow::SkipChildren,
+            "hyperlink" if self.links.len() < 20_000 => {
+                self.links.push(RawLink {
+                    cells: tag.attr("ref").unwrap_or_default().into_owned(),
+                    rid: tag.attr("id").unwrap_or_default().into_owned(),
+                    location: tag.attr("location").unwrap_or_default().into_owned(),
+                });
+            }
             _ => {}
         }
         Flow::Continue
@@ -429,6 +452,40 @@ fn read_xml(pkg: &mut Package<'_>, part: &str) -> Result<Option<String>, Preview
     Ok(Some(pkg.decode(part, &bytes)?.into_owned()))
 }
 
+/// The links of a sheet that lead out of the workbook. A link that only names a location
+/// (`Sheet2!A1`) is a jump inside the workbook and is not shown as a link.
+fn sheet_links(
+    pkg: &mut Package<'_>,
+    part: &str,
+    raw: &[RawLink],
+    max_href: usize,
+) -> Result<Vec<CellLink>, PreviewError> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    // One lookup table instead of a scan of the relationships per link.
+    let targets: BTreeMap<String, String> =
+        pkg.rels_of(part)?.into_iter().filter(|r| r.external).map(|r| (r.id, r.target)).collect();
+    let mut out = Vec::new();
+    for l in raw {
+        let (Some((row1, row2, col1, col2)), Some(target)) =
+            (link_range(&l.cells), targets.get(&l.rid))
+        else {
+            continue;
+        };
+        let mut href = target.trim().to_owned();
+        if href.is_empty() {
+            continue;
+        }
+        if !l.location.is_empty() {
+            href.push('#');
+            href.push_str(&l.location);
+        }
+        out.push(CellLink { row1, row2, col1, col2, href: clip_href(&href, max_href) });
+    }
+    Ok(out)
+}
+
 /// Extracts a workbook.
 pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), PreviewError> {
     let main = pkg
@@ -507,6 +564,7 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         };
         let mut h = SheetHandler {
             grid: GridBuilder::new(sink.policy, sink.items_left()),
+            links: Vec::new(),
             sst: &sst,
             formats: &mut formats,
             date1904: wb.date1904,
@@ -530,7 +588,9 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         };
         let res = xml::drive(&text, pkg.limits(), &mut h);
         formulas = formulas.saturating_add(h.formulas);
-        let grid = h.grid.finish();
+        let raw_links = std::mem::take(&mut h.links);
+        let mut grid = h.grid.finish();
+        grid.attach_links(&sheet_links(pkg, &part, &raw_links, sink.policy.max_href_bytes)?);
         if res.is_err() {
             sink.skipped(&part);
         }
@@ -811,6 +871,43 @@ mod tests {
         assert!(
             p.notices.iter().any(|n| n.kind == NoticeKind::HiddenShown && n.detail == "sheets")
         );
+    }
+
+    #[test]
+    fn hyperlinks_of_cells_are_attached_and_never_followed() {
+        let sheets = r#"<sheet name="S" sheetId="1" r:id="rId11"/>"#;
+        let wb = workbook(sheets, "");
+        let wb_rels = rels(&[("rId11", "worksheet", "worksheets/sheet1.xml")]);
+        let s1 = format!(
+            r#"<worksheet {SS_NS}><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>site</t></is></c><c r="B1"><v>2</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>jump</t></is></c><c r="C2" t="inlineStr"><is><t>bound</t></is></c><c r="D2" t="inlineStr"><is><t>same</t></is></c></row></sheetData><hyperlinks><hyperlink ref="A1" r:id="rId1"/><hyperlink ref="A2" location="Sheet2!A1" display="inside"/><hyperlink ref="C2:D2" r:id="rId2" location="top"/><hyperlink ref="Z9" r:id="rId1"/><hyperlink ref="bad ref" r:id="rId1"/><hyperlink ref="B1" r:id="rId404"/></hyperlinks></worksheet>"#
+        );
+        let s1_rels = rels(&[
+            ("rId1", "hyperlink", "https://example.org/a?x=1&y=2"),
+            ("rId2", "hyperlink", "https://example.org/b"),
+        ]);
+        let data = opc(
+            ("xl/workbook.xml", XLSX_CT),
+            &[
+                ("xl/workbook.xml", wb.as_str()),
+                ("xl/_rels/workbook.xml.rels", wb_rels.as_str()),
+                ("xl/worksheets/sheet1.xml", s1.as_str()),
+                ("xl/worksheets/_rels/sheet1.xml.rels", s1_rels.as_str()),
+            ],
+        );
+        let p = ok(&data);
+        let g = grid(&p, 0);
+        let href = |row: u32, col: u32| {
+            g.rows
+                .iter()
+                .find(|r| r.index == row)
+                .and_then(|r| r.cells.iter().find(|c| c.col == col))
+                .map(|c| c.href.as_str())
+        };
+        assert_eq!(href(1, 0), Some("https://example.org/a?x=1&y=2"));
+        assert_eq!(href(1, 1), Some(""), "an unknown relationship is no link");
+        assert_eq!(href(2, 0), Some(""), "a jump inside the workbook is no link out");
+        assert_eq!(href(2, 2), Some("https://example.org/b#top"), "a range, with its location");
+        assert_eq!(href(2, 3), Some("https://example.org/b#top"));
     }
 
     #[test]

@@ -101,7 +101,13 @@ fn main() {
                                 let cells: Vec<String> = r
                                     .cells
                                     .iter()
-                                    .map(|c| format!("{}:{}", c.col, c.text))
+                                    .map(|c| {
+                                        if c.href.is_empty() {
+                                            format!("{}:{}", c.col, c.text)
+                                        } else {
+                                            format!("{}:{} <{}>", c.col, c.text, c.href)
+                                        }
+                                    })
                                     .collect();
                                 println!(
                                     "  {:>4}{}| {}",

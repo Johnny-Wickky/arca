@@ -385,6 +385,8 @@ struct CellCtx {
     error: bool,
     text: String,
     has_text: bool,
+    /// The first outside address a link inside the cell leads to.
+    href: String,
 }
 
 struct SheetCtx {
@@ -395,7 +397,7 @@ struct SheetCtx {
     col: u32,
     row_rep: u32,
     row_hidden: bool,
-    row_cells: Vec<(u32, CellKind, String)>,
+    row_cells: Vec<(u32, CellKind, String, String)>,
     cell: Option<CellCtx>,
     full: bool,
 }
@@ -909,8 +911,8 @@ impl<'a, 'p> Odf<'a, 'p> {
                         sh.full = true;
                         break;
                     }
-                    for (c, kind, text) in &cells {
-                        if !sh.grid.cell(*c, *kind, text.clone()) {
+                    for (c, kind, text, href) in &cells {
+                        if !sh.grid.linked_cell(*c, *kind, text.clone(), href.clone()) {
                             sh.full = true;
                             break;
                         }
@@ -968,6 +970,7 @@ impl<'a, 'p> Odf<'a, 'p> {
                 error,
                 text: String::new(),
                 has_text: false,
+                href: String::new(),
             });
         } else if let Some(t) = self.tables.last_mut() {
             let span = tag.attr("number-columns-spanned").and_then(|v| v.parse().ok()).unwrap_or(1);
@@ -1007,7 +1010,12 @@ impl<'a, 'p> Odf<'a, 'p> {
             }
             if !text.is_empty() {
                 for k in 0..c.rep.min(MAX_REPEAT) {
-                    sh.row_cells.push((sh.col.saturating_add(k), kind, text.clone()));
+                    sh.row_cells.push((
+                        sh.col.saturating_add(k),
+                        kind,
+                        text.clone(),
+                        c.href.clone(),
+                    ));
                 }
             }
             sh.col = sh.col.saturating_add(c.rep);
@@ -1175,6 +1183,16 @@ impl Handler for Odf<'_, '_> {
                 if let Some(ctx) = self.paras.last_mut() {
                     let href = tag.attr("href").unwrap_or_default().into_owned();
                     ctx.hrefs.push(href);
+                }
+                // A link inside a spreadsheet cell: the cell shows where it leads. A jump to
+                // another place in the workbook (`#Sheet2.A1`) is not a link out.
+                if let Some(c) = self.sheet.as_mut().and_then(|sh| sh.cell.as_mut())
+                    && c.href.is_empty()
+                {
+                    let href = tag.attr("href").unwrap_or_default();
+                    if !href.is_empty() && !href.starts_with('#') {
+                        c.href = crate::sink::clip_href(&href, 2_048);
+                    }
                 }
             }
             "s" => {
@@ -1763,6 +1781,34 @@ mod tests {
         assert!(imgs[1].external && imgs[1].bytes == 0);
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown && n.count == 2));
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Unsupported));
+    }
+
+    #[test]
+    fn links_in_spreadsheet_cells_are_shown_but_inner_jumps_are_not() {
+        let body = r##"<table:table table:name="L">
+              <table:table-row>
+                <table:table-cell office:value-type="string"><text:p><text:a xlink:href="https://example.org/a">site</text:a></text:p></table:table-cell>
+                <table:table-cell office:value-type="string"><text:p><text:a xlink:href="#Sheet2.A1">jump</text:a></text:p></table:table-cell>
+                <table:table-cell office:value-type="string"><text:p>plain <text:a xlink:href="file:///tmp/x">one</text:a> and <text:a xlink:href="https://second.example/">two</text:a></text:p></table:table-cell>
+                <table:table-cell table:number-columns-repeated="2" office:value-type="string"><text:p><text:a xlink:href="https://rep.example/">rep</text:a></text:p></table:table-cell>
+              </table:table-row>
+            </table:table>"##;
+        let p = ok(&ods("", body));
+        let Some(Block::Grid(g)) = p.sections.first().and_then(|s| s.blocks.first()) else {
+            panic!("no grid")
+        };
+        let hrefs: Vec<(u32, &str)> =
+            g.rows.first().expect("row").cells.iter().map(|c| (c.col, c.href.as_str())).collect();
+        assert_eq!(
+            hrefs,
+            [
+                (0, "https://example.org/a"),
+                (1, ""),
+                (2, "file:///tmp/x"),
+                (3, "https://rep.example/"),
+                (4, "https://rep.example/"),
+            ]
+        );
     }
 
     #[test]

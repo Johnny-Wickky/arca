@@ -38,7 +38,7 @@
 //! items: [ {"k":"p","s":"Heading1","a":1,"l":1,"m":"1.","r":[["text",1],["link",4,"https://…"]]},
 //!          {"k":"tr","n":3,"first":true,"last":false,"cells":[{"c":1,"h":true,"p":[{…}]}]},
 //!          {"k":"gh","cols":3,"w":[8,12,6],"rows":120,"trunc":false},
-//!          {"k":"gr","i":7,"h":false,"c":[[0,0,"text"],[2,1,"1,5"]]},
+//!          {"k":"gr","i":7,"h":false,"c":[[0,0,"text","https://link"],[2,1,"1,5"]]},
 //!          {"k":"i","alt":"logo","media":"png","bytes":1234,"ext":false},
 //!          {"k":"r"} ]
 //! ```
@@ -440,6 +440,9 @@ fn write_items(
                     w.u64(u64::from(cell.col));
                     w.u64(cell_kind_code(cell.kind));
                     w.string(&cell.text);
+                    if !cell.href.is_empty() {
+                        w.string(&cell.href);
+                    }
                     w.end_array();
                 }
                 w.end_array();

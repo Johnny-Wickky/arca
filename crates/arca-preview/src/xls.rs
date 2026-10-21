@@ -21,7 +21,7 @@ use arca_container::text::{CodePage, decode_codepage};
 use crate::PreviewError;
 use crate::model::{Block, CellKind, NoticeKind, ParaStyle, Paragraph, Run, SectionKind, style};
 use crate::numfmt::{self, Format};
-use crate::sink::{GridBuilder, Sink};
+use crate::sink::{CellLink, GridBuilder, Sink, clip_href};
 
 /// Most records scanned per stream.
 const MAX_RECORDS: usize = 32 << 20;
@@ -56,6 +56,7 @@ const STRING: u16 = 0x0207;
 const NOTE: u16 = 0x001C;
 const OBJ: u16 = 0x005D;
 const TXO: u16 = 0x01B6;
+const HLINK: u16 = 0x01B8;
 
 fn malformed(why: &str) -> PreviewError {
     PreviewError::Malformed(format!("Excel workbook: {why}"))
@@ -461,6 +462,8 @@ struct SheetData {
     formulas: u64,
     truncated: bool,
     charts: bool,
+    /// Hyperlinks that lead out of the workbook.
+    links: Vec<CellLink>,
 }
 
 fn parse_sheet(book: &mut Book, data: &[u8], offset: usize, max_cells: usize) -> SheetData {
@@ -680,6 +683,13 @@ fn parse_sheet(book: &mut Book, data: &[u8], offset: usize, max_cells: usize) ->
                     });
                 }
             }
+            HLINK => {
+                if out.links.len() < 20_000
+                    && let Some(link) = parse_hlink(rec.data)
+                {
+                    out.links.push(link);
+                }
+            }
             OBJ => {
                 // The common-object subrecord comes first: type, then the object id.
                 if u16_le(rec.data, 0) == Some(0x0015) {
@@ -714,6 +724,118 @@ fn parse_sheet(book: &mut Book, data: &[u8], offset: usize, max_cells: usize) ->
         }
     }
     out
+}
+
+/// The class id of the URL moniker (`79EAC9E0-BAF9-11CE-8C82-00AA004BA90B`).
+const URL_MONIKER: [u8; 16] = [
+    0xE0, 0xC9, 0xEA, 0x79, 0xF9, 0xBA, 0xCE, 0x11, 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B, 0xA9, 0x0B,
+];
+/// The class id of the file moniker (`00000303-0000-0000-C000-000000000046`).
+const FILE_MONIKER: [u8; 16] = [
+    0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
+/// Longest string of a hyperlink record, in UTF-16 units.
+const MAX_HLINK_CHARS: usize = 8_192;
+
+/// A bounds-checked cursor over one record.
+struct Cur<'a> {
+    d: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cur<'a> {
+    fn bytes(&mut self, n: usize) -> Option<&'a [u8]> {
+        let b = slice(self.d, self.pos, n)?;
+        self.pos = self.pos.checked_add(n)?;
+        Some(b)
+    }
+
+    fn u16(&mut self) -> Option<u16> {
+        let v = u16_le(self.d, self.pos)?;
+        self.pos = self.pos.checked_add(2)?;
+        Some(v)
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        let v = u32_le(self.d, self.pos)?;
+        self.pos = self.pos.checked_add(4)?;
+        Some(v)
+    }
+
+    /// A `HyperlinkString`: a count of UTF-16 units (with the closing NUL), then the units.
+    fn string(&mut self) -> Option<String> {
+        let n = usz(self.u32()?);
+        if n > MAX_HLINK_CHARS {
+            return None;
+        }
+        Some(utf16_until_nul(self.bytes(n.checked_mul(2)?)?))
+    }
+}
+
+fn utf16_until_nul(b: &[u8]) -> String {
+    let units: Vec<u16> = b
+        .chunks_exact(2)
+        .map(|c| {
+            u16::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0)])
+        })
+        .take_while(|&u| u != 0)
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// A `HLINK` record: the cells it covers and where it leads (a web address or a file). A link
+/// that only names a place inside the workbook is not a link out and gives `None`.
+fn parse_hlink(d: &[u8]) -> Option<CellLink> {
+    let row1 = u32::from(u16_le(d, 0)?);
+    let row2 = u32::from(u16_le(d, 2)?);
+    let col1 = u32::from(u16_le(d, 4)?);
+    let col2 = u32::from(u16_le(d, 6)?);
+    // 16 bytes of class id and a version (2) precede the flags.
+    let flags = u32_le(d, 28)?;
+    let mut cur = Cur { d, pos: 32 };
+    if flags & 0x10 != 0 {
+        cur.string()?; // display name
+    }
+    if flags & 0x80 != 0 {
+        cur.string()?; // target frame
+    }
+    let mut target = None;
+    if flags & 0x01 != 0 {
+        if flags & 0x100 != 0 {
+            target = Some(cur.string()?);
+        } else {
+            let class: [u8; 16] = cur.bytes(16)?.try_into().ok()?;
+            if class == URL_MONIKER {
+                let len = usz(cur.u32()?);
+                target = Some(utf16_until_nul(cur.bytes(len)?));
+            } else if class == FILE_MONIKER {
+                cur.u16()?; // how many directories up
+                let ansi_len = usz(cur.u32()?);
+                let ansi = cur.bytes(ansi_len)?;
+                cur.bytes(2 + 2 + 20)?; // end server, version, reserved
+                let size = usz(cur.u32()?);
+                target = Some(if size >= 6 {
+                    let wide = usz(cur.u32()?);
+                    cur.u16()?;
+                    utf16_until_nul(cur.bytes(wide.min(size - 6))?)
+                } else {
+                    ansi.iter().take_while(|&&b| b != 0).map(|&b| char::from(b)).collect()
+                });
+            } else {
+                // Composite, item and other monikers: not understood, so not shown.
+                return None;
+            }
+        }
+    }
+    let mut href = target.filter(|t| !t.trim().is_empty())?.trim().to_owned();
+    if flags & 0x08 != 0
+        && let Some(location) = cur.string()
+        && !location.is_empty()
+    {
+        href.push('#');
+        href.push_str(&location);
+    }
+    Some(CellLink { row1: row1 + 1, row2: row2 + 1, col1, col2, href: clip_href(&href, 2_048) })
 }
 
 fn push_cell(
@@ -810,6 +932,7 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
             }
         }
         let mut grid = grid.finish();
+        grid.attach_links(&sd.links);
         grid.truncated |= sd.truncated;
         if grid.truncated {
             sink.truncated("grid");
@@ -1334,6 +1457,114 @@ mod tests {
         assert_eq!(cell(gr, 1, 0).map(|c| c.0), Some("Привет".into()));
         assert_eq!(cell(gr, 1, 1).map(|c| c.0), Some("3".into()));
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::BestEffort));
+    }
+
+    /// A `HLINK` record for the cells `(row, col)` with the given moniker bytes and location.
+    fn hlink(row: u16, col: u16, flags: u32, tail: &[u8]) -> Vec<u8> {
+        let mut d =
+            [row.to_le_bytes(), row.to_le_bytes(), col.to_le_bytes(), col.to_le_bytes()].concat();
+        d.extend([
+            0xD0, 0xC9, 0xEA, 0x79, 0xF9, 0xBA, 0xCE, 0x11, 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B,
+            0xA9, 0x0B,
+        ]);
+        d.extend(2u32.to_le_bytes());
+        d.extend(flags.to_le_bytes());
+        d.extend(tail);
+        rec(HLINK, &d)
+    }
+
+    /// A `HyperlinkString`.
+    fn hstr(s: &str) -> Vec<u8> {
+        let units: Vec<u16> = s.encode_utf16().chain([0]).collect();
+        let mut o = u32::try_from(units.len()).expect("len").to_le_bytes().to_vec();
+        for u in units {
+            o.extend(u.to_le_bytes());
+        }
+        o
+    }
+
+    fn url_moniker(url: &str) -> Vec<u8> {
+        let mut o = URL_MONIKER.to_vec();
+        let units: Vec<u16> = url.encode_utf16().chain([0]).collect();
+        // The length covers the address and, as Excel writes them, 24 bytes of serial data.
+        o.extend(u32::try_from(units.len() * 2 + 24).expect("len").to_le_bytes());
+        for u in units {
+            o.extend(u.to_le_bytes());
+        }
+        o.extend([0u8; 24]);
+        o
+    }
+
+    #[test]
+    fn hyperlinks_of_cells_are_attached_and_never_followed() {
+        let sst = sst(&["site", "file", "jump", "unc"]);
+        let mut file_moniker = FILE_MONIKER.to_vec();
+        file_moniker.extend(0u16.to_le_bytes());
+        let ansi = b"C:\\docs\\a.xls\0";
+        file_moniker.extend(u32::try_from(ansi.len()).expect("len").to_le_bytes());
+        file_moniker.extend(ansi);
+        file_moniker.extend([0u8; 24]);
+        let wide: Vec<u8> =
+            "C:\\docs\\\u{44F}.xls".encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+        file_moniker.extend(u32::try_from(wide.len() + 6).expect("len").to_le_bytes());
+        file_moniker.extend(u32::try_from(wide.len()).expect("len").to_le_bytes());
+        file_moniker.extend(3u16.to_le_bytes());
+        file_moniker.extend(&wide);
+        let mut unc = FILE_MONIKER.to_vec();
+        unc.extend(0u16.to_le_bytes());
+        let ansi = b"\\\\host\\share\0";
+        unc.extend(u32::try_from(ansi.len()).expect("len").to_le_bytes());
+        unc.extend(ansi);
+        unc.extend([0u8; 24]);
+        unc.extend(0u32.to_le_bytes());
+        let book = workbook(
+            &[sst],
+            &[sheet(
+                "S",
+                vec![
+                    labelsst(0, 0, 0),
+                    labelsst(1, 0, 1),
+                    labelsst(2, 0, 2),
+                    labelsst(3, 0, 3),
+                    // A web address with a display name and a location.
+                    hlink(
+                        0,
+                        0,
+                        0x01 | 0x10 | 0x08,
+                        &[
+                            hstr("shown").as_slice(),
+                            &url_moniker("https://example.org/a"),
+                            &hstr("top"),
+                        ]
+                        .concat(),
+                    ),
+                    // A file, with the wide path preferred over the ANSI one.
+                    hlink(1, 0, 0x01, &file_moniker),
+                    // Only a place inside the workbook: not a link out.
+                    hlink(2, 0, 0x08, &hstr("Sheet2!A1")),
+                    // A UNC path from the ANSI part.
+                    hlink(3, 0, 0x01, &unc),
+                    // A string moniker, and records that are cut short or name a moniker we do not know.
+                    hlink(9, 9, 0x01 | 0x100, &hstr("https://str.example/")),
+                    hlink(0, 0, 0x01, &URL_MONIKER[..10]),
+                    hlink(0, 0, 0x01, &[0xAA; 16]),
+                    rec(HLINK, &[1, 2, 3]),
+                ],
+            )],
+        );
+        let p = ok(&file(book));
+        let g = grid(&p, 0);
+        let href = |row: u32| {
+            g.rows
+                .iter()
+                .find(|r| r.index == row)
+                .and_then(|r| r.cells.first())
+                .map(|c| c.href.as_str())
+        };
+        assert_eq!(href(1), Some("https://example.org/a#top"));
+        assert_eq!(href(2), Some("C:\\docs\\\u{44F}.xls"));
+        assert_eq!(href(3), Some(""), "a jump inside the workbook is no link out");
+        assert_eq!(href(4), Some("\\\\host\\share"));
     }
 
     #[test]

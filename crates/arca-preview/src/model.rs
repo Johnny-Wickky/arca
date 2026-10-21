@@ -215,8 +215,10 @@ pub struct GridCell {
     pub kind: CellKind,
     /// Display text (formatted as the document formats it).
     pub text: String,
+    /// Where the cell links to; shown to the reader, never followed. Empty for no link.
+    pub href: String,
 }
-wire_struct!(GridCell { col, kind, text });
+wire_struct!(GridCell { col, kind, text, href });
 
 /// One non-empty row of a [`Grid`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -454,6 +456,7 @@ mod tests {
                                 col: 2,
                                 kind: CellKind::Number,
                                 text: "1,5".into(),
+                                href: "https://example.org/".into(),
                             }],
                         }],
                         truncated: true,
