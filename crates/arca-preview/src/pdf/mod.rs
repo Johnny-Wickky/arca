@@ -23,10 +23,11 @@ use std::rc::Rc;
 
 use arca_container::text::{CodePage, decode_codepage, utf16le_lossy};
 
-use self::content::{Item, Line, PageInput, Shared, run_page};
+use self::content::{Item, Line, PageInput, Seg, Shared, run_page};
 use self::file::PdfFile;
 use self::lex::{Dict, Obj};
 use crate::PreviewError;
+use crate::bidi::{self, Base};
 use crate::model::{NoticeKind, ParaStyle, Paragraph, Run, SectionKind, style};
 use crate::sink::{ParaBuilder, SectionId, Sink};
 
@@ -300,8 +301,76 @@ fn push_para(sink: &mut Sink<'_>, sec: SectionId, pb: &mut ParaBuilder, st: Para
     sink.para(sec, p)
 }
 
+/// Puts the text of a line that holds Hebrew or Arabic into reading order.
+///
+/// A content stream lists glyphs left to right as drawn, which for those scripts is backwards.
+/// Parts separated by a tab (table cells, columns) keep their places on the page and are
+/// reordered one by one.
+fn to_reading_order(line: &mut Line, base: Base) {
+    if !line.segs.iter().any(|s| bidi::has_rtl(&s.text)) {
+        return;
+    }
+    // Characters with their styles, split at the tabs that the layout step inserted.
+    let mut parts: Vec<Vec<(char, u16)>> = vec![Vec::new()];
+    for seg in &line.segs {
+        for c in seg.text.chars() {
+            if c == '\t' {
+                parts.push(Vec::new());
+            } else if let Some(last) = parts.last_mut() {
+                last.push((c, seg.style));
+            }
+        }
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut push = |c: char, st: u16| match segs.last_mut() {
+        Some(last) if last.style == st => last.text.push(c),
+        _ => segs.push(Seg { text: c.to_string(), style: st }),
+    };
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            push('\t', 0);
+        }
+        let visual: Vec<char> = part.iter().map(|(c, _)| *c).collect();
+        let logical = bidi::to_logical(&visual, base);
+        // The reordered text has the same length; each character takes the style of the one
+        // at its place before, which keeps whole words in one style (the usual case).
+        for (k, c) in logical.into_iter().enumerate() {
+            push(c, part.get(k).map_or(0, |(_, st)| *st));
+        }
+    }
+    line.segs = segs;
+}
+
+/// Reads right-to-left lines in the right order. Which way a line runs is judged from the margin
+/// it is flush with (text in a right-to-left paragraph is flush right); a line that fills the
+/// column, or sits in the middle, is judged by its letters.
+fn fix_reading_order(items: &mut [Item]) {
+    let (mut left, mut right) = (f64::INFINITY, f64::NEG_INFINITY);
+    for item in items.iter() {
+        if let Item::Line(l) = item {
+            left = left.min(l.a0.min(l.a1));
+            right = right.max(l.a0.max(l.a1));
+        }
+    }
+    let tolerance = 0.03 * (right - left).max(1.0);
+    for item in items.iter_mut() {
+        if let Item::Line(l) = item {
+            let flush_left = (l.a0.min(l.a1) - left).abs() <= tolerance;
+            let flush_right = (right - l.a0.max(l.a1)).abs() <= tolerance;
+            let base = match (flush_left, flush_right) {
+                (true, false) => Base::Ltr,
+                (false, true) => Base::Rtl,
+                _ => Base::Auto,
+            };
+            to_reading_order(l, base);
+        }
+    }
+}
+
 /// Turns the lines and pictures of a page into paragraphs.
 fn assemble(sink: &mut Sink<'_>, sec: SectionId, items: Vec<Item>, page_width: f64) {
+    let mut items = items;
+    fix_reading_order(&mut items);
     let lines: Vec<&Line> =
         items.iter().filter_map(|i| if let Item::Line(l) = i { Some(l) } else { None }).collect();
     // A line "reaches the margin" if it is nearly as long as the longest line, which itself
@@ -501,6 +570,62 @@ mod tests {
                 "- second item",
             ]
         );
+    }
+
+    #[test]
+    fn right_to_left_lines_are_read_in_logical_order() {
+        use super::content::Seg;
+        let line = |text: &str, a0: f64, a1: f64| {
+            Item::Line(Line {
+                segs: vec![Seg { text: text.to_owned(), style: 0 }],
+                a0,
+                a1,
+                across: 0.0,
+                size: 12.0,
+            })
+        };
+        let text = |i: &Item| if let Item::Line(l) = i { l.text() } else { String::new() };
+        let reversed = |s: &str| s.chars().rev().collect::<String>();
+        let mut items = vec![
+            // Flush left with a Hebrew word in it: a left-to-right paragraph.
+            line(&format!("x {} y", reversed("עברית")), 0.0, 120.0),
+            // Flush right, short: a right-to-left paragraph; drawn backwards.
+            line(&reversed("שלום עולם"), 420.0, 500.0),
+            // The same picture as the first line, but flush right.
+            line(&format!("x {} y", reversed("עברית")), 380.0, 500.0),
+            // The full-width line fixes both margins.
+            line("a long line of ordinary Latin text across the whole column", 0.0, 500.0),
+            // A table row: the cells stay where they are on the page, each is turned round.
+            line(&format!("{}\t{}", reversed("שלום"), reversed("עולם")), 0.0, 500.0),
+            // Nothing right to left: untouched.
+            line("plain text, 123", 0.0, 90.0),
+        ];
+        fix_reading_order(&mut items);
+        let t: Vec<String> = items.iter().map(text).collect();
+        assert_eq!(t[0], "x עברית y");
+        assert_eq!(t[1], "שלום עולם");
+        assert_eq!(t[2], "y עברית x", "flush right means a right-to-left paragraph");
+        assert_eq!(t[3], "a long line of ordinary Latin text across the whole column");
+        assert_eq!(t[4], "שלום\tעולם", "cells keep their order, each reads correctly");
+        assert_eq!(t[5], "plain text, 123");
+    }
+
+    #[test]
+    fn styles_survive_reordering() {
+        use super::content::Seg;
+        let mut l = Line {
+            segs: vec![
+                Seg { text: "ab ".into(), style: 0 },
+                Seg { text: "םולש".into(), style: style::BOLD },
+            ],
+            a0: 0.0,
+            a1: 50.0,
+            across: 0.0,
+            size: 12.0,
+        };
+        to_reading_order(&mut l, Base::Ltr);
+        assert_eq!(l.text(), "ab שלום");
+        assert!(l.segs.iter().any(|s| s.style == style::BOLD && s.text.contains('ש')));
     }
 
     #[test]

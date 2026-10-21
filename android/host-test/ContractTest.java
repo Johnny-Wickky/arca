@@ -75,7 +75,7 @@ public final class ContractTest {
         EXPECT.put("report.docx", new String[] {"Docx", "Квартальный отчёт", "Шаг два"});
         EXPECT.put("report.odt", new String[] {"Odt", "Квартальный отчёт"});
         EXPECT.put("report.rtf", new String[] {"Rtf", "Квартальный отчёт"});
-        EXPECT.put("report.pdf", new String[] {"Pdf", "Квартальный отчёт", "Шаг два"});
+        EXPECT.put("report.pdf", new String[] {"Pdf", "Квартальный отчёт", "Шаг два", "العربية, עברית"});
         EXPECT.put("sheet.xls", new String[] {"Xls", "Яблоки", "Груши"});
         EXPECT.put("sheet.xlsx", new String[] {"Xlsx", "Яблоки", "Груши"});
         EXPECT.put("sheet.ods", new String[] {"Ods", "Яблоки", "Груши"});

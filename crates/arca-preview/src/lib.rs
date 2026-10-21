@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bidi;
 mod detect;
 mod doc;
 mod docx;
