@@ -2,8 +2,9 @@
 //!
 //! The goal is to show values the way the document author sees them, with a
 //! deliberately small, panic-free implementation: no locale database, no
-//! evaluation of conditions, no fractions. Unknown constructs degrade to the
-//! plain number.
+//! evaluation of conditions. Fractions (`# ?/?`, `# ??/??`, `?/8`) are rendered with
+//! the closest fraction whose denominator fits the placeholders. Unknown constructs
+//! degrade to the plain number.
 
 use crate::model::CellKind;
 
@@ -351,6 +352,237 @@ struct Section {
     toks: Vec<Tok>,
     lang_ru: bool,
     general: bool,
+    fraction: Option<Fraction>,
+}
+
+/// The shape of a fraction format such as `# ?/?` or `?/100`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fraction {
+    /// Placeholders of the whole part; empty for an improper fraction (`?/?`).
+    int_slots: Vec<char>,
+    /// Literal between the whole part and the numerator (normally a space).
+    sep: String,
+    num_slots: Vec<char>,
+    /// Placeholders of the denominator; empty when the denominator is fixed.
+    den_slots: Vec<char>,
+    fixed_den: Option<u32>,
+    prefix: String,
+    suffix: String,
+}
+
+/// Finds the fraction shape of a section, if it is one.
+///
+/// A fraction has a literal starting with `/` directly after digit placeholders, and either
+/// digit placeholders or a number after it. Quoted text such as `"km/h"` is never adjacent
+/// to placeholders that way and stays a plain literal.
+fn detect_fraction(toks: &[Tok]) -> Option<Fraction> {
+    let k = toks.iter().position(|t| matches!(t, Tok::Lit(l) if l.starts_with('/')))?;
+    let Some(Tok::Lit(slash)) = toks.get(k) else { return None };
+    if k == 0 || !matches!(toks.get(k - 1), Some(Tok::Digit(_))) {
+        return None;
+    }
+    // Other numeric machinery (decimals, exponents, grouping, percent) is not a fraction.
+    if toks
+        .iter()
+        .any(|t| matches!(t, Tok::Point | Tok::Exp | Tok::Comma | Tok::Percent | Tok::Text))
+    {
+        return None;
+    }
+    let digit_of = |t: &Tok| if let Tok::Digit(c) = t { Some(*c) } else { None };
+    let mut num_start = k;
+    while num_start > 0 && toks.get(num_start - 1).and_then(digit_of).is_some() {
+        num_start -= 1;
+    }
+    let num_slots: Vec<char> =
+        toks.get(num_start..k).unwrap_or_default().iter().filter_map(digit_of).collect();
+
+    // Whole part: `<prefix><int placeholders><separator><numerator>`.
+    let mut int_slots = Vec::new();
+    let mut sep = String::new();
+    let mut prefix_end = num_start;
+    if let Some(Tok::Lit(l)) = num_start.checked_sub(1).and_then(|i| toks.get(i)) {
+        let lit_at = num_start - 1;
+        let mut int_start = lit_at;
+        while int_start > 0 && toks.get(int_start - 1).and_then(digit_of).is_some() {
+            int_start -= 1;
+        }
+        if int_start < lit_at {
+            int_slots = toks
+                .get(int_start..lit_at)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(digit_of)
+                .collect();
+            sep = l.clone();
+            prefix_end = int_start;
+        }
+    }
+    let prefix: String = toks
+        .get(..prefix_end)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|t| if let Tok::Lit(l) = t { Some(l.as_str()) } else { None })
+        .collect();
+
+    let after_slash = slash.get(1..).unwrap_or("");
+    let mut den_slots = Vec::new();
+    let mut fixed_den = None;
+    let mut rest_start = k + 1;
+    let mut suffix = String::new();
+    if after_slash.is_empty() {
+        while toks.get(rest_start).and_then(digit_of).is_some() {
+            den_slots.extend(toks.get(rest_start).and_then(digit_of));
+            rest_start += 1;
+        }
+        if den_slots.is_empty() {
+            return None;
+        }
+    } else {
+        let mut digits: String = after_slash.chars().take_while(char::is_ascii_digit).collect();
+        if digits.len() == after_slash.len() {
+            // `0` is a placeholder for the tokenizer, but after the slash it is the digit zero
+            // of a fixed denominator such as `/100`.
+            while matches!(toks.get(rest_start), Some(Tok::Digit('0'))) {
+                digits.push('0');
+                rest_start += 1;
+            }
+        }
+        if digits.is_empty() || digits.len() > 5 {
+            return None;
+        }
+        let den: u32 = digits.parse().ok().filter(|&d| d > 0)?;
+        fixed_den = Some(den);
+        suffix.push_str(
+            after_slash
+                .get(after_slash.chars().take_while(char::is_ascii_digit).count()..)
+                .unwrap_or(""),
+        );
+    }
+    for t in toks.get(rest_start..).unwrap_or_default() {
+        match t {
+            Tok::Lit(l) => suffix.push_str(l),
+            _ => return None,
+        }
+    }
+    Some(Fraction { int_slots, sep, num_slots, den_slots, fixed_den, prefix, suffix })
+}
+
+/// The fraction `p/q` with `q <= max_den` closest to `x >= 0` (continued fractions, so the cost
+/// does not depend on `max_den`).
+fn limit_denominator(x: f64, max_den: u64) -> (u128, u128) {
+    let max_den = u128::from(max_den.max(1));
+    let (mut p0, mut q0, mut p1, mut q1) = (0u128, 1u128, 1u128, 0u128);
+    let mut r = x;
+    for _ in 0..64 {
+        if !r.is_finite() || !(0.0..1e15).contains(&r) {
+            break;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let a = r.floor() as u128;
+        let p2 = a.saturating_mul(p1).saturating_add(p0);
+        let q2 = a.saturating_mul(q1).saturating_add(q0);
+        if q2 > max_den {
+            if q1 == 0 {
+                break;
+            }
+            let k = (max_den - q0) / q1;
+            let (pa, qa) = (k * p1 + p0, k * q1 + q0);
+            let err = |p: u128, q: u128| (x - p as f64 / q as f64).abs();
+            return if qa > 0 && err(pa, qa) < err(p1, q1) { (pa, qa) } else { (p1, q1) };
+        }
+        (p0, q0, p1, q1) = (p1, q1, p2, q2);
+        let frac = r - r.floor();
+        if frac < 1e-12 {
+            break;
+        }
+        r = 1.0 / frac;
+    }
+    if q1 == 0 { (0, 1) } else { (p1, q1) }
+}
+
+/// Pads `digits` on the left to `slots.len()`: `0` pads with zeros, `?` with spaces, `#` not at all.
+fn pad_left(digits: &str, slots: &[char]) -> String {
+    let missing = slots.len().saturating_sub(digits.len());
+    let mut out = String::new();
+    for slot in slots.iter().take(missing) {
+        match slot {
+            '0' => out.push('0'),
+            '?' => out.push(' '),
+            _ => {}
+        }
+    }
+    out.push_str(digits);
+    out
+}
+
+/// A denominator: `0` placeholders add leading zeros, `?` placeholders trailing blanks.
+fn pad_denominator(digits: &str, slots: &[char]) -> String {
+    let zeros = slots.iter().filter(|&&c| c == '0').count();
+    let mut out = String::new();
+    for _ in digits.len()..zeros {
+        out.push('0');
+    }
+    out.push_str(digits);
+    for slot in slots.iter().skip(out.len()) {
+        if *slot == '?' {
+            out.push(' ');
+        }
+    }
+    out
+}
+
+fn render_fraction(fr: &Fraction, v: f64, auto_minus: bool) -> String {
+    let x = v.abs();
+    if x >= 1e15 {
+        return general(v);
+    }
+    let mixed = !fr.int_slots.is_empty();
+    let whole = if mixed { x.floor() } else { 0.0 };
+    let frac = x - whole;
+    let (mut num, den) = match fr.fixed_den {
+        Some(q) => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let n = (frac * f64::from(q)).round() as u128;
+            (n, u128::from(q))
+        }
+        None => {
+            let digits = u32::try_from(fr.den_slots.len()).unwrap_or(1).min(5);
+            limit_denominator(frac, 10u64.pow(digits).saturating_sub(1))
+        }
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let mut int = whole as u128;
+    if mixed && num >= den {
+        int += num / den;
+        num %= den;
+    }
+    let sign = if auto_minus && (int > 0 || num > 0) { "-" } else { "" };
+    let den_text = fr
+        .fixed_den
+        .map_or_else(|| pad_denominator(&den.to_string(), &fr.den_slots), |d| d.to_string());
+    let num_text = pad_left(&num.to_string(), &fr.num_slots);
+    let mut out = format!("{sign}{}", fr.prefix);
+    if mixed {
+        let int_text = if int == 0 && !fr.int_slots.contains(&'0') {
+            pad_left("", &fr.int_slots)
+        } else {
+            pad_left(&int.to_string(), &fr.int_slots)
+        };
+        out.push_str(&int_text);
+        if num == 0 {
+            // Whole numbers keep the width of the fraction, as blanks.
+            let width =
+                fr.sep.chars().count() + num_text.chars().count() + 1 + den_text.chars().count();
+            out.push_str(&" ".repeat(width));
+        } else {
+            out.push_str(&fr.sep);
+            out.push_str(&format!("{num_text}/{den_text}"));
+        }
+    } else {
+        out.push_str(&format!("{num_text}/{den_text}"));
+    }
+    out.push_str(&fr.suffix);
+    out
 }
 
 /// A parsed number format.
@@ -585,6 +817,9 @@ fn parse_section(src: &str) -> Section {
         }
     }
     flush(&mut lit, &mut sec.toks);
+    if !sec.is_date() {
+        sec.fraction = detect_fraction(&sec.toks);
+    }
     if sec.is_date() {
         // In a date or time format '.', ',', '0' and '%' are plain punctuation.
         for t in &mut sec.toks {
@@ -810,6 +1045,9 @@ fn group_thousands(int: &str) -> String {
 }
 
 fn render_number(sec: &Section, v: f64, auto_minus: bool) -> String {
+    if let Some(fr) = &sec.fraction {
+        return render_fraction(fr, v, auto_minus);
+    }
     let toks = &sec.toks;
     if !toks.iter().any(|t| matches!(t, Tok::Digit(_))) {
         // A purely literal section such as "zero" or "n/a".
@@ -1079,6 +1317,59 @@ mod tests {
         assert_eq!(fmt("0.00E+00", 12345.0), "1.23E+04");
         assert_eq!(fmt("0.0E+0", 0.00123), "1.2E-3");
         assert_eq!(fmt("##0.0E+0", 12345.0), "12.3E+3");
+    }
+
+    #[test]
+    fn fractions() {
+        assert_eq!(fmt("# ?/?", 0.5), " 1/2");
+        assert_eq!(fmt("# ?/?", 3.0), "3    ");
+        assert_eq!(fmt("# ?/?", 3.15), "3 1/7");
+        assert_eq!(fmt("# ?/?", -1.5), "-1 1/2");
+        assert_eq!(
+            fmt("# ?/?", 0.99),
+            "1    ",
+            "a fraction that rounds up carries into the whole part"
+        );
+        assert_eq!(fmt("# ??/??", 0.333).trim(), "1/3");
+        assert_eq!(
+            fmt("# ??/??", 2.714_285_714).trim(),
+            "2  5/7",
+            "the numerator is padded to its placeholders"
+        );
+        assert_eq!(fmt("?/?", 0.5), "1/2");
+        assert_eq!(fmt("?/?", 2.5), "5/2");
+        assert_eq!(fmt("?/?", 0.0), "0/1");
+        assert_eq!(fmt("# ?/8", 0.5), " 4/8", "a fixed denominator is not reduced");
+        assert_eq!(fmt("# ??/100", 0.256), " 26/100");
+        assert_eq!(fmt("# ?/4", 1.88), "2    ");
+        assert_eq!(fmt("# ?/4", 1.874), "1 3/4");
+        assert_eq!(fmt("# ?/?", 1e300), "1E+300");
+        assert_eq!(fmt("# ?/?", 1e14 + 0.5).trim(), "100000000000000 1/2");
+        // The built-in ids 12 and 13.
+        assert_eq!(builtin(12).map(|c| fmt(c, 0.5)).as_deref(), Some(" 1/2"));
+        assert_eq!(builtin(13).map(|c| fmt(c, 0.25).trim().to_owned()).as_deref(), Some("1/4"));
+        // Quoted slashes and units are not fractions.
+        assert_eq!(fmt("0.0 \"km/h\"", 3.5), "3.5 km/h");
+        assert_eq!(fmt("0\"/s\"", 3.0), "3/s");
+        assert_eq!(fmt("00/00", 1234.0), "1234/01", "`00/00` is a fraction format, not a mask");
+    }
+
+    #[test]
+    fn closest_fraction_with_bounded_denominator() {
+        assert_eq!(limit_denominator(0.333_333_333, 99), (1, 3));
+        assert_eq!(limit_denominator(0.142_857, 9), (1, 7));
+        assert_eq!(limit_denominator(0.75, 4), (3, 4));
+        assert_eq!(limit_denominator(0.001, 99), (0, 1));
+        assert_eq!(limit_denominator(0.0, 9), (0, 1));
+        assert_eq!(limit_denominator(2.5, 9), (5, 2));
+        assert_eq!(limit_denominator(core::f64::consts::PI, 9), (22, 7));
+        assert_eq!(limit_denominator(core::f64::consts::PI, 99), (311, 99));
+        assert_eq!(limit_denominator(core::f64::consts::PI, 999), (355, 113));
+        // Hostile values never loop or panic.
+        for x in [f64::MIN_POSITIVE, 1e-300, 1e14, 0.999_999_999_999_9, 123_456.789_012_345] {
+            let (p, q) = limit_denominator(x, 9_999);
+            assert!((1..=9_999).contains(&q), "{x} -> {p}/{q}");
+        }
     }
 
     #[test]
