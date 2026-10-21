@@ -303,6 +303,16 @@ macro_rules! wire_int {
 }
 wire_int!(u8, u16, u32, u64, i64);
 
+/// A single-precision number crosses as its bit pattern.
+impl Wire for f32 {
+    fn encode(&self, w: &mut Writer) {
+        w.u32(self.to_bits());
+    }
+    fn decode(r: &mut Reader<'_>) -> Result<Self, WireError> {
+        r.u32().map(f32::from_bits)
+    }
+}
+
 impl Wire for bool {
     fn encode(&self, w: &mut Writer) {
         w.bool(*self);

@@ -36,6 +36,9 @@ pub enum Op {
     Sanitize,
     /// Read-only extraction of the visible content; the result is a `Preview`.
     Preview,
+    /// The drawing of one page; the result is a `PageModel`. The flags hold the page number
+    /// (from 0).
+    Render,
 }
 
 impl Op {
@@ -46,6 +49,7 @@ impl Op {
             Self::Scan => 1,
             Self::Sanitize => 2,
             Self::Preview => 3,
+            Self::Render => 4,
         }
     }
 
@@ -56,6 +60,7 @@ impl Op {
             1 => Some(Self::Scan),
             2 => Some(Self::Sanitize),
             3 => Some(Self::Preview),
+            4 => Some(Self::Render),
             _ => None,
         }
     }
@@ -67,6 +72,7 @@ impl Op {
             Self::Scan => 0,
             Self::Sanitize => flags::SANITIZE_ALL,
             Self::Preview => flags::PREVIEW_ALL,
+            Self::Render => flags::PAGE_MASK,
         }
     }
 }
@@ -89,6 +95,8 @@ pub mod flags {
     pub const REVEAL_HIDDEN: u32 = 1;
     /// Every preview flag.
     pub const PREVIEW_ALL: u32 = REVEAL_HIDDEN;
+    /// Render: the bits that hold the page number.
+    pub const PAGE_MASK: u32 = 0x00FF_FFFF;
 }
 
 /// A parsed request borrowing the document bytes.

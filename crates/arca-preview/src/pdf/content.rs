@@ -11,10 +11,12 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use super::draw::{BLACK, Rec, Rgb, cmyk, color};
 use super::file::PdfFile;
 use super::font::Font;
 use super::lex::{Dict, Lexer, MAX_ELEMS, Obj, Stream, Tok, int_to_f64, is_ws};
 use crate::model::{ImageInfo, style};
+use crate::page::{Prim, style as pstyle};
 
 /// Largest decoded content stream (and form XObject).
 const MAX_CONTENT: usize = 96 << 20;
@@ -119,6 +121,8 @@ pub(super) struct PageInput {
     pub(super) contents: Vec<Rc<Stream>>,
     /// Visible area `[x0, y0, x1, y1]`.
     pub(super) visible: [f64; 4],
+    /// Record what the page draws (for rendering), besides its text.
+    pub(super) record: bool,
 }
 
 /// Result of running a page.
@@ -133,6 +137,8 @@ pub(super) struct PageOut {
     pub(super) truncated: bool,
     /// A content stream could not be decoded.
     pub(super) damaged: bool,
+    /// What the page draws, if it was asked for.
+    pub(super) drawn: Option<Rec>,
 }
 
 /// State shared by all pages of a document.
@@ -172,6 +178,11 @@ struct Gs {
     tl: f64,
     rise: f64,
     render: i64,
+    /// Fill and stroke colours, and the stroke's colour space and width.
+    fill_rgb: Rgb,
+    stroke_rgb: Rgb,
+    stroke_space: Space,
+    line_width: f64,
 }
 
 impl Gs {
@@ -189,6 +200,10 @@ impl Gs {
             tl: 0.0,
             rise: 0.0,
             render: 0,
+            fill_rgb: BLACK,
+            stroke_rgb: BLACK,
+            stroke_space: Space::Gray,
+            line_width: 1.0,
         }
     }
 }
@@ -225,6 +240,7 @@ struct Interp<'p, 'a> {
     images_left: usize,
     active_forms: Vec<u32>,
     stopped: bool,
+    rec: Option<Rec>,
 }
 
 /// Runs the content of one page.
@@ -252,6 +268,7 @@ pub(super) fn run_page(pdf: &mut PdfFile<'_>, shared: &mut Shared, page: &PageIn
         images_left: MAX_IMAGES_PER_PAGE,
         active_forms: Vec::new(),
         stopped: false,
+        rec: page.record.then(Rec::default),
     };
     // Several content streams form one stream; they may split between tokens only.
     let mut all: Vec<u8> = Vec::new();
@@ -268,6 +285,7 @@ pub(super) fn run_page(pdf: &mut PdfFile<'_>, shared: &mut Shared, page: &PageIn
     }
     it.exec(&all, &page.resources);
     it.flush_line();
+    it.out.drawn = it.rec.take();
     it.out
 }
 
@@ -337,13 +355,16 @@ impl Interp<'_, '_> {
             b"q" => {
                 if self.stack.len() < MAX_STACK {
                     self.stack.push(self.gs.clone());
+                    self.record(Prim::Save);
                 }
             }
             b"Q" => {
                 if let Some(g) = self.stack.pop() {
                     self.gs = g;
+                    self.record(Prim::Restore);
                 }
             }
+            b"w" => self.gs.line_width = a.first().and_then(Obj::as_f64).unwrap_or(1.0).abs(),
             b"cm" => {
                 if let Some(m) = Mat::from_numbers(&nums(a)) {
                     self.gs.ctm = m.then(self.gs.ctm);
@@ -428,6 +449,9 @@ impl Interp<'_, '_> {
             b"g" => self.set_fill(Space::Gray, &nums(a)),
             b"rg" => self.set_fill(Space::Rgb, &nums(a)),
             b"k" => self.set_fill(Space::Cmyk, &nums(a)),
+            b"G" => self.set_stroke(Space::Gray, &nums(a)),
+            b"RG" => self.set_stroke(Space::Rgb, &nums(a)),
+            b"K" => self.set_stroke(Space::Cmyk, &nums(a)),
             b"cs" => {
                 let space = a
                     .first()
@@ -436,10 +460,24 @@ impl Interp<'_, '_> {
                 self.gs.space = space;
                 // Initial colour: black for device spaces; other spaces are never "white".
                 self.gs.white = false;
+                self.gs.fill_rgb = BLACK;
+            }
+            b"CS" => {
+                let space = a
+                    .first()
+                    .and_then(Obj::as_name)
+                    .map_or(Space::Other, |n| self.space_of(n, res));
+                self.gs.stroke_space = space;
+                self.gs.stroke_rgb = BLACK;
             }
             b"sc" | b"scn" => {
                 let v = nums(a);
                 self.gs.white = near_white(self.gs.space, &v);
+                self.gs.fill_rgb = self.colour_of(self.gs.space, &v, a);
+            }
+            b"SC" | b"SCN" => {
+                let v = nums(a);
+                self.gs.stroke_rgb = self.colour_of(self.gs.stroke_space, &v, a);
             }
             // Paths: only the area they cover matters (a painted background).
             b"m" | b"l" => {
@@ -447,27 +485,93 @@ impl Interp<'_, '_> {
                     (a.first().and_then(Obj::as_f64), a.get(1).and_then(Obj::as_f64))
                 {
                     self.path_point(x, y);
+                    let (px, py) = self.gs.ctm.apply(x, y);
+                    if let Some(r) = self.rec.as_mut()
+                        && px.is_finite()
+                        && py.is_finite()
+                    {
+                        if op == b"m" {
+                            r.move_to(px, py);
+                        } else {
+                            r.line_to(px, py);
+                        }
+                    }
                 }
             }
             b"c" | b"v" | b"y" => {
-                for pair in nums(a).chunks_exact(2) {
+                let v = nums(a);
+                for pair in v.chunks_exact(2) {
                     if let [x, y] = pair {
                         self.path_point(*x, *y);
                     }
+                }
+                let ctm = self.gs.ctm;
+                if let Some(r) = self.rec.as_mut() {
+                    let pt = |i: usize| -> Option<[f64; 2]> {
+                        let (x, y) = (v.get(2 * i)?, v.get(2 * i + 1)?);
+                        let (px, py) = ctm.apply(*x, *y);
+                        (px.is_finite() && py.is_finite()).then_some([px, py])
+                    };
+                    let cur = r.current();
+                    let curve = match (op, v.len()) {
+                        (b"c", 6) => pt(0).zip(pt(1)).zip(pt(2)).map(|((p1, p2), p3)| (p1, p2, p3)),
+                        (b"v", 4) => pt(0).zip(pt(1)).map(|(p2, p3)| (cur, p2, p3)),
+                        (b"y", 4) => pt(0).zip(pt(1)).map(|(p1, p3)| (p1, p3, p3)),
+                        _ => None,
+                    };
+                    if let Some((p1, p2, p3)) = curve {
+                        r.curve_to(p1, p2, p3);
+                    }
+                }
+            }
+            b"h" => {
+                if let Some(r) = self.rec.as_mut() {
+                    r.close();
                 }
             }
             b"re" => {
                 if let [x, y, w, h] = nums(a).as_slice() {
                     self.path_point(*x, *y);
                     self.path_point(*x + *w, *y + *h);
+                    let ctm = self.gs.ctm;
+                    if let Some(r) = self.rec.as_mut() {
+                        let c = [
+                            ctm.apply(*x, *y),
+                            ctm.apply(*x + *w, *y),
+                            ctm.apply(*x + *w, *y + *h),
+                            ctm.apply(*x, *y + *h),
+                        ];
+                        if c.iter().all(|p| p.0.is_finite() && p.1.is_finite()) {
+                            r.rect(c.map(|p| [p.0, p.1]));
+                        }
+                    }
                 }
             }
-            b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" => {
-                self.paint_fill();
-                self.path = None;
+            b"f" | b"F" => self.paint_op(true, false, false, false),
+            b"f*" => self.paint_op(true, false, true, false),
+            b"B" => self.paint_op(true, true, false, false),
+            b"B*" => self.paint_op(true, true, true, false),
+            b"b" => self.paint_op(true, true, false, true),
+            b"b*" => self.paint_op(true, true, true, true),
+            b"S" => self.paint_op(false, true, false, false),
+            b"s" => self.paint_op(false, true, false, true),
+            b"n" => self.paint_op(false, false, false, false),
+            b"W" => {
+                if let Some(r) = self.rec.as_mut() {
+                    r.will_clip(false);
+                }
             }
-            b"S" | b"s" | b"n" => self.path = None,
-            b"sh" => self.bg_page = true,
+            b"W*" => {
+                if let Some(r) = self.rec.as_mut() {
+                    r.will_clip(true);
+                }
+            }
+            b"sh" => {
+                self.bg_page = true;
+                if let Some(r) = self.rec.as_mut() {
+                    r.approximate = true;
+                }
+            }
             // XObjects.
             b"Do" => {
                 if let Some(name) = a.first().and_then(Obj::as_name) {
@@ -510,6 +614,84 @@ impl Interp<'_, '_> {
     fn set_fill(&mut self, space: Space, v: &[f64]) {
         self.gs.space = space;
         self.gs.white = near_white(space, v);
+        self.gs.fill_rgb = self.colour_of(space, v, &[]);
+    }
+
+    fn set_stroke(&mut self, space: Space, v: &[f64]) {
+        self.gs.stroke_space = space;
+        self.gs.stroke_rgb = self.colour_of(space, v, &[]);
+    }
+
+    /// The colour `v` is in `space`; a pattern or a colour space this reader does not convert
+    /// is drawn as a light grey and marks the page as approximate.
+    fn colour_of(&mut self, space: Space, v: &[f64], operands: &[Obj]) -> Rgb {
+        if matches!(operands.last(), Some(Obj::Name(_))) {
+            if let Some(r) = self.rec.as_mut() {
+                r.approximate = true;
+            }
+            return [0.85, 0.85, 0.85];
+        }
+        let c = |i: usize| v.get(i).copied().unwrap_or(0.0);
+        match (space, v.len()) {
+            (Space::Gray, 1) => [c(0).clamp(0.0, 1.0); 3],
+            (Space::Rgb | Space::Other, 3) => {
+                [c(0).clamp(0.0, 1.0), c(1).clamp(0.0, 1.0), c(2).clamp(0.0, 1.0)]
+            }
+            (Space::Cmyk | Space::Other, 4) => cmyk(c(0), c(1), c(2), c(3)),
+            // A tint of a spot colour or an indexed colour: by its tint, as grey.
+            (Space::Other, 1) => [1.0 - c(0).clamp(0.0, 1.0); 3],
+            (Space::Other, _) => {
+                if let Some(r) = self.rec.as_mut() {
+                    r.approximate = true;
+                }
+                [0.5; 3]
+            }
+            _ => BLACK,
+        }
+    }
+
+    fn record(&mut self, p: Prim) {
+        if let Some(r) = self.rec.as_mut() {
+            r.push(p);
+            if r.full {
+                self.out.truncated = true;
+                self.stopped = true;
+            }
+        }
+    }
+
+    /// Paints (and/or strokes) the path under construction, applies a pending clip, and ends
+    /// the path.
+    fn paint_op(&mut self, fill: bool, stroke: bool, even_odd: bool, close: bool) {
+        if fill {
+            self.paint_fill();
+        }
+        self.path = None;
+        if self.rec.is_none() {
+            return;
+        }
+        let hidden = self.hidden_now();
+        let alpha = self.gs.alpha;
+        let (f, s) = (color(self.gs.fill_rgb, alpha), color(self.gs.stroke_rgb, alpha));
+        let m = self.gs.ctm;
+        let scale = ((m.a * m.d - m.b * m.c).abs()).sqrt();
+        let width = (self.gs.line_width * scale).max(0.25);
+        if let Some(r) = self.rec.as_mut() {
+            if close {
+                r.close();
+            }
+            if !hidden {
+                r.paint(if fill { f } else { 0 }, if stroke { s } else { 0 }, width, even_odd);
+            }
+        }
+        if let Some(mut r) = self.rec.take() {
+            r.end_path();
+            self.rec = Some(r);
+        }
+        if self.rec.as_ref().is_some_and(|r| r.full) {
+            self.out.truncated = true;
+            self.stopped = true;
+        }
     }
 
     fn space_of(&mut self, name: &str, res: &Rc<Dict>) -> Space {
@@ -667,6 +849,38 @@ impl Interp<'_, '_> {
                 self.out.hidden += 1;
             }
             let end = along + tx * scale_x;
+            if !hidden && !blank && self.rec.is_some() && !matches!(self.gs.render, 3 | 7) {
+                let rgb = if matches!(self.gs.render, 1 | 5) {
+                    self.gs.stroke_rgb
+                } else {
+                    self.gs.fill_rgb
+                };
+                let mut bits = 0u8;
+                if font.bold {
+                    bits |= pstyle::BOLD;
+                }
+                if font.italic {
+                    bits |= pstyle::ITALIC;
+                }
+                if font.mono {
+                    bits |= pstyle::MONO;
+                }
+                if font.serif {
+                    bits |= pstyle::SERIF;
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                let prim = Prim::Text {
+                    x: x as f32,
+                    y: y as f32,
+                    size: size as f32,
+                    angle: uy.atan2(ux) as f32,
+                    width: (tx * scale_x).abs() as f32,
+                    style: bits,
+                    color: color(rgb, self.gs.alpha),
+                    text: shown.text.clone(),
+                };
+                self.record(prim);
+            }
             self.emit(&shown.text, st, along, across, size, (ux, uy), end);
         }
         self.tm = Mat::translate(tx, 0.0).then(self.tm);
@@ -804,6 +1018,26 @@ impl Interp<'_, '_> {
         self.out.items.push(Item::Image(info));
     }
 
+    /// A picture covers the unit square under the current transform; it is drawn as a placeholder.
+    fn record_image(&mut self, info: &ImageInfo) {
+        if self.rec.is_none() || self.hidden_now() {
+            return;
+        }
+        let m = self.gs.ctm;
+        if ![m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite()) {
+            return;
+        }
+        if let Some(r) = self.rec.as_mut() {
+            r.approximate = true;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let prim = Prim::Image {
+            m: [m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32],
+            label: info.alt.clone(),
+        };
+        self.record(prim);
+    }
+
     fn do_xobject(&mut self, name: &str, res: &Rc<Dict>) {
         let raw = self.resource("XObject", name, res);
         let num = raw.ref_num();
@@ -829,6 +1063,7 @@ impl Interp<'_, '_> {
                     bytes: u64::try_from(self.pdf.raw_len(&stream)).unwrap_or(0),
                     external: false,
                 };
+                self.record_image(&info);
                 self.push_image(info);
             }
             "Form" => {
@@ -868,7 +1103,10 @@ impl Interp<'_, '_> {
                 if let Some(n) = num {
                     self.active_forms.push(n);
                 }
+                // What a form clips stays inside it.
+                self.record(Prim::Save);
                 self.exec(&decoded.data, &form_res);
+                self.record(Prim::Restore);
                 if num.is_some() {
                     self.active_forms.pop();
                 }
@@ -983,12 +1221,14 @@ impl Interp<'_, '_> {
             _ => "bitmap",
         };
         self.note_image_area();
-        self.push_image(ImageInfo {
+        let info = ImageInfo {
             alt: if w > 0 && h > 0 { format!("{w}×{h}") } else { String::new() },
             media: media.to_owned(),
             bytes: u64::try_from(end.saturating_sub(start)).unwrap_or(0),
             external: false,
-        });
+        };
+        self.record_image(&info);
+        self.push_image(info);
     }
 }
 
@@ -1043,7 +1283,12 @@ mod tests {
         run_page(
             &mut pdf,
             &mut shared,
-            &PageInput { resources: res, contents, visible: [0.0, 0.0, 612.0, 792.0] },
+            &PageInput {
+                resources: res,
+                contents,
+                visible: [0.0, 0.0, 612.0, 792.0],
+                record: false,
+            },
         )
     }
 
@@ -1238,6 +1483,7 @@ mod tests {
                 resources: Rc::new(Dict::new()),
                 contents,
                 visible: [0.0, 0.0, 612.0, 792.0],
+                record: false,
             },
         );
         assert!(o.truncated);
@@ -1270,7 +1516,12 @@ mod tests {
         let o = run_page(
             &mut pdf,
             &mut shared,
-            &PageInput { resources: res, contents, visible: [0.0, 0.0, 612.0, 792.0] },
+            &PageInput {
+                resources: res,
+                contents,
+                visible: [0.0, 0.0, 612.0, 792.0],
+                record: false,
+            },
         );
         let l = lines(&o);
         assert_eq!(

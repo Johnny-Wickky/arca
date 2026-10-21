@@ -16,6 +16,7 @@ import java.util.zip.ZipOutputStream;
 
 import org.arca.viewer.Native;
 import org.arca.viewer.core.Capabilities;
+import org.arca.viewer.core.PageDrawing;
 import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Model;
@@ -235,6 +236,32 @@ public final class ContractTest {
                     }
                 } else {
                     check(Native.previewMeta(outcome) == null, name + ": preview meta for a failed run");
+                }
+                Native.outcomeFree(outcome);
+            }
+
+            // ---- pages (PDF only; everything else must say so cleanly) ---------------------
+            job = Native.jobNew();
+            outcome = Native.run(job, doc, Native.OP_RENDER, 0);
+            Native.jobFree(job);
+            runs++;
+            check(outcome > 0, name + ": render returned " + outcome);
+            if (outcome > 0) {
+                int status = Native.outcomeStatus(outcome);
+                Model.parseRunInfo(Native.outcomeInfo(outcome));
+                if (strict && !"?".equals(format)) {
+                    if (Capabilities.canRender(format)) {
+                        check(status == Native.OK || status == Native.ENCRYPTED || status == Native.REJECTED,
+                            name + ": " + format + " is listed as drawable but status was " + status);
+                    } else {
+                        check(status == Native.UNSUPPORTED, name + ": " + format + " render status " + status);
+                    }
+                }
+                if (status == Native.OK) {
+                    PageDrawing page = PageDrawing.parse(Native.page(outcome));
+                    check(page.width > 0 && page.height > 0 && page.pages >= 1, name + ": empty page drawing");
+                } else {
+                    check(Native.page(outcome) == null, name + ": page for a failed run");
                 }
                 Native.outcomeFree(outcome);
             }

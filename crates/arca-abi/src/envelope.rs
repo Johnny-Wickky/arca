@@ -27,6 +27,8 @@ pub enum PayloadKind {
     SanitizedDocument,
     /// A wire-encoded read-only preview of the document content.
     Preview,
+    /// A wire-encoded drawing of one page.
+    Page,
     /// A wire-encoded error description (`String`).
     Error,
 }
@@ -37,6 +39,7 @@ impl PayloadKind {
             Self::XRayReport => 1,
             Self::SanitizedDocument => 2,
             Self::Preview => 3,
+            Self::Page => 4,
             Self::Error => 0xFFFF,
         }
     }
@@ -46,6 +49,7 @@ impl PayloadKind {
             1 => Some(Self::XRayReport),
             2 => Some(Self::SanitizedDocument),
             3 => Some(Self::Preview),
+            4 => Some(Self::Page),
             0xFFFF => Some(Self::Error),
             _ => None,
         }

@@ -40,6 +40,9 @@ public final class Capabilities {
         // Text
         "Rtf", "PlainText", "Csv", "Tsv", "Markdown");
 
+    /** Formats that can be drawn page by page: PDF so far (slides, sheets and pictures follow). */
+    private static final Set<String> RENDER = set("Pdf");
+
     private static final Set<String> SANITIZE = set(
         "Docx", "Docm", "Dotx", "Dotm",
         "Xlsx", "Xlsm", "Xltx", "Xltm", "Xlam",
@@ -55,6 +58,16 @@ public final class Capabilities {
     /** Whether the engine can build a safe preview of {@code format}. */
     public static boolean canPreview(String format) {
         return PREVIEW.contains(format);
+    }
+
+    /** Whether the engine can draw {@code format} page by page. */
+    public static boolean canRender(String format) {
+        return RENDER.contains(format);
+    }
+
+    /** Formats with a page view (for tests and diagnostics). */
+    public static Set<String> renderFormats() {
+        return RENDER;
     }
 
     /** Whether the engine can rebuild {@code format} as a sterile copy. */

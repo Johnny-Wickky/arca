@@ -169,3 +169,15 @@ pub(crate) fn extract(doc: Doc<'_>, sink: &mut Sink<'_>) -> Result<FileFormat, P
         }
     }
 }
+
+/// The format of `data`, as far as it can be told (for refusals).
+pub(crate) fn format_of(data: &[u8], policy: &PreviewPolicy) -> FileFormat {
+    match open(data, policy) {
+        Ok(Doc::Opc { format, .. } | Doc::Odf { format, .. } | Doc::Cfb { format, .. }) => format,
+        Ok(Doc::Rtf(_)) => FileFormat::Rtf,
+        Ok(Doc::Pdf(_)) => FileFormat::Pdf,
+        Ok(Doc::Access { format, .. } | Doc::Text { format, .. }) => format,
+        Err(PreviewError::Unsupported(f)) => f,
+        Err(_) => FileFormat::Unknown,
+    }
+}

@@ -53,6 +53,7 @@ use arca_attribution::screen::{CardRole, CreatorCard, Lang, PatronageScreen};
 use arca_preview::model::{
     Align, Block, CellKind, Grid, ImageInfo, Paragraph, Preview, Row, Run, Section,
 };
+use arca_preview::page::{PageModel, Prim};
 use arca_xray::sanitize::SanitizedDocument;
 use arca_xray::{Category, Severity, XRayReport};
 
@@ -210,6 +211,79 @@ pub fn report_json(report: &XRayReport) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 // Sanitize
 // ---------------------------------------------------------------------------
+
+/// Writes the drawing of a page as JSON: `{"w","h","index","pages","truncated","approx","p"}`
+/// where `p` is a list of primitives, each an array that starts with a letter:
+///
+/// * `["P", fill, stroke, width, evenOdd, [ops]]` — a path; colours are `0xAARRGGBB` as numbers
+///   (alpha `0` means none); `ops` is a flat list: `0 x y` move, `1 x y` line,
+///   `2 x1 y1 x2 y2 x y` curve, `3` close;
+/// * `["T", x, y, size, angle, width, style, color, "text"]`;
+/// * `["I", a, b, c, d, e, f, "label"]`;
+/// * `["S"]` save, `["R"]` restore, `["C", x, y, w, h]` clip.
+#[must_use]
+pub fn page_json(page: &PageModel) -> Vec<u8> {
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("w");
+    w.f32(page.width);
+    w.key("h");
+    w.f32(page.height);
+    w.field_u64("index", u64::from(page.index));
+    w.field_u64("pages", u64::from(page.pages));
+    w.field_bool("truncated", page.truncated);
+    w.field_bool("approx", page.approximate);
+    w.key("p");
+    w.begin_array();
+    for p in &page.prims {
+        w.begin_array();
+        match p {
+            Prim::Path { ops, fill, stroke, width, even_odd } => {
+                w.string("P");
+                w.u64(u64::from(*fill));
+                w.u64(u64::from(*stroke));
+                w.f32(*width);
+                w.u64(u64::from(*even_odd));
+                w.begin_array();
+                for v in ops {
+                    w.f32(*v);
+                }
+                w.end_array();
+            }
+            Prim::Text { x, y, size, angle, width, style, color, text } => {
+                w.string("T");
+                for v in [x, y, size] {
+                    w.f32(*v);
+                }
+                // The angle needs more precision than a coordinate.
+                w.f32((*angle * 1000.0).round() / 1000.0);
+                w.f32(*width);
+                w.u64(u64::from(*style));
+                w.u64(u64::from(*color));
+                w.string(text);
+            }
+            Prim::Image { m, label } => {
+                w.string("I");
+                for v in m {
+                    w.f32(*v);
+                }
+                w.string(label);
+            }
+            Prim::Save => w.string("S"),
+            Prim::Restore => w.string("R"),
+            Prim::Clip { x, y, w: cw, h } => {
+                w.string("C");
+                for v in [x, y, cw, h] {
+                    w.f32(*v);
+                }
+            }
+        }
+        w.end_array();
+    }
+    w.end_array();
+    w.end_object();
+    w.finish()
+}
 
 /// Writes the description of a sterile copy (not the bytes) as JSON.
 #[must_use]

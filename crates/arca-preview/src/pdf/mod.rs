@@ -13,6 +13,7 @@ mod cmap;
 mod content;
 mod crypt;
 mod decrypt;
+mod draw;
 mod encoding;
 mod file;
 mod filter;
@@ -107,6 +108,61 @@ pub(crate) fn extract(data: &[u8], sink: &mut Sink<'_>) -> Result<(), PreviewErr
         sink.skipped(&s);
     }
     Ok(())
+}
+
+/// Draws page `index` (from 0) of `data`: the page as a list of things to draw.
+pub(crate) fn render(
+    data: &[u8],
+    index: usize,
+    policy: &crate::PreviewPolicy,
+) -> Result<crate::page::PageModel, PreviewError> {
+    let mut pdf = PdfFile::open(data, policy)?;
+    let limit = policy.max_sections.saturating_add(1);
+    let pages = {
+        let trailer = pdf.trailer.clone();
+        let root = pdf.get(&trailer, "Root");
+        let catalog = root.as_dict().cloned().unwrap_or_default();
+        let mut pages = collect_pages(&mut pdf, &catalog, limit);
+        if pages.is_empty() && !pdf.rebuilt() {
+            pdf.rebuild();
+            let trailer = pdf.trailer.clone();
+            let root = pdf.get(&trailer, "Root");
+            let catalog = root.as_dict().cloned().unwrap_or_default();
+            pages = collect_pages(&mut pdf, &catalog, limit);
+        }
+        if pages.is_empty() {
+            pages = scan_for_pages(&mut pdf, limit);
+        }
+        pages
+    };
+    let trailer = pdf.trailer.clone();
+    let root = pdf.get(&trailer, "Root");
+    let catalog = root.as_dict().cloned().unwrap_or_default();
+    let Some(page) = pages.get(index) else {
+        return Err(PreviewError::Malformed("the document has no such page".into()));
+    };
+    let mut input = page_input(&mut pdf, page);
+    input.record = true;
+    let rotate = match inherited(&mut pdf, page, "Rotate") {
+        Obj::Int(n) => n,
+        _ => 0,
+    };
+    let mut shared = Shared::new(ocg_off_set(&mut pdf, &catalog), MAX_OPERATORS);
+    let out = run_page(&mut pdf, &mut shared, &input);
+    let (view, width, height) = draw::view_of(input.visible, rotate);
+    let mut model = out
+        .drawn
+        .ok_or_else(|| PreviewError::Malformed("the page could not be drawn".into()))?
+        .finish(
+            view,
+            width,
+            height,
+            u32::try_from(index).unwrap_or(u32::MAX),
+            u32::try_from(pages.len()).unwrap_or(u32::MAX),
+        );
+    model.truncated |= out.truncated;
+    model.approximate |= out.damaged || out.unmapped > 0;
+    Ok(model)
 }
 
 // ---- page tree ---------------------------------------------------------------------------
@@ -215,7 +271,7 @@ fn page_input(pdf: &mut PdfFile<'_>, page: &Dict) -> PageInput {
             .collect(),
         _ => Vec::new(),
     };
-    PageInput { resources, contents, visible }
+    PageInput { resources, contents, visible, record: false }
 }
 
 /// Optional-content groups that are switched off in the default configuration.
@@ -771,5 +827,179 @@ mod tests {
                 let _ = run(base.get(..cut).unwrap_or(&[]));
             }
         }
+    }
+
+    // ---- drawing a page -------------------------------------------------------------------
+
+    use crate::page::{PageModel, Prim, op as pathop};
+
+    fn drawn(b: &PdfBuilder) -> PageModel {
+        render(&b.build(), 0, &PreviewPolicy::default()).expect("renders")
+    }
+
+    fn path_at(m: &PageModel, i: usize) -> (&[f32], u32, u32, f32) {
+        match m.prims.get(i) {
+            Some(Prim::Path { ops, fill, stroke, width, .. }) => (ops, *fill, *stroke, *width),
+            other => panic!("not a path: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_filled_rectangle_lands_where_a_viewer_puts_it() {
+        let m = drawn(&PdfBuilder::with_content("1 0 0 rg 72 600 100 50 re f"));
+        assert_eq!((m.width, m.height, m.pages, m.index), (612.0, 792.0, 1, 0));
+        assert_eq!(m.prims.len(), 1);
+        let (ops, fill, stroke, _) = path_at(&m, 0);
+        // The page's y axis is flipped: 792 - 600 = 192 is the bottom edge of the rectangle,
+        // and 792 - 650 = 142 its top edge.
+        assert_eq!(
+            ops,
+            [
+                pathop::MOVE,
+                72.0,
+                192.0,
+                pathop::LINE,
+                172.0,
+                192.0,
+                pathop::LINE,
+                172.0,
+                142.0,
+                pathop::LINE,
+                72.0,
+                142.0,
+                pathop::CLOSE
+            ]
+        );
+        assert_eq!(fill, 0xFFFF_0000);
+        assert_eq!(stroke, 0);
+    }
+
+    #[test]
+    fn strokes_colours_widths_and_curves_are_recorded() {
+        let m = drawn(&PdfBuilder::with_content(
+            "0 0 1 RG 3 w 10 10 m 20 20 l 30 10 40 20 50 10 c S 0.5 g 0 0 10 10 re B",
+        ));
+        let (ops, fill, stroke, width) = path_at(&m, 0);
+        assert_eq!(fill, 0);
+        assert_eq!(stroke, 0xFF00_00FF);
+        assert!((width - 3.0).abs() < 1e-6);
+        assert_eq!(ops.iter().filter(|v| **v == pathop::CURVE).count(), 1);
+        // The second shape is filled grey and stroked blue.
+        let (_, fill, stroke, _) = path_at(&m, 1);
+        assert_eq!(fill, 0xFF80_8080);
+        assert_eq!(stroke, 0xFF00_00FF);
+    }
+
+    #[test]
+    fn clips_and_saves_are_recorded_in_order() {
+        let m = drawn(&PdfBuilder::with_content(
+            "q 10 10 100 100 re W n 0 g 0 0 612 792 re f Q 1 g 0 0 5 5 re f",
+        ));
+        assert!(matches!(m.prims[0], Prim::Save));
+        match m.prims[1] {
+            Prim::Clip { x, y, w, h } => assert_eq!((x, y, w, h), (10.0, 682.0, 100.0, 100.0)),
+            ref other => panic!("{other:?}"),
+        }
+        assert!(matches!(m.prims[2], Prim::Path { .. }));
+        assert!(matches!(m.prims[3], Prim::Restore));
+        assert!(matches!(m.prims[4], Prim::Path { fill: 0xFFFF_FFFF, .. }));
+    }
+
+    #[test]
+    fn text_keeps_its_position_size_colour_and_width() {
+        let m =
+            drawn(&PdfBuilder::with_content("0 0.5 0 rg BT /F1 20 Tf 100 700 Td (Hello) Tj ET"));
+        let Some(Prim::Text { x, y, size, angle, width, color, text, .. }) = m.prims.first() else {
+            panic!("{:?}", m.prims)
+        };
+        assert_eq!(text, "Hello");
+        assert_eq!((*x, *y, *size), (100.0, 92.0, 20.0));
+        assert!(angle.abs() < 1e-6);
+        // Helvetica: H 722, e 556, l 222, l 222, o 556 thousandths of an em.
+        assert!((width - 2.278 * 20.0).abs() < 0.01, "{width}");
+        assert_eq!(*color, 0xFF00_8000);
+    }
+
+    #[test]
+    fn rotated_text_and_pages_turn_together() {
+        // Text going up the page: angle -90° on the shown page.
+        let m = drawn(&PdfBuilder::with_content("BT /F1 12 Tf 0 1 -1 0 100 100 Tm (up) Tj ET"));
+        let Some(Prim::Text { angle, .. }) = m.prims.first() else { panic!() };
+        assert!((angle + core::f32::consts::FRAC_PI_2).abs() < 1e-5, "{angle}");
+        // A page rotated by 90°: the shown page is 792 wide and 612 tall, and the text, which
+        // read left to right, now runs down.
+        let mut b = PdfBuilder::with_content("BT /F1 12 Tf 72 700 Td (turned) Tj ET");
+        b.add_raw(
+            3,
+            "<< /Type /Page /Parent 2 0 R /Rotate 90 /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        );
+        let m = drawn(&b);
+        assert_eq!((m.width, m.height), (792.0, 612.0));
+        let Some(Prim::Text { x, y, angle, .. }) = m.prims.first() else { panic!() };
+        assert_eq!((*x, *y), (700.0, 72.0));
+        assert!((angle - core::f32::consts::FRAC_PI_2).abs() < 1e-5, "{angle}");
+    }
+
+    #[test]
+    fn hidden_text_and_hidden_layers_are_not_drawn() {
+        let m = drawn(&PdfBuilder::with_content(
+            "BT /F1 12 Tf 3 Tr 72 700 Td (invisible) Tj ET BT /F1 12 Tf 0 Tr 72 650 Td (seen) Tj ET",
+        ));
+        let words: Vec<_> = m
+            .prims
+            .iter()
+            .filter_map(
+                |p| if let Prim::Text { text, .. } = p { Some(text.as_str()) } else { None },
+            )
+            .collect();
+        assert_eq!(words, ["seen"]);
+    }
+
+    #[test]
+    fn pictures_become_placeholders_with_their_matrix() {
+        let mut b = PdfBuilder::with_content("q 200 0 0 100 50 500 cm /Im1 Do Q");
+        b.add_raw(
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << /Im1 6 0 R >> >> >>",
+        );
+        b.add_stream(6, "/Type /XObject /Subtype /Image /Width 640 /Height 480 /ColorSpace /DeviceRGB /BitsPerComponent 8", &[0u8; 8]);
+        let m = drawn(&b);
+        let img = m.prims.iter().find_map(|p| match p {
+            Prim::Image { m, label } => Some((*m, label.clone())),
+            _ => None,
+        });
+        let (matrix, label) = img.expect("an image");
+        assert_eq!(label, "640×480");
+        // The unit square becomes 200 × 100 points; y is flipped (and so is the picture's own y).
+        assert_eq!(matrix, [200.0, 0.0, 0.0, -100.0, 50.0, 292.0]);
+        assert!(m.approximate);
+    }
+
+    #[test]
+    fn a_page_that_does_not_exist_and_other_formats_are_refused() {
+        let data = PdfBuilder::simple_text("x").build();
+        assert!(matches!(
+            render(&data, 1, &PreviewPolicy::default()),
+            Err(PreviewError::Malformed(_))
+        ));
+        assert!(matches!(
+            crate::render_page(b"hello", 0, &PreviewPolicy::default()),
+            Err(PreviewError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn hostile_content_stays_bounded_and_never_panics() {
+        // A flood of paths, a huge path, unbalanced Q, nonsense numbers.
+        let flood = "0 0 5 5 re f ".repeat(200_000);
+        let m = drawn(&PdfBuilder::with_content(&flood));
+        assert!(m.prims.len() <= crate::page::MAX_PRIMS);
+        let long = format!("0 0 m {} f", "1 1 l ".repeat(300_000));
+        let m = drawn(&PdfBuilder::with_content(&long));
+        assert!(m.truncated || m.prims.len() <= 1);
+        let m = drawn(&PdfBuilder::with_content(
+            "Q Q Q 1e400 0 0 1e400 0 0 cm 0 0 1e300 1e300 re f nan inf m l c",
+        ));
+        let _ = m.prims.len();
     }
 }

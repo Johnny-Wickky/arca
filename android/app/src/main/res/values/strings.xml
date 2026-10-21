@@ -305,4 +305,13 @@
     <!-- Fallbacks for labels the engine may add in a newer version -->
     <string name="threat_unknown_text">The engine reported something this version of the app has no description for. Treat the document as untrusted.</string>
     <string name="notice_unknown">The preview leaves something out (no description in this version): %2$s</string>
+    <string name="pages_open">View as pages</string>
+    <string name="pages_title">Page view</string>
+    <string name="pages_prev">Previous page</string>
+    <string name="pages_next">Next page</string>
+    <string name="pages_position">Page %1$d of %2$d</string>
+    <string name="pages_loading">Drawing the page in the sandbox…</string>
+    <string name="pages_failed">This page could not be drawn.</string>
+    <string name="pages_note_truncated">The page is very complex; part of it is not shown.</string>
+    <string name="pages_note_approx">Gradients and patterns are shown as flat colours, pictures as grey boxes, fonts are replaced.</string>
 </resources>

@@ -301,4 +301,13 @@
     <!-- Запасные подписи для того, что движок может добавить в новой версии -->
     <string name="threat_unknown_text">Движок сообщил о том, для чего в этой версии приложения нет описания. Считайте документ недоверенным.</string>
     <string name="notice_unknown">В просмотре что-то опущено (в этой версии нет описания): %2$s</string>
+    <string name="pages_open">Показать страницами</string>
+    <string name="pages_title">Постраничный вид</string>
+    <string name="pages_prev">Предыдущая страница</string>
+    <string name="pages_next">Следующая страница</string>
+    <string name="pages_position">Страница %1$d из %2$d</string>
+    <string name="pages_loading">Рисуем страницу в песочнице…</string>
+    <string name="pages_failed">Эту страницу нарисовать не вышло.</string>
+    <string name="pages_note_truncated">Страница очень сложная, часть её не показана.</string>
+    <string name="pages_note_approx">Градиенты и узоры показаны плоским цветом, картинки — серыми прямоугольниками, шрифты заменены.</string>
 </resources>

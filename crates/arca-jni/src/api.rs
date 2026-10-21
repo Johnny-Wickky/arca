@@ -211,6 +211,12 @@ pub fn preview_meta(outcome: i64) -> Option<Vec<u8>> {
     bytes(host().and_then(|h| h.preview_meta_json(handle(outcome)?)))
 }
 
+/// The drawing of a page (from a render run) as JSON.
+#[must_use]
+pub fn page(outcome: i64) -> Option<Vec<u8>> {
+    bytes(host().and_then(|h| h.page_json(handle(outcome)?)))
+}
+
 /// A page of preview items as a JSON array.
 #[must_use]
 pub fn preview_items(outcome: i64, section: i32, from: i64, count: i32) -> Option<Vec<u8>> {

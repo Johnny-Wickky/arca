@@ -232,13 +232,13 @@ impl Engine {
             max_memory_bytes: c.max_memory_bytes,
             max_wall_time: Some(match op {
                 Op::Scan | Op::Sanitize => c.scan_timeout,
-                Op::Preview => c.preview_timeout,
+                Op::Preview | Op::Render => c.preview_timeout,
             }),
             // A sterile copy is about as large as the original.
             max_output_bytes: (64usize << 20).saturating_add(len),
             ..SandboxPolicy::default()
         };
-        if matches!(op, Op::Preview | Op::Sanitize) {
+        if matches!(op, Op::Preview | Op::Sanitize | Op::Render) {
             // Extraction and rebuilding keep the decompressed parts next to the result.
             policy.memory_base_bytes = 192 << 20;
             policy.memory_per_input_byte = 8;
@@ -316,6 +316,7 @@ impl Engine {
             Op::Scan => PayloadKind::XRayReport,
             Op::Sanitize => PayloadKind::SanitizedDocument,
             Op::Preview => PayloadKind::Preview,
+            Op::Render => PayloadKind::Page,
         };
         if out.kind != expected {
             return RunOutput {
@@ -403,7 +404,12 @@ enum Body {
     None,
     Report(Box<XRayReport>),
     Preview(Box<PreviewIndex>),
-    Sanitized { info: Vec<u8>, bytes: Zeroizing<Vec<u8>> },
+    Sanitized {
+        info: Vec<u8>,
+        bytes: Zeroizing<Vec<u8>>,
+    },
+    /// The drawing of a page, as JSON.
+    Page(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -611,6 +617,7 @@ impl Host {
                 let bytes = Zeroizing::new(core::mem::take(&mut s.bytes));
                 Body::Sanitized { info, bytes }
             }
+            Some(Output::Page(p)) => Body::Page(render::page_json(&p)),
             None => Body::None,
         };
         Ok(self.outcomes.insert(Outcome {
@@ -660,6 +667,17 @@ impl Host {
         }
         w.end_object();
         Ok(w.finish())
+    }
+
+    /// The drawing of a page (from a [`op::RENDER`] run) as JSON; see [`render::page_json`].
+    ///
+    /// # Errors
+    /// [`Status::BadHandle`], or [`Status::BadArgument`] when the outcome holds no page.
+    pub fn page_json(&self, outcome: Handle) -> Result<Vec<u8>, Status> {
+        match &self.outcome(outcome)?.body {
+            Body::Page(json) => Ok(json.clone()),
+            _ => Err(Status::BadArgument),
+        }
     }
 
     /// The X-ray report as JSON.
@@ -795,4 +813,6 @@ pub mod op {
     pub const SANITIZE: u16 = 2;
     /// Preview.
     pub const PREVIEW: u16 = 3;
+    /// The drawing of one page; the page number (from 0) goes in the flags.
+    pub const RENDER: u16 = 4;
 }

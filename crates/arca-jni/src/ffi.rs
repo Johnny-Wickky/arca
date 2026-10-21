@@ -386,6 +386,15 @@ pub extern "system" fn Java_org_arca_viewer_Native_previewMeta(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_page(
+    env: Env,
+    _class: JObject,
+    outcome: JLong,
+) -> JObject {
+    bytes_result(env, || api::page(outcome))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_arca_viewer_Native_previewItems(
     env: Env,
     _class: JObject,

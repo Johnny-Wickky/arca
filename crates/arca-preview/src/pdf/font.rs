@@ -82,6 +82,7 @@ pub(super) struct Font {
     pub(super) bold: bool,
     pub(super) italic: bool,
     pub(super) mono: bool,
+    pub(super) serif: bool,
 }
 
 /// The result of showing one string.
@@ -127,6 +128,7 @@ impl Font {
             bold: false,
             italic: false,
             mono: false,
+            serif: false,
         }
     }
 
@@ -163,7 +165,12 @@ impl Font {
             italic |= pdf.get(d, "ItalicAngle").as_f64().is_some_and(|a| a != 0.0);
         }
         let mono = family_of(&name) == Family::Mono;
-        Self { kind, to_unicode, bold, italic, mono }
+        let mut serif = family_of(&name) == Family::Serif;
+        if let Some(d) = descriptor.as_dict() {
+            // The descriptor's flags say it too (bit 2: serif).
+            serif |= pdf.get(d, "Flags").as_int().unwrap_or(0) & 2 != 0 && !mono;
+        }
+        Self { kind, to_unicode, bold, italic, mono, serif }
     }
 
     /// `true` if codes are two bytes wide by default.

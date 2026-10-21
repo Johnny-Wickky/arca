@@ -117,6 +117,26 @@ impl JsonWriter {
         self.out.extend_from_slice(value.to_string().as_bytes());
     }
 
+    /// Writes a number with at most two decimals (a coordinate or a size); not-a-number and
+    /// infinities become `0`.
+    pub fn f32(&mut self, value: f32) {
+        self.before_value();
+        let v = if value.is_finite() { value } else { 0.0 };
+        let mut text = format!("{v:.2}");
+        if text.contains('.') {
+            while text.ends_with('0') {
+                text.pop();
+            }
+            if text.ends_with('.') {
+                text.pop();
+            }
+        }
+        if text == "-0" {
+            text = "0".into();
+        }
+        self.out.extend_from_slice(text.as_bytes());
+    }
+
     /// Writes a boolean.
     pub fn bool(&mut self, value: bool) {
         self.before_value();

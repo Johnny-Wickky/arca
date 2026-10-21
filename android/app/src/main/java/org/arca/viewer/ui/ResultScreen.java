@@ -299,6 +299,15 @@ public final class ResultScreen extends Screen {
         if (!preview) {
             col.addView(ui.text(rejected ? R.string.preview_blocked_rejected : R.string.preview_not_available, Ui.CAPTION));
         }
+        if (!rejected && Capabilities.canRender(r.format)) {
+            col.addView(ui.space(8));
+            col.addView(ui.button(R.string.pages_open, Ui.TONAL, R.drawable.ic_file, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    act.push(MainActivity.Route.PAGES);
+                }
+            }), ui.fillWidth());
+        }
         col.addView(ui.space(8));
         View sanitizeButton = ui.button(R.string.action_sanitize, Ui.TONAL, R.drawable.ic_sanitize, new View.OnClickListener() {
             @Override

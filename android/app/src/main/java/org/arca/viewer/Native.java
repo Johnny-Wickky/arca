@@ -45,6 +45,8 @@ public final class Native {
     public static final int OP_SCAN = 1;
     public static final int OP_SANITIZE = 2;
     public static final int OP_PREVIEW = 3;
+    /** The drawing of one page; the flags hold the page number (from 0). */
+    public static final int OP_RENDER = 4;
     public static final int SANITIZE_ACCEPT_REVISIONS = 1;
     public static final int SANITIZE_REMOVE_COMMENTS = 2;
     public static final int SANITIZE_STRIP_METADATA = 4;
@@ -124,6 +126,9 @@ public final class Native {
     public static native byte[] report(long outcome);
 
     public static native byte[] previewMeta(long outcome);
+
+    /** The drawing of a page (JSON) from an {@link #OP_RENDER} run. */
+    public static native byte[] page(long outcome);
 
     public static native byte[] previewItems(long outcome, int section, long from, int count);
 

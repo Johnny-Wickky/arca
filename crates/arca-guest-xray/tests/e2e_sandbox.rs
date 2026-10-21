@@ -18,7 +18,7 @@
 
 use arca_abi::request::{Op, flags, header};
 use arca_container::zip::writer::{Compression, ZipWriter};
-use arca_guest_xray::{decode_preview, decode_report, decode_sanitized};
+use arca_guest_xray::{decode_page, decode_preview, decode_report, decode_sanitized};
 use arca_sandbox::{
     CancelToken, FuelPolicy, GuestModule, GuestOutput, RunOptions, Sandbox, SandboxError,
     SandboxPolicy,
@@ -318,6 +318,11 @@ fn real_world_corpus_if_provided() {
         if !path.is_file() {
             continue;
         }
+        // The guest opens encrypted files with the empty password, the native scan does not;
+        // the encryption tests compare those against their own oracles.
+        if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("enc-")) {
+            continue;
+        }
         let data = std::fs::read(&path).unwrap();
         let out = scan(&sandbox, &m, &data).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         let report = decode_report(out.kind, &out.payload).unwrap();
@@ -398,6 +403,37 @@ fn guest_sanitize_equals_native_sanitize() {
         .unwrap();
     assert_eq!(out.status, arca_abi::status::UNSUPPORTED_FORMAT);
     assert!(decode_sanitized(out.kind, &out.payload).is_err());
+}
+
+#[test]
+fn guest_page_equals_native_page() {
+    let Some(m) = guest() else {
+        eprintln!("skipped: ARCA_GUEST_XRAY_WASM not set");
+        return;
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::default(), [m.pin()]);
+    let pdf =
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/report.pdf"))
+            .unwrap();
+    let policy = arca_preview::PreviewPolicy::default();
+    let out = run_op(&sandbox, &m, Op::Render, 0, &pdf, &RunOptions::new()).unwrap();
+    assert_eq!(out.status, arca_abi::status::OK);
+    let got = decode_page(out.kind, &out.payload).unwrap();
+    assert_eq!(got, arca_preview::render_page(&pdf, 0, &policy).unwrap());
+    assert!(got.width > 0.0 && got.height > 0.0 && got.pages >= 1);
+    assert!(
+        got.prims.iter().any(|p| matches!(p, arca_preview::page::Prim::Text { .. })),
+        "the page has text"
+    );
+
+    // A page that does not exist is a status, not a trap.
+    let out = run_op(&sandbox, &m, Op::Render, 9999, &pdf, &RunOptions::new()).unwrap();
+    assert_ne!(out.status, arca_abi::status::OK);
+    assert!(decode_page(out.kind, &out.payload).is_err());
+
+    // Only PDF has a page view.
+    let out = run_op(&sandbox, &m, Op::Render, 0, &docx(&[]), &RunOptions::new()).unwrap();
+    assert_eq!(out.status, arca_abi::status::UNSUPPORTED_FORMAT);
 }
 
 #[test]

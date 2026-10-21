@@ -18,6 +18,7 @@ import org.arca.viewer.core.Json;
 import org.arca.viewer.core.Model;
 import org.arca.viewer.core.Names;
 import org.arca.viewer.core.PageCache;
+import org.arca.viewer.core.PageDrawing;
 import org.arca.viewer.core.Posture;
 import org.arca.viewer.core.Zoom;
 
@@ -961,11 +962,47 @@ public final class CoreTest {
         eq(3.0f, z, "100 presses stop at the top");
     }
 
+    static void pageDrawing() {
+        String json = "{\"w\":595.5,\"h\":842,\"index\":1,\"pages\":3,\"truncated\":false,\"approx\":true,\"p\":["
+            + "[\"P\",4294901760,0,1.5,0,[0,10,10,1,50,10,2,1,2,3,4,5,6,3]],"
+            + "[\"T\",72,100,12,0.5,40.5,9,4278190080,\"Привет \\\"мир\\\"\"],"
+            + "[\"I\",100,0,0,50,10,20,\"JPEG\"],[\"S\"],[\"C\",0,0,100,100],[\"R\"],[\"?\",1],[]]}";
+        PageDrawing d = PageDrawing.parse(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        eq(595.5f, d.width, "page width");
+        eq(842f, d.height, "page height");
+        eq(1, d.index, "page index");
+        eq(3, d.pages, "page count");
+        check(d.approximate && !d.truncated, "page flags");
+        eq(6, d.prims.size(), "unknown and empty primitives are skipped");
+        PageDrawing.Prim path = d.prims.get(0);
+        eq(PageDrawing.PATH, path.kind, "a path");
+        eq(0xFFFF0000, path.fill, "the fill is ARGB");
+        eq(14, path.ops.length, "path operands");
+        PageDrawing.Prim text = d.prims.get(1);
+        eq(PageDrawing.TEXT, text.kind, "a text run");
+        eq("Привет \"мир\"", text.text, "the text survives JSON escapes");
+        eq(PageDrawing.SERIF | PageDrawing.BOLD, text.style, "style bits");
+        eq(1, d.textRuns(), "text runs");
+        eq("JPEG", d.prims.get(2).label, "the placeholder label");
+        eq(PageDrawing.CLIP, d.prims.get(4).kind, "a clip");
+        for (String bad : new String[] {"{}", "{\"w\":0,\"h\":10,\"p\":[]}", "{\"w\":1e9,\"h\":10,\"p\":[]}",
+            "[1]"}) {
+            try {
+                PageDrawing.parse(bad.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                check(false, "rejects " + bad);
+            } catch (RuntimeException e) {
+                check(true, "rejects " + bad);
+            }
+        }
+        check(Capabilities.canRender("Pdf") && !Capabilities.canRender("Docx") && !Capabilities.canRender(""),
+            "only PDF has a page view");
+    }
+
     // ---------------------------------------------------------------------------------------
 
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "pageDrawing"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -985,6 +1022,7 @@ public final class CoreTest {
                     case "numericLooking": numericLooking(); break;
                     case "needsPassword": needsPassword(); break;
                     case "posture": posture(); break;
+                    case "pageDrawing": pageDrawing(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

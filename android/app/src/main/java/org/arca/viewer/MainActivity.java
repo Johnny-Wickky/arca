@@ -20,6 +20,7 @@ import org.arca.viewer.ui.DiagnosticsScreen;
 import org.arca.viewer.ui.Hinge;
 import org.arca.viewer.ui.HomeScreen;
 import org.arca.viewer.ui.LicensesScreen;
+import org.arca.viewer.ui.PagesScreen;
 import org.arca.viewer.ui.PreviewScreen;
 import org.arca.viewer.ui.ResultScreen;
 import org.arca.viewer.ui.SanitizeScreen;
@@ -38,7 +39,7 @@ import java.util.List;
  */
 public final class MainActivity extends Activity implements Session.Listener, Engine.Listener {
     /** The screens of the app. */
-    public enum Route { HOME, SCAN, RESULT, PREVIEW, SANITIZE, ABOUT, LICENSES, SETTINGS, DIAGNOSTICS }
+    public enum Route { HOME, SCAN, RESULT, PREVIEW, PAGES, SANITIZE, ABOUT, LICENSES, SETTINGS, DIAGNOSTICS }
 
     private static final int REQ_OPEN = 1;
     private static final int REQ_SAVE = 2;
@@ -96,7 +97,7 @@ public final class MainActivity extends Activity implements Session.Listener, En
         boolean hasDoc = s.phase() != Session.Phase.IDLE;
         List<Route> keep = new ArrayList<>();
         for (Route r : ROUTES) {
-            boolean needsDoc = r == Route.SCAN || r == Route.RESULT || r == Route.PREVIEW || r == Route.SANITIZE;
+            boolean needsDoc = r == Route.SCAN || r == Route.RESULT || r == Route.PREVIEW || r == Route.PAGES || r == Route.SANITIZE;
             if (!needsDoc || hasDoc) {
                 keep.add(r);
             }
@@ -187,6 +188,7 @@ public final class MainActivity extends Activity implements Session.Listener, En
             case SCAN: return new ScanScreen(this);
             case RESULT: return new ResultScreen(this);
             case PREVIEW: return new PreviewScreen(this);
+            case PAGES: return new PagesScreen(this);
             case SANITIZE: return new SanitizeScreen(this);
             case ABOUT: return new AboutScreen(this);
             case LICENSES: return new LicensesScreen(this);

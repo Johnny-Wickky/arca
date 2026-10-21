@@ -74,6 +74,15 @@ public final class Session {
         }
     }
 
+    /** State of the page being drawn (the page view of a document). */
+    public static final class PageState {
+        public boolean running;
+        /** The page asked for (zero-based). */
+        public int index;
+        public org.arca.viewer.core.PageDrawing drawing;
+        public Failure failure;
+    }
+
     /** State of the sterile copy of the current document. */
     public static final class SanitizeState {
         public boolean running;
@@ -127,6 +136,7 @@ public final class Session {
     private long job;
     private final PreviewState preview = new PreviewState();
     private final SanitizeState sanitize = new SanitizeState();
+    private final PageState page = new PageState();
 
     private Session() {}
 
@@ -211,6 +221,10 @@ public final class Session {
 
     public Model.Report report() {
         return report;
+    }
+
+    public PageState page() {
+        return page;
     }
 
     public PreviewState preview() {
@@ -667,6 +681,7 @@ public final class Session {
 
     private void resetPreview() {
         previewEpoch++;
+        resetPage();
         preview.running = false;
         preview.cancelled = false;
         preview.outcome = 0;
@@ -761,6 +776,81 @@ public final class Session {
                         preview.meta = parsed;
                         preview.cancelled = failed != null && failed.status == Native.CANCELLED;
                         preview.failure = preview.cancelled ? null : failed;
+                        changed();
+                    }
+                });
+            }
+        });
+    }
+
+    private void resetPage() {
+        page.running = false;
+        page.drawing = null;
+        page.failure = null;
+    }
+
+    /** Forgets the drawn page (when the page view is left). */
+    public void closePage() {
+        if (page.running) {
+            cancel();
+        }
+        previewEpoch++;
+        resetPage();
+    }
+
+    /** Draws page {@code index} (zero-based) of the document in the sandbox. */
+    public void renderPage(final int index) {
+        if (phase != Phase.READY || page.running) {
+            return;
+        }
+        final int ep = epoch;
+        final long d = docHandle();
+        resetPage();
+        final int pep = ++previewEpoch;
+        page.running = true;
+        page.index = index;
+        changed();
+        worker.execute(new Runnable() {
+            @Override
+            public void run() {
+                long j = Native.jobNew();
+                setJob(ep, j);
+                long outcome = Native.run(j, d, Native.OP_RENDER, index);
+                clearJob(ep, j);
+                Native.jobFree(j);
+                Failure f = null;
+                org.arca.viewer.core.PageDrawing drawing = null;
+                if (outcome <= 0) {
+                    f = new Failure((int) -outcome, "run");
+                } else {
+                    int status = Native.outcomeStatus(outcome);
+                    if (status != Native.OK) {
+                        f = new Failure(status, describe(outcome));
+                    } else {
+                        try {
+                            byte[] json = Native.page(outcome);
+                            if (json == null) {
+                                throw new IllegalStateException("no page");
+                            }
+                            drawing = org.arca.viewer.core.PageDrawing.parse(json);
+                        } catch (RuntimeException e) {
+                            f = new Failure(F_PARSE, e.toString());
+                        }
+                    }
+                    Native.outcomeFree(outcome);
+                }
+                final Failure failed = f;
+                final org.arca.viewer.core.PageDrawing shown = drawing;
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!current(ep) || pep != previewEpoch) {
+                            return;
+                        }
+                        page.running = false;
+                        page.drawing = shown;
+                        boolean cancelled = failed != null && failed.status == Native.CANCELLED;
+                        page.failure = cancelled ? null : failed;
                         changed();
                     }
                 });

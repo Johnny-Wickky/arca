@@ -44,6 +44,7 @@ mod msg;
 mod numfmt;
 mod odf;
 mod opc;
+pub mod page;
 mod pdf;
 mod plain;
 mod ppt;
@@ -201,6 +202,27 @@ pub fn sanitize_pdf(
             remove_comments: options.remove_comments,
         },
     )
+}
+
+/// Draws page `index` (from 0) of a document: what is on it, as a list of things to draw.
+///
+/// Only PDF pages are drawn so far. The format is determined from content only.
+///
+/// # Errors
+/// See [`PreviewError`]; [`PreviewError::Unsupported`] for formats that have no page drawing,
+/// [`PreviewError::Malformed`] for a page that does not exist.
+pub fn render_page(
+    data: &[u8],
+    index: usize,
+    policy: &PreviewPolicy,
+) -> Result<page::PageModel, PreviewError> {
+    if data.len() > policy.max_input_bytes {
+        return Err(PreviewError::TooLarge(policy.max_input_bytes));
+    }
+    match arca_xray::format::sniff(data) {
+        arca_xray::format::Magic::Pdf => pdf::render(data, index, policy),
+        _ => Err(PreviewError::Unsupported(detect::format_of(data, policy))),
+    }
 }
 
 /// Extracts the visible content of `data`.
