@@ -1,7 +1,7 @@
 //! "Стерилизация в один тап" — One-Tap Sanitize.
 //!
-//! [`sanitize`] rebuilds an OOXML package (Word, Excel, PowerPoint, Visio)
-//! without:
+//! [`sanitize`] rebuilds an OOXML package (Word, Excel, PowerPoint, Visio) or an
+//! OpenDocument package (Writer, Calc, Impress, Draw) without:
 //!
 //! * macro projects, macro sheets, ribbon callbacks, ActiveX controls,
 //!   embedded OLE objects / packages and embedded fonts;
@@ -23,10 +23,15 @@
 //! call fails rather than return a copy that still contains active or remote
 //! content.
 //!
+//! For OpenDocument the same goes for Basic and script libraries, event
+//! listeners, DDE links, plug-ins, OLE frames, links that leave the package,
+//! thumbnails, signatures and embedded objects; see `odf.rs`.
+//!
 //! Legacy binary formats (`.doc`, `.xls`, `.ppt`), RTF and PDF are not
 //! rebuilt structurally: their safe export path is the flattened PDF produced
 //! by the Phase 3 renderer. [`sanitize`] reports them as unsupported.
 
+mod odf;
 mod opc;
 
 use core::fmt;
@@ -143,7 +148,7 @@ impl fmt::Display for SanitizeError {
 
 impl core::error::Error for SanitizeError {}
 
-/// Produces a sterile copy of an OOXML document.
+/// Produces a sterile copy of an OOXML or OpenDocument document.
 ///
 /// # Errors
 /// See [`SanitizeError`].
@@ -156,12 +161,25 @@ pub fn sanitize(
     if before.verdict == Verdict::Rejected {
         return Err(SanitizeError::Rejected(before.rejection));
     }
-    let supported = before.format.is_opc()
-        && !matches!(before.format, FileFormat::Xlsb | FileFormat::Xps | FileFormat::OpcOther);
+    let is_odf = matches!(
+        before.format,
+        FileFormat::Odt
+            | FileFormat::Ods
+            | FileFormat::Odp
+            | FileFormat::Odg
+            | FileFormat::OdfOther
+    );
+    let supported = is_odf
+        || (before.format.is_opc()
+            && !matches!(before.format, FileFormat::Xlsb | FileFormat::Xps | FileFormat::OpcOther));
     if !supported {
         return Err(SanitizeError::Unsupported(before.format));
     }
-    let (bytes, format, actions) = opc::rebuild(data, policy, options, before.format)?;
+    let (bytes, format, actions) = if is_odf {
+        odf::rebuild(data, policy, options, before.format)?
+    } else {
+        opc::rebuild(data, policy, options, before.format)?
+    };
     let verification = scan(&bytes, policy);
     if verification.verdict == Verdict::Rejected {
         return Err(SanitizeError::Verification(format!(

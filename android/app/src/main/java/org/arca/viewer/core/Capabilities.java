@@ -40,7 +40,8 @@ public final class Capabilities {
         "Docx", "Docm", "Dotx", "Dotm",
         "Xlsx", "Xlsm", "Xltx", "Xltm", "Xlam",
         "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm",
-        "Vsdx", "Vsdm", "VisioTemplateOrStencil");
+        "Vsdx", "Vsdm", "VisioTemplateOrStencil",
+        "Odt", "Ods", "Odp", "Odg", "OdfOther");
 
     /** Whether the engine can build a safe preview of {@code format}. */
     public static boolean canPreview(String format) {
