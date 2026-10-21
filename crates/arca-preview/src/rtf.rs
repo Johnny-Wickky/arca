@@ -1,9 +1,9 @@
 //! Rich Text Format.
 //!
 //! A single forward pass with an explicit group stack (no recursion). Everything that is
-//! not plainly text is dropped: font and colour tables, style sheets, list tables, binary
+//! not plainly text is dropped: font and colour tables, list tables, binary
 //! data (`\binN` is skipped by its declared length), unknown `\*` destinations, shape
-//! properties. Embedded pictures and OLE objects become placeholders. Field instructions
+//! properties. The style sheet is read only for the names of heading styles. Embedded pictures and OLE objects become placeholders. Field instructions
 //! are never executed; only `HYPERLINK` targets are kept, as display-only links.
 
 use std::collections::BTreeMap;
@@ -35,6 +35,8 @@ enum Dest {
     Skip,
     /// Font table (names and character sets are read).
     FontTbl,
+    /// Style sheet (only the names of paragraph styles are read).
+    StyleSheet,
     /// A list label such as `1.` or a bullet.
     Marker,
     /// Field instruction.
@@ -194,6 +196,22 @@ struct Parser<'a, 's, 'p> {
     high_surrogate: Option<u16>,
     ignorable: bool,
 
+    // Styles and nested tables.
+    /// Heading and title styles of the style sheet, by style number.
+    styles: BTreeMap<i32, ParaStyle>,
+    /// Style being defined in the style sheet, `-1` outside one.
+    style_id: i32,
+    style_name: String,
+    style_level: Option<u8>,
+    /// Style of the current paragraph (`\sN`), `-1` for none.
+    pstyle: i32,
+    /// Table nesting depth of the current paragraph (`\itapN`).
+    itap: u8,
+    /// Finished paragraphs of the nested cell being written.
+    nest_paras: Vec<Paragraph>,
+    /// Cells of the nested row being written.
+    nest_cells: Vec<Vec<Paragraph>>,
+
     // Findings.
     objects: u64,
     lossy_codepage: bool,
@@ -240,6 +258,14 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             skip_left: 0,
             high_surrogate: None,
             ignorable: false,
+            styles: BTreeMap::new(),
+            style_id: -1,
+            style_name: String::new(),
+            style_level: None,
+            pstyle: -1,
+            itap: 0,
+            nest_paras: Vec::new(),
+            nest_cells: Vec::new(),
             objects: 0,
             lossy_codepage: false,
         }
@@ -289,6 +315,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             self.close_group();
         }
         self.end_paragraph();
+        self.flush_nested();
         self.flush_table();
     }
 
@@ -495,6 +522,25 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 }
                 return;
             }
+            // Localised style names are written with Unicode escapes.
+            Dest::StyleSheet if matches!(name, "u" | "uc") => {}
+            Dest::StyleSheet => {
+                match name {
+                    "s" => {
+                        self.style_id = param.unwrap_or(-1);
+                        self.style_name.clear();
+                        self.style_level = None;
+                    }
+                    "outlinelevel" => {
+                        self.style_level = param
+                            .and_then(|n| u8::try_from(n).ok())
+                            .filter(|&n| n < 6)
+                            .map(|n| n + 1);
+                    }
+                    _ => {}
+                }
+                return;
+            }
             Dest::Pict => {
                 self.pict_media = match name {
                     "pngblip" => "png",
@@ -570,7 +616,11 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 self.outline = None;
                 self.ilvl = 0;
                 self.in_table = false;
+                self.pstyle = -1;
+                self.itap = 0;
             }
+            "s" => self.pstyle = param.unwrap_or(-1),
+            "itap" => self.itap = param.and_then(|n| u8::try_from(n).ok()).unwrap_or(0),
             "ql" => self.align = Align::Start,
             "qc" => self.align = Align::Center,
             "qr" => self.align = Align::End,
@@ -584,8 +634,10 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             "line" => self.text_char('\n'),
             "tab" => self.text_char('\t'),
             "page" | "column" => {}
-            "cell" | "nestcell" => self.end_cell(),
-            "row" | "nestrow" => self.end_row(),
+            "cell" => self.end_cell(),
+            "row" => self.end_row(),
+            "nestcell" => self.end_nested_cell(),
+            "nestrow" => self.end_nested_row(),
             "trowd" => {
                 self.in_table = true;
             }
@@ -615,6 +667,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
         }
         let dest = match name {
             "fonttbl" => Dest::FontTbl,
+            "stylesheet" => Dest::StyleSheet,
             "pict" => Dest::Pict,
             "object" => Dest::Object,
             "objclass" => Dest::ObjClass,
@@ -624,7 +677,8 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             "header" | "headerl" | "headerr" | "headerf" | "footer" | "footerl" | "footerr"
             | "footerf" => Dest::Side,
             // Destinations whose content is text we do want.
-            "fldrslt" | "field" | "shp" | "shpinst" | "shptxt" | "shppict" | "ud" | "upr" => {
+            "fldrslt" | "field" | "shp" | "shpinst" | "shptxt" | "shppict" | "ud" | "upr"
+            | "nesttableprops" => {
                 if name == "fldrslt" {
                     let href = std::mem::take(&mut self.pending_href);
                     self.g_mut().href = href;
@@ -632,11 +686,11 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 return true;
             }
             // Known destinations with nothing to show.
-            "colortbl" | "stylesheet" | "info" | "private1" | "pgdsctbl" | "listtable"
-            | "listoverridetable" | "revtbl" | "rsidtbl" | "generator" | "xmlnstbl"
-            | "themedata" | "colorschememapping" | "datastore" | "latentstyles" | "fchars"
-            | "lchars" | "objdata" | "result" | "background" | "template" | "defchp" | "defpap"
-            | "pn" | "pnseclvl" | "listpicture" | "docvar" | "sp" | "sn" | "sv" | "shprslt"
+            "colortbl" | "info" | "private1" | "pgdsctbl" | "listtable" | "listoverridetable"
+            | "revtbl" | "rsidtbl" | "generator" | "xmlnstbl" | "themedata"
+            | "colorschememapping" | "datastore" | "latentstyles" | "fchars" | "lchars"
+            | "objdata" | "result" | "background" | "template" | "defchp" | "defpap" | "pn"
+            | "pnseclvl" | "listpicture" | "docvar" | "sp" | "sn" | "sv" | "shprslt"
             | "nonshppict" | "bkmkstart" | "bkmkend" | "xe" | "tc" | "txe" | "ftnsep"
             | "ftnsepc" | "aftnsep" | "aftnsepc" | "datafield" | "mmath" | "wgrffmtfilter"
             | "fontemb" | "rsidroot" | "protusertbl" | "userprops" | "falt" | "panose"
@@ -649,6 +703,11 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             Dest::Footnote => self.note_b = ParaBuilder::new(),
             Dest::Side => self.side_b = ParaBuilder::new(),
             Dest::Marker => self.marker_pending.clear(),
+            Dest::StyleSheet => {
+                self.style_id = -1;
+                self.style_name.clear();
+                self.style_level = None;
+            }
             Dest::Pict => {
                 self.pict_media.clear();
                 self.pict_bin = 0;
@@ -740,7 +799,14 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             }
             Dest::Marker => {
                 if self.marker_pending.len() < 32 && c != '\t' {
-                    self.marker_pending.push(c);
+                    self.marker_pending.push(marker_glyph(c));
+                }
+            }
+            Dest::StyleSheet => {
+                if c == ';' {
+                    self.finish_style();
+                } else if self.style_name.len() < 128 {
+                    self.style_name.push(c);
                 }
             }
             Dest::FldInst => {
@@ -770,6 +836,22 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 }
             }
             Dest::Skip | Dest::Pict | Dest::Object => {}
+        }
+    }
+
+    /// A style definition ended (`Heading 1;`): remember it if it is a heading or a title.
+    fn finish_style(&mut self) {
+        let name = std::mem::take(&mut self.style_name).trim().to_lowercase();
+        let level = self.style_level.take().or_else(|| heading_level(&name));
+        let id = std::mem::replace(&mut self.style_id, -1);
+        let style = match (name.as_str(), level) {
+            ("title" | "название", _) => ParaStyle::Title,
+            ("subtitle" | "подзаголовок", _) => ParaStyle::Subtitle,
+            (_, Some(n)) => ParaStyle::heading(n),
+            _ => return,
+        };
+        if id > 0 && self.styles.len() < MAX_FONTS {
+            self.styles.insert(id, style);
         }
     }
 
@@ -806,7 +888,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
         let marker = std::mem::take(&mut self.marker);
         let ps = match self.outline {
             Some(n) if n < 6 => ParaStyle::heading(n + 1),
-            _ => ParaStyle::Body,
+            _ => self.styles.get(&self.pstyle).copied().unwrap_or(ParaStyle::Body),
         };
         let mut p = self.para.take(ps);
         p.align = self.align;
@@ -820,7 +902,11 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
     fn end_paragraph(&mut self) {
         let p = self.take_paragraph();
         if let Some(p) = p {
-            if self.in_table {
+            if self.in_table && self.itap >= 2 {
+                if self.nest_paras.len() < 4_096 {
+                    self.nest_paras.push(p);
+                }
+            } else if self.in_table {
                 self.cell_paras.push(p);
             } else {
                 self.flush_table();
@@ -836,6 +922,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
     }
 
     fn end_cell(&mut self) {
+        self.flush_nested();
         if let Some(p) = self.take_paragraph() {
             self.cell_paras.push(p);
         }
@@ -846,6 +933,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
     }
 
     fn end_row(&mut self) {
+        self.flush_nested();
         if let Some(p) = self.take_paragraph() {
             self.cell_paras.push(p);
         }
@@ -860,6 +948,54 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
         self.in_table = false;
         for n in std::mem::take(&mut self.pending_notes) {
             self.push_block(Block::Para(n));
+        }
+    }
+
+    /// A cell of a nested table ended (`\nestcell`).
+    fn end_nested_cell(&mut self) {
+        let mut paras = std::mem::take(&mut self.nest_paras);
+        if let Some(p) = self.take_paragraph() {
+            paras.push(p);
+        }
+        if self.nest_cells.len() < 4_096 {
+            self.nest_cells.push(paras);
+        }
+    }
+
+    /// A row of a nested table ended (`\nestrow`): like in DOCX, it becomes one paragraph of
+    /// the cell that contains the table, its cells separated by `│`.
+    fn end_nested_row(&mut self) {
+        if !self.nest_paras.is_empty() {
+            self.end_nested_cell();
+        }
+        let cells = std::mem::take(&mut self.nest_cells);
+        if cells.is_empty() {
+            return;
+        }
+        let mut b = ParaBuilder::new();
+        for (i, cell) in cells.iter().enumerate() {
+            if i > 0 {
+                b.text(" │ ", 0, "");
+            }
+            for (k, p) in cell.iter().enumerate() {
+                if k > 0 {
+                    b.text(" ", 0, "");
+                }
+                for r in &p.runs {
+                    b.text(&r.text, r.style, &r.href);
+                }
+            }
+        }
+        let p = b.take(ParaStyle::Body);
+        if !p.is_blank() {
+            self.cell_paras.push(p);
+        }
+    }
+
+    /// Nested cells that never got their `\nestrow` (a damaged file) still keep their text.
+    fn flush_nested(&mut self) {
+        if !self.nest_paras.is_empty() || !self.nest_cells.is_empty() {
+            self.end_nested_row();
         }
     }
 
@@ -880,6 +1016,25 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             self.stopped = true;
         }
     }
+}
+
+/// A list label character that is a private-use glyph of the Symbol/Wingdings fonts
+/// (Word and LibreOffice write bullets as `U+F0B7` and friends) becomes a visible bullet.
+fn marker_glyph(c: char) -> char {
+    match c {
+        '\u{F0A7}' | '\u{F06E}' | '\u{F0A0}' => '▪',
+        '\u{F0D8}' => '➢',
+        '\u{F0FC}' => '✓',
+        '\u{F076}' => '❖',
+        '\u{F000}'..='\u{F8FF}' => '•',
+        _ => c,
+    }
+}
+
+/// `1…6` for style names such as `heading 2` or `заголовок 3`.
+fn heading_level(name: &str) -> Option<u8> {
+    let rest = name.strip_prefix("heading").or_else(|| name.strip_prefix("заголовок"))?;
+    rest.trim().parse::<u8>().ok().filter(|n| (1..=9).contains(n)).map(|n| n.min(6))
 }
 
 /// Removes trailing white space from a paragraph.
@@ -1098,6 +1253,66 @@ mod tests {
         assert_eq!(table.rows[0].cells.len(), 2);
         assert_eq!(table.rows[0].cells[1].paras[0].text(), "b");
         assert_eq!(paras.last().map(|p| p.text()), Some("After".to_owned()));
+    }
+
+    #[test]
+    fn symbol_font_bullets_are_visible() {
+        // LibreOffice and Word write bullets as private-use glyphs of the Symbol font.
+        let p = rtf(
+            r"\pard{\listtext\pard\plain \u61623\'3f\tab}One\par\pard{\listtext\pard\plain \u61607\'a7\tab}Two\par",
+        );
+        let paras = paragraphs(p.sections.first().expect("s"));
+        assert_eq!(paras.len(), 2);
+        assert_eq!((paras[0].marker.as_str(), paras[0].text()), ("•", "One".to_owned()));
+        assert_eq!((paras[1].marker.as_str(), paras[1].text()), ("▪", "Two".to_owned()));
+    }
+
+    #[test]
+    fn heading_styles_come_from_the_style_sheet() {
+        let p = rtf(
+            r"{\stylesheet{\ql Normal;}{\s1\ql\sbasedon0\snext0 heading 1;}{\s2\outlinelevel1\ql Custom;}{\s3\ql Title;}{\*\cs10 Default Paragraph Font;}{\s4\ql \u1047?\u1072?\u1075?\u1086?\u1083?\u1086?\u1074?\u1086?\u1082? 3;}}\pard\s1 One\par\pard\s2 Two\par\pard\s3 Three\par\pard\s4 Four\par\pard\s0 Five\par\pard\s1\outlinelevel3 Six\par\pard Seven\par",
+        );
+        let styles: Vec<_> = paragraphs(p.sections.first().expect("s"))
+            .iter()
+            .map(|p| (p.text(), p.style))
+            .collect();
+        assert_eq!(
+            styles,
+            [
+                ("One".to_owned(), ParaStyle::Heading1),
+                ("Two".to_owned(), ParaStyle::Heading2),
+                ("Three".to_owned(), ParaStyle::Title),
+                ("Four".to_owned(), ParaStyle::Heading3),
+                ("Five".to_owned(), ParaStyle::Body),
+                ("Six".to_owned(), ParaStyle::Heading4),
+                ("Seven".to_owned(), ParaStyle::Body),
+            ]
+        );
+        // The style's text is not document text.
+        assert!(!text_of(p.sections.first().expect("s")).contains("Normal"));
+    }
+
+    #[test]
+    fn nested_tables_do_not_widen_the_outer_row() {
+        let p = rtf(
+            r"\trowd\cellx3000\cellx6000\pard\intbl\itap1 A\cell\pard\intbl\itap1 Outer\par\pard\intbl\itap2 N1\nestcell\pard\intbl\itap2 N2\nestcell{\*\nesttableprops\trowd\cellx1000\cellx2000\nestrow}\pard\intbl\itap1\cell\row\pard After\par",
+        );
+        let sec = p.sections.first().expect("s");
+        let table = sec
+            .blocks
+            .iter()
+            .find_map(|b| if let Block::Table(t) = b { Some(t) } else { None })
+            .expect("table");
+        assert_eq!(table.rows.len(), 1);
+        let row = table.rows.first().expect("row");
+        assert_eq!(row.cells.len(), 2, "the nested cells stay inside the outer cell");
+        let second: Vec<String> =
+            row.cells.get(1).expect("cell").paras.iter().map(Paragraph::text).collect();
+        assert_eq!(second, ["Outer", "N1 │ N2"]);
+        assert!(lines(&p).contains(&"After".to_owned()));
+        // A nested row that never ends keeps its text.
+        let p = rtf(r"\trowd\cellx3000\pard\intbl\itap2 Lost\nestcell\pard\intbl\itap1\cell\row");
+        assert!(text_of(p.sections.first().expect("s")).contains("Lost"));
     }
 
     #[test]
