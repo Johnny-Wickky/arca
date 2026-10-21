@@ -74,6 +74,18 @@ jobs:
           name: arca_guest_xray.wasm
           path: target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm
 
+  reproducible:
+    name: reproducible build (guest and JNI library, two directories)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: build twice and compare SHA-256
+        run: bash tools/check-reproducible.sh
+
   supply-chain:
     name: cargo-deny (licenses, advisories, bans, sources)
     runs-on: ubuntu-24.04
