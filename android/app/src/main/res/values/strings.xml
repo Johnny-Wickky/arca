@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     English is the source language; values-ru/ must have exactly the same names and the same
+     placeholders (tools/android/check_resources.py enforces both). Counts are written as
+     "Label: N" so that no sentence needs a plural form. -->
+<resources>
+    <string name="app_name" translatable="false">Arca</string>
+
+    <!-- Common -->
+    <string name="back">Back</string>
+    <string name="back_home">Back to start</string>
+    <string name="cancel">Cancel</string>
+    <string name="close">Close</string>
+    <string name="copy">Copy</string>
+    <string name="copied">Copied</string>
+    <string name="retry">Try again</string>
+    <string name="settings">Settings</string>
+    <string name="open_in_browser">Open in browser</string>
+    <string name="no_browser">No browser is installed to open this address.</string>
+    <string name="no_file_picker">This device has no file picker. Open the document from a file manager or share it to Arca.</string>
+    <string name="share_without_file">Nothing to check: the other app did not send a file.</string>
+    <string name="unsupported_source">Arca only opens files that the system hands over (content or file addresses).</string>
+    <string name="technical_label">Technical details</string>
+
+    <!-- Start screen -->
+    <string name="home_tagline">Open infected documents safely</string>
+    <string name="home_blurb">Choose a document. Arca inspects it inside an isolated sandbox that has no access to your files, network or other apps, shows what is hidden in it, and displays a safe preview as plain text. Nothing in the document is ever run.</string>
+    <string name="home_open">Open a document</string>
+    <string name="home_drop_hint">You can also drop a file onto this window or share it to Arca from another app.</string>
+    <string name="home_engine_ready">Sandbox is ready</string>
+    <string name="home_engine_failed">Sandbox could not start</string>
+    <string name="home_engine_starting">Starting the sandbox…</string>
+    <string name="home_engine_detail">Engine %1$s · module %2$s</string>
+    <string name="home_no_network">This app has no network permission. Documents never leave your device.</string>
+    <string name="passport_fallback_title">Patron Passport</string>
+    <string name="passport_fallback_body">Arca is free software made by people who ask for nothing in return but support. See who they are and how to help.</string>
+    <string name="stat_documents">Documents checked</string>
+    <string name="stat_trackers">Hidden trackers</string>
+    <string name="stat_active">Active threats</string>
+    <string name="stat_findings">Findings</string>
+    <string name="licenses_title">Licences</string>
+    <string name="diagnostics_title">Diagnostics</string>
+    <string name="about_title">About and support</string>
+
+    <!-- Scan progress -->
+    <string name="scan_title">Checking</string>
+    <string name="scan_reading">Reading the file…</string>
+    <string name="scan_inspecting">Inspecting inside the sandbox…</string>
+    <string name="scan_note">The document is only read as data in an isolated sandbox. Nothing in it is opened, run or loaded from the network.</string>
+
+    <!-- Errors -->
+    <string name="err_too_large_title">File is too large</string>
+    <string name="err_too_large_text">The file is bigger than the limit that keeps the sandbox safe on this device.</string>
+    <string name="err_too_large_limit">The limit on this device is %1$d MiB.</string>
+    <string name="err_timeout_title">Took too long</string>
+    <string name="err_timeout_text">Checking this file exceeded its time limit. A file that is built to waste time is itself a sign of attack. It was stopped and nothing was opened.</string>
+    <string name="err_rejected_title">File rejected</string>
+    <string name="err_rejected_text">The file is damaged or built in a way that no honest program produces. It was refused before any of it was interpreted.</string>
+    <string name="err_unsupported_title">Not a supported document</string>
+    <string name="err_unsupported_text">Arca does not know how to read this kind of file, so it shows nothing from it. The file has not been opened or run.</string>
+    <string name="err_encrypted_title">Document is encrypted</string>
+    <string name="err_encrypted_text">The content is protected by a password, so it cannot be inspected. Arca never asks for passwords and does not try to guess them.</string>
+    <string name="err_resource_title">Resource limit reached</string>
+    <string name="err_resource_text">The file tried to use more memory or processing than the sandbox allows (a decompression bomb, for example). It was stopped safely.</string>
+    <string name="err_io_title">Could not read or write the file</string>
+    <string name="err_io_text">The system refused the access or the storage is not available. Try again, or pick the file in a different way.</string>
+    <string name="err_open_title">Could not open the file</string>
+    <string name="err_open_text">The app that provided the file did not let Arca read it. Pick the file again with the Open button.</string>
+    <string name="err_empty_title">The file is empty</string>
+    <string name="err_empty_text">There is nothing in this file to check.</string>
+    <string name="err_engine_title">Sandbox unavailable</string>
+    <string name="err_engine_text">The isolated engine did not start, so no document can be checked safely. Nothing was opened. See Diagnostics for the reason.</string>
+    <string name="err_failed_title">Checking failed</string>
+    <string name="err_failed_text">An unexpected error stopped the check. The document was not opened and nothing was run.</string>
+
+    <!-- Result: verdicts -->
+    <string name="result_title">Threat X-Ray</string>
+    <string name="verdict_clean_title">Nothing dangerous found</string>
+    <string name="verdict_clean_text">No macros, remote content, hidden trackers or other active parts were found in this document.</string>
+    <string name="verdict_trackers_title">Hidden trackers found</string>
+    <string name="verdict_trackers_text">The document would contact other servers, or carry hidden data about you, when opened in a regular program. Arca does neither.</string>
+    <string name="verdict_active_title">Active content found and blocked</string>
+    <string name="verdict_active_text">The document contains parts that run code or take actions (macros, objects, scripts). In Arca none of them can run.</string>
+    <string name="verdict_rejected_title">Dangerous or malformed file</string>
+    <string name="verdict_rejected_text">The file is built to exploit programs or to hide its content. Nothing was interpreted. Do not open it elsewhere.</string>
+    <string name="verdict_rejected_reason">Reason: %1$s</string>
+    <string name="verdict_unverified_title">Could not be fully verified</string>
+    <string name="verdict_unverified_text">Part of the document could not be inspected, so a clean result cannot be promised. Treat it as untrusted.</string>
+    <string name="verdict_label">Verdict</string>
+
+    <!-- Result: file, counters, actions -->
+    <string name="file_label">File</string>
+    <string name="format_label">Format</string>
+    <string name="sha256_label">SHA-256</string>
+    <string name="copy_hash">Copy hash</string>
+    <string name="action_preview">Safe preview</string>
+    <string name="preview_blocked_rejected">A rejected file is not displayed.</string>
+    <string name="preview_not_available">A preview is not available for this format.</string>
+    <string name="action_sanitize">Create a sterile copy</string>
+    <string name="sanitize_blocked_rejected">A rejected file cannot be rebuilt.</string>
+    <string name="sanitize_not_available">A sterile copy is not available for this format.</string>
+
+    <!-- Result: tabs and lists -->
+    <string name="tab_findings">Findings</string>
+    <string name="tab_macros">Macros</string>
+    <string name="tab_links">Links</string>
+    <string name="tab_meta">Metadata</string>
+    <string name="tab_embedded">Embedded</string>
+    <string name="tab_details">Details</string>
+    <string name="nothing_found">Nothing to report here.</string>
+    <string name="show_more">Show more (%1$d left)</string>
+    <string name="category_other">Other</string>
+    <string name="blocked">Blocked</string>
+    <string name="show_explanation">Explain</string>
+    <string name="hide_explanation">Hide</string>
+    <string name="macros_note">The source of every macro is shown as text for you to read. It cannot run here.</string>
+    <string name="macro_autoexec">Runs on its own when the document opens</string>
+    <string name="macro_suspicious">Suspicious calls</string>
+    <string name="macro_iocs">Addresses and commands in the code</string>
+    <string name="macro_source">Source</string>
+    <string name="macro_truncated">The source is long, so only the beginning is shown.</string>
+    <string name="copy_source">Copy source</string>
+    <string name="links_note">Addresses the document refers to. Arca never follows them. Tap one to read it in full.</string>
+    <string name="ref_auto">Loads by itself</string>
+    <string name="link_dialog_title">Address in the document</string>
+    <string name="meta_note">Details about who made the document and how. Documents often carry names, paths and machine names that you may not want to share.</string>
+    <string name="embedded_note">Files and objects stored inside the document. They are listed, never opened.</string>
+    <string name="emb_file">Name</string>
+    <string name="emb_class">Class</string>
+    <string name="emb_size">Size</string>
+    <string name="emb_location">Location in the document</string>
+    <string name="stat_parts">Parts in the container</string>
+    <string name="stat_xml">XML elements read</string>
+    <string name="stat_inflated">Size when unpacked</string>
+    <string name="stat_nesting">Deepest nesting</string>
+    <string name="details_note">Numbers from the inspection, useful for a bug report.</string>
+
+    <!-- Result: sharing the report -->
+    <string name="share_report">Share the report</string>
+    <string name="share_report_subject">Arca report</string>
+    <string name="share_report_header">Arca threat report</string>
+    <string name="share_report_footer">Made by Arca. The document was inspected in an isolated sandbox and was not opened or run.</string>
+
+    <!-- Preview -->
+    <string name="preview_title">Safe preview</string>
+    <string name="preview_building">Building the preview…</string>
+    <string name="show_hidden">Show hidden content</string>
+    <string name="hide_hidden">Hide hidden content</string>
+    <string name="notices_summary">What this preview leaves out: %1$d</string>
+    <string name="notice_truncated_preview">The document is very long, so only the first part is shown.</string>
+    <string name="section_body">Document</string>
+    <string name="section_sheet">Sheet %1$d</string>
+    <string name="section_slide">Slide %1$d</string>
+    <string name="section_page">Page %1$d</string>
+    <string name="section_comments">Comments</string>
+    <string name="section_notes">Notes</string>
+    <string name="section_headers">Headers and footers</string>
+    <string name="section_hidden">%1$s (hidden)</string>
+    <string name="section_empty">Nothing to show in this part.</string>
+    <string name="preview_nothing">There is nothing to show in this document.</string>
+    <string name="image_placeholder">Picture (not shown)</string>
+    <string name="image_remote">Would load from the internet</string>
+    <string name="cell_dialog_title">Cell content</string>
+
+    <!-- Sterile copy -->
+    <string name="sanitize_title">Sterile copy</string>
+    <string name="sanitize_intro">Arca rebuilds the document from its safe parts only and checks the result again. The copy opens in any program without macros, remote content or other active parts.</string>
+    <string name="sanitize_always_title">Always removed</string>
+    <string name="sanitize_always_text">Macros and scripts, embedded and linked objects, ActiveX, remote templates and images, links that load by themselves, data connections, DDE and risky formulas, and anything the container hides.</string>
+    <string name="sanitize_options_title">Also remove</string>
+    <string name="opt_metadata">Author and document properties</string>
+    <string name="opt_metadata_desc">Names, company, paths, printer and editing history.</string>
+    <string name="opt_custom_xml">Custom XML data</string>
+    <string name="opt_custom_xml_desc">Hidden data blocks that other programs attach to the document.</string>
+    <string name="opt_comments">Comments</string>
+    <string name="opt_comments_desc">Remarks of reviewers. The text of the document is not changed.</string>
+    <string name="opt_revisions">Accept all tracked changes</string>
+    <string name="opt_revisions_desc">Deleted text disappears and inserted text becomes normal text. This changes the document.</string>
+    <string name="sanitize_original_untouched">The original file is never changed. The copy is saved only where you choose.</string>
+    <string name="sanitize_start">Create the copy</string>
+    <string name="sanitize_building">Rebuilding the document…</string>
+    <string name="sanitize_building_note">Then it is inspected again before you can save it.</string>
+    <string name="sanitize_done_clean_title">The copy is clean</string>
+    <string name="sanitize_done_clean_text">It was inspected again: no active content, remote content or hidden trackers remain.</string>
+    <string name="sanitize_done_unverified_title">The copy could not be fully verified</string>
+    <string name="sanitize_done_unverified_text">It was rebuilt without the dangerous parts, but part of it could not be inspected again. Open it with care.</string>
+    <string name="sanitize_size">Size of the copy</string>
+    <string name="sanitize_actions_title">What was changed: %1$d</string>
+    <string name="sanitize_no_actions">Nothing had to be changed.</string>
+    <string name="sanitize_more_actions">…and %1$d more</string>
+    <string name="sanitize_save">Save the copy…</string>
+    <string name="sanitize_save_again">Save another copy…</string>
+    <string name="sanitize_saving">Saving…</string>
+    <string name="sanitize_saved">Saved (%1$s).</string>
+    <string name="sanitize_save_failed">Could not save the copy</string>
+    <string name="sanitize_change_options">Change options</string>
+
+    <!-- About -->
+    <string name="about_version">Version %1$s</string>
+    <string name="about_unavailable">The attribution could not be loaded because the engine is not running. See Diagnostics.</string>
+    <string name="about_not_release_title">Test build</string>
+    <string name="about_not_release_text">This build is not an official release: its attribution is incomplete.</string>
+    <string name="about_homepage">Project page</string>
+    <string name="about_source">Source code</string>
+    <string name="about_fingerprint">Attribution fingerprint</string>
+
+    <!-- Licences -->
+    <string name="licenses_agpl">AGPLv3</string>
+    <string name="licenses_terms_ru">Additional terms (RU)</string>
+    <string name="licenses_terms_en">Additional terms (EN)</string>
+    <string name="licenses_third_party">Third-party</string>
+    <string name="licenses_unavailable">This text is not available.</string>
+
+    <!-- Settings -->
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_theme">Theme</string>
+    <string name="theme_system">System</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="settings_language">Language</string>
+    <string name="lang_system">System</string>
+    <string name="lang_ru" translatable="false">Русский</string>
+    <string name="lang_en" translatable="false">English</string>
+    <string name="settings_text_size">Text size in the preview</string>
+    <string name="size_small">Small</string>
+    <string name="size_normal">Normal</string>
+    <string name="size_large">Large</string>
+    <string name="size_huge">Huge</string>
+    <string name="settings_text_sample">The quick brown fox jumps over the lazy dog.</string>
+    <string name="settings_privacy">Privacy</string>
+    <string name="settings_secure">Block screenshots</string>
+    <string name="settings_secure_desc">Hides the app in the recent-apps list and stops screenshots and screen recording. Turn off if you need to capture the screen.</string>
+    <string name="settings_reveal">Show hidden content by default</string>
+    <string name="settings_reveal_desc">Hidden text, sheets and slides appear in the preview marked as hidden. They can always be toggled there.</string>
+
+    <!-- Diagnostics -->
+    <string name="diag_engine">Engine</string>
+    <string name="diag_engine_version">Version</string>
+    <string name="diag_guest_hash">Sandbox module SHA-256</string>
+    <string name="diag_limits">Limits</string>
+    <string name="diag_limits_value">file up to %1$s, sandbox memory up to %2$s</string>
+    <string name="diag_build_kind">Build</string>
+    <string name="diag_build_release">Release</string>
+    <string name="diag_build_dev">Test build</string>
+    <string name="diag_device">Device</string>
+    <string name="diag_app">App</string>
+    <string name="diag_android">System</string>
+    <string name="diag_abis">Processor</string>
+    <string name="diag_screen">Screen</string>
+    <string name="diag_window">Window</string>
+    <string name="diag_selftest">Self-test</string>
+    <string name="diag_selftest_note">Runs a built-in document through the whole sandbox and checks that dangerous parts are found and blocked.</string>
+    <string name="diag_selftest_run">Run the self-test</string>
+    <string name="diag_selftest_again">Run again</string>
+    <string name="diag_selftest_running">Running…</string>
+    <string name="diag_selftest_ok">All checks passed</string>
+    <string name="diag_selftest_failed">Some checks failed</string>
+    <string name="diag_copy_report">Copy the diagnostic report</string>
+    <string name="diag_privacy">The report contains no documents and no personal data. It is copied only when you press the button.</string>
+
+    <!-- Fallbacks for labels the engine may add in a newer version -->
+    <string name="threat_unknown_text">The engine reported something this version of the app has no description for. Treat the document as untrusted.</string>
+    <string name="notice_unknown">The preview leaves something out (no description in this version): %2$s</string>
+</resources>

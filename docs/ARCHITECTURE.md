@@ -41,26 +41,37 @@ arca/
 ├── README.md
 ├── fork_attribution.toml         # пустой в оригинале; форки добавляют свою атрибуцию
 ├── fork_attribution.example.toml
-├── .github/workflows/ci.yml      # policy · fmt · clippy · test · wasm-гость e2e · cargo-deny
-├── tools/check-unsafe.sh         # механическая проверка политики (unsafe, заглушки, C)
+├── .github/workflows/
+│   ├── ci.yml                    # policy · fmt · clippy · test · wasm-гость e2e · cargo-deny
+│   └── android.yml               # проверки Android · пакет · релиз · эмуляторы
+├── tools/
+│   ├── check-unsafe.sh           # механическая проверка политики (unsafe, заглушки, C)
+│   ├── build-guest.sh            # сборка Wasm-гостя и проверка «ноль импортов»
+│   ├── gen_third_party.py        # сторонние лицензии из графа зависимостей
+│   └── android/                  # build-apk.sh · check-android.sh · emulator-smoke.sh · check_elf.py
+├── tests/fixtures/               # безобидные документы, сделанные настоящим ПО (без вредоносных)
 ├── docs/
 │   ├── ARCHITECTURE.md           # этот файл
-│   └── SECURITY_THREAT_MODEL.md
+│   ├── SECURITY_THREAT_MODEL.md
+│   ├── ANDROID.md                # справочник по Android-части
+│   ├── RELEASING.md              # как выпустить версию
+│   └── releases/                 # заметки релизов (vX.Y.Z.md)
 ├── crates/
 │   ├── arca-digest/             # SHA-256, CRC-32 без зависимостей (no_std)
 │   ├── arca-container/          # защищённые ZIP, OLE2/CFB, XML: чтение, запись, лимиты
 │   ├── arca-abi/                # контракт хост ↔ гость: экспорты, конверт, wire-кодек (no_std)
 │   ├── arca-xray/               # детектор угроз, отчёт, стерилизатор (One-Tap Sanitize)
 │   ├── arca-sandbox/            # хост Wasm-песочницы (wasmi): топливо, память, пиннинг модулей
-│   ├── arca-guest-xray/         # arca-xray, собранный как Wasm-гость без импортов
+│   ├── arca-preview/            # безопасный просмотр форматов → модель Preview (абзацы/таблицы/слайды)
+│   ├── arca-guest-xray/         # arca-xray + arca-preview, собранные как Wasm-гость без импортов
 │   ├── arca-attribution/        # атрибуция создателей, форков, «Паспорт Хранителя»
-│   ├── arca-render-tree/        # (Фаза 3) ArcaRenderTree — единый граф сцены
-│   ├── arca-ooxml/              # (Фаза 3) Word/Excel/PowerPoint OOXML → render tree
-│   ├── arca-ole2/               # (Фаза 3) .doc/.xls/.ppt/.vsd → render tree
-│   ├── arca-visio/              # (Фаза 3) Visio 2D/3D, слои, ShapeSheet
-│   ├── arca-access/             # (Фаза 3) Jet3/Jet4/ACE: таблицы, связи, запросы (read-only)
-│   └── arca-ffi/                # (Фаза 4) мост flutter_rust_bridge v2 → arca-sandbox
-└── app/                          # (Фаза 4) Flutter-клиент Android/iOS (Impeller)
+│   ├── arca-engine/             # безопасный хост-слой для приложений: лимиты, статусы, JSON страницами
+│   └── arca-jni/                # JNI-мост Android (libarca_jni.so); единственный `unsafe` вне гостя
+├── android/                      # приложение Android (Java, без AndroidX/Gradle) и его тесты
+│   ├── app/src/main/             # манифест, ресурсы (ru/en, светлая/тёмная), исходники
+│   ├── core-test/                # тесты чистой Java-логики (JVM)
+│   └── host-test/                # JNI на настоящей JVM (-Xcheck:jni) и контрактные тесты
+└── app/                          # заготовка клиента iOS (план)
     ├── pubspec.yaml
     ├── analysis_options.yaml
     └── README.md
@@ -72,7 +83,10 @@ arca/
 arca-attribution ─► arca-digest ◄─ arca-sandbox ─► arca-abi
                                            ▲    └─► wasmi, wasmi_core, zeroize
 arca-guest-xray ─► arca-xray ─► arca-container ─► arca-digest
+        │      └──► arca-preview ─► arca-container, arca-abi
         └─► arca-abi ◄──┘            └─► quick-xml, miniz_oxide
+
+arca-jni ─► arca-engine ─► arca-sandbox, arca-abi, arca-attribution, (декодеры отчёта гостя)
 ```
 
 `arca-sandbox` не зависит от `arca-xray`: хост песочницы не содержит ни
@@ -83,8 +97,8 @@ arca-guest-xray ─► arca-xray ─► arca-container ─► arca-digest
 
 ```text
  ┌──────────────────────────── процесс приложения ─────────────────────────────┐
- │  Flutter UI (Фаза 4) ──FFI──► arca-ffi (Фаза 4)                            │
- │                                   │ байты файла (только чтение)             │
+ │  Android-приложение (Java) ──JNI──► arca-jni ─► arca-engine                │
+ │                                   │ дескриптор файла → память ядра          │
  │                                   ▼                                         │
  │  ┌──────────── arca-sandbox (хост, Safe Rust) ───────────────────────────┐ │
  │  │ 1. проверка SHA-256 модуля по allow-list (ModulePin)                    │ │
@@ -94,7 +108,7 @@ arca-guest-xray ─► arca-xray ─► arca-container ─► arca-digest
  │  │ 4. лимиты: память (по размеру входа), топливо CPU порциями, дедлайн,    │ │
  │  │    отмена, глубина рекурсии, стек                                       │ │
  │  │  ┌────────── Wasm-гость (wasm32-unknown-unknown, 0 импортов) ──────────┐ │ │
- │  │  │ arca-guest-xray = arca-xray + arca-container                     │ │ │
+ │  │  │ arca-guest-xray = arca-xray + arca-preview + arca-container      │ │ │
  │  │  │ нет сети, ФС, таймера, случайности, IPC — только вычисления         │ │ │
  │  │  └─────────────────────────────────────────────────────────────────────┘ │ │
  │  │ 5. копия результата с проверкой границ → конверт ARCA → wire-декодер    │ │
@@ -310,19 +324,23 @@ PDF, Access (Jet3/Jet4/ACE), текстовые (txt/csv/tsv/md/html/flat XML), 
 
 ## 5. Поток данных при открытии документа
 
-1. UI получает байты файла (системный picker; приложение не имеет широкого
-   доступа к ФС).
-2. `arca-ffi` *(Фаза 4)* передаёт срез в `Sandbox::run` с модулем
-   `arca_guest_xray.wasm`, вшитым в приложение, и его закреплённым SHA-256.
-3. Песочница копирует вход в память гостя, гость выполняет `scan`, хост
-   копирует конверт с проверкой границ и уничтожает экземпляр.
-4. `decode_report` декодирует `XRayReport` с лимитами.
-5. Вердикт `Rejected` → документ не отображается, HUD объясняет причину.
-   Иначе *(Фаза 3)* отдельный гость-парсер формата строит `ArcaRenderTree`,
-   внешние ресурсы которого уже вырезаны; UI рисует граф сцены.
+1. Приложение получает дескриптор файла (системный выбор файла или «Открыть с помощью»;
+   широкого доступа к ФС нет). `arca-jni` читает байты прямо из дескриптора в память ядра:
+   в куче Java документа нет.
+2. `arca-engine` выбирает лимиты по устройству и вызывает `Sandbox::run` с модулем
+   `arca_guest_xray.wasm`, вшитым в `libarca_jni.so`, и его закреплённым SHA-256.
+3. Песочница копирует вход в память гостя, гость выполняет `scan`, хост копирует конверт с
+   проверкой границ и уничтожает экземпляр.
+4. `decode_report` декодирует `XRayReport` с лимитами; `arca-engine` превращает его в JSON,
+   который приложение читает страницами.
+5. Вердикт `Rejected` → документ не отображается, экран результата объясняет причину.
+   Иначе по запросу в **новой** песочнице тот же модуль выполняет `preview` (операция ABI v2
+   `Preview3`): разбирает формат и строит `Preview` — разделы, блоки (абзацы, таблицы,
+   слайды), уведомления о том, что не показано. Внешние ресурсы не загружаются, ссылки
+   остаются данными.
 6. «Создать стерильную копию» → `sanitize` (в песочнице, тем же механизмом) →
-   повторный рентген → экспорт через системный диалог «Поделиться».
-7. Закрытие документа → буферы обнуляются.
+   повторный рентген → сохранение через системный диалог.
+7. Закрытие документа → буферы обнуляются, дескрипторы освобождаются.
 
 ## 6. Лимиты по умолчанию
 
@@ -357,37 +375,24 @@ PDF, Access (Jet3/Jet4/ACE), текстовые (txt/csv/tsv/md/html/flat XML), 
 | `quick-xml` | 0.42.0 | MIT | потоковый XML |
 | `miniz_oxide` + `adler2` | 0.9.0 / 2.0.1 | MIT/Zlib/Apache-2.0 | DEFLATE (крейт `forbid(unsafe_code)`) |
 | `zeroize` | 1.9.1 | Apache-2.0/MIT | обнуление памяти |
-| `memchr`, `bitflags`, `spin`, `libm` | транзитивные | MIT/Unlicense/Apache-2.0 | — |
+| `memchr`, `bitflags`, `spin`, `libm`, `hashbrown`, `indexmap`, `foldhash`, `equivalent`, `string-interner`, `serde_core` | транзитивные (в основном через `wasmi`) | MIT/Unlicense/Apache-2.0/Zlib | — |
 
 Правила:
 * только чистый Rust, никаких `*-sys`, `cc`, `cmake`, `bindgen` (`deny.toml`,
   `tools/check-unsafe.sh`);
 * прямые зависимости закреплены точно (`=x.y.z`), функции по умолчанию
   выключены, включено только проверенное;
-* **`Cargo.lock`** (D-1): файл пока **не закоммичен**, и это сознательно.
-  Разработка шла в среде без доступа к crates.io, на копиях исходников из
-  git-тегов; сгенерированный там лок-файл содержит контрольные суммы лишь у части
-  пакетов (проверено `tools/check-lockfile.sh`: 12 из 13 внешних пакетов без суммы)
-  и сломал бы `--locked` в CI. Один раз, на машине с сетью:
-
-  ```sh
-  rm -f Cargo.lock && cargo generate-lockfile
-  bash tools/check-lockfile.sh   # только crates.io, у каждого пакета SHA-256
-  cargo tree                     # граф совпадает с таблицей выше
-  cargo deny check all
-  git add Cargo.lock && git commit
-  ```
-
-  CI вызывает `tools/check-lockfile.sh` на каждый запуск (отсутствие файла — это
-  предупреждение, для тега `v*` — ошибка) и после коммита переходит на `--locked`;
-* **закрепление гостя** (D-2): приложение вшивает `arca_guest_xray.wasm` и его
-  SHA-256 (`ModulePin`); песочница не запустит модуль с другим хешем. Хеш в
-  `ModulePin` берётся из CI-артефакта сборки с `Cargo.lock`, `--locked`, закреплённым
-  `rust-toolchain.toml` и профилем `guest`; CI печатает `sha256sum` модуля и
-  проверяет отсутствие секции импортов. Воспроизводимость сборки между машинами
-  (одинаковый хеш при одинаковом коммите) подтверждается только после коммита
-  `Cargo.lock` и сборки на двух независимых раннерах — это шаг Фазы 4 при
-  подключении `arca-ffi`;
+* **`Cargo.lock`** (D-1) закоммичен, у каждого пакета crates.io в нём есть контрольная сумма;
+  `tools/check-lockfile.sh` проверяет это в CI, сборки и тесты идут с `--locked`. Список
+  библиотек, которые попадают в APK, не ведётся вручную: `tools/gen_third_party.py` строит
+  его (с текстами лицензий) из графа зависимостей `arca-jni`; если у библиотеки нет
+  лицензии, выпуск останавливается;
+* **закрепление гостя** (D-2): приложение вшивает `arca_guest_xray.wasm` в `libarca_jni.so` и
+  вместе с ним — его SHA-256 (`ModulePin`, считается в `build.rs`); песочница не запустит модуль с
+  другим хешем. Гость собирается в CI с `--locked`, закреплённым `rust-toolchain.toml` и профилем
+  `guest`; `tools/build-guest.sh` печатает `sha256sum` модуля и проверяет отсутствие секции
+  импортов. Хэш виден в «Диагностике» и печатается в заметках релиза. Побитовая
+  воспроизводимость между раннерами **не проверена** — это шаг будущей работы;
 * `cargo deny check all` в CI: лицензии, RustSec advisories, запреты, источники;
 * зависимости содержат внутренний `unsafe` (`wasmi`, `quick-xml`, `memchr`,
   `zeroize`). `forbid(unsafe_code)` распространяется на код Arca; доверие к
@@ -398,13 +403,16 @@ PDF, Access (Jet3/Jet4/ACE), текстовые (txt/csv/tsv/md/html/flat XML), 
 | решение | обоснование |
 |---|---|
 | `wasmi`, а не `wasmtime` | iOS не допускает JIT; интерпретатор проще аудировать |
-| одна копия входа в гостя и одна копия результата вместо zero-copy | у Wasm-гостя нет доступа к памяти хоста по определению; копия — цена изоляции. Zero-copy применим на стыке Flutter ↔ Rust (`arca-ffi`, Фаза 4) |
+| одна копия входа в гостя и одна копия результата вместо zero-copy | у Wasm-гостя нет доступа к памяти хоста по определению; копия — цена изоляции. На стыке приложения и Rust копий меньше: документ идёт из файлового дескриптора прямо в память ядра, а в Java возвращаются только маленькие страницы результата |
 | модуль компилируется заново при каждом запуске | полная эфемерность; около 16 мс. Кэширование проверенного `Module` возможно позже без ослабления изоляции экземпляров |
 | запас 1 МиБ в проверке коэффициента сжатия | мелкие однородные XML-части законно сжимаются сильнее 100:1; абсолютный объём ограничен общим бюджетом |
 | `deny` вместо `forbid` в `arca-guest-xray` | см. §4.6 |
-| `arca-ffi` *(Фаза 4)* | `flutter_rust_bridge` генерирует FFI-glue с `extern "C"`; он будет изолирован в отдельном крейте без логики разбора, по той же схеме, что и гость |
-| стерилизатор только для OOXML в Фазе 2 | бинарные форматы и PDF стерилизуются через пересборку из `ArcaRenderTree` (Фаза 3); сейчас для них возвращается `SanitizeError::Unsupported` |
-| эвристики в бинарных форматах | VBA stomping, поля Word Binary, PPT-записи — эвристики с низким уровнем ложных срабатываний (проверено на документах LibreOffice). Они не заменяют полный парсер формата Фазы 3 |
+| `arca-jni` вместо `flutter_rust_bridge` | Android-клиент — нативное приложение без Flutter: меньше кода и зависимостей в доверенной базе, прямой доступ к `ParcelFileDescriptor`. JNI-glue изолирован в одном файле `ffi.rs` (единственный `unsafe` вне таблицы экспортов гостя), вся логика — в безопасном `api.rs`; проверяется тестами на настоящей JVM с `-Xcheck:jni`. Для iOS потребуется свой тонкий мост над тем же `arca-engine` |
+| Java без AndroidX и Gradle | цепочка поставок Java-стороны пуста: в APK попадает только код этого репозитория и `libarca_jni.so`; пакет собирается пятью инструментами SDK, а не плагинами. Цена — больше ручного кода и отсутствие Jetpack WindowManager (нет учёта шарнира складных устройств) |
+| Wasm-гость вшит в `libarca_jni.so` | приложение запускает только тот гость, с которым собрана библиотека; его хэш виден пользователю и в заметках релиза |
+| стерилизатор только для OOXML (и Visio OOXML) | бинарные форматы и PDF требуют пересборки из модели `Preview`, которая теряет форматирование; такую «копию» нельзя честно назвать копией документа, поэтому для них возвращается `SanitizeError::Unsupported` |
+| модель `Preview` вместо графа сцены `ArcaRenderTree` | первая версия показывает содержание (абзацы, таблицы, слайды), а не вёрстку страницы: это на порядок проще, проверяемо и достаточно, чтобы прочитать подозрительный документ. Рисование страниц — отдельный этап |
+| эвристики в бинарных форматах | VBA stomping, поля Word Binary, PPT-записи — эвристики с низким уровнем ложных срабатываний (проверено на документах LibreOffice). Они дополняют, а не заменяют разбор содержания в `arca-preview` |
 | обнуление памяти | обнуляются буферы, которыми владеет Arca, и вся память гостя. Копии, которые аллокатор мог оставить при перераспределении `Vec` внутри зависимостей, гарантированно не стираются; память гостя стирается целиком, поэтому разбор там безопаснее |
 | зашифрованные документы | обнаруживаются (`EncryptedDocument`), но в Фазе 2 не расшифровываются; вердикт `Unverified` |
 | топливо порциями, а не одним куском | единственный способ дать хосту точку отмены и дедлайна без таймера в госте и без потоков-надзирателей; стоимость — один возврат из интерпретатора на 25·10⁶ операций (практически нулевая) |
@@ -423,7 +431,7 @@ tools/check-unsafe.sh
 # Wasm-гость и сквозные тесты в песочнице
 cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest
 ARCA_REQUIRE_E2E=1 \
-ARCA_GUEST_XRAY_WASM=target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm \
+ARCA_GUEST_XRAY_WASM=$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm \
     cargo test --release -p arca-guest-xray --test e2e_sandbox -- --nocapture
 # ARCA_REQUIRE_E2E=1 превращает «тест пропущен» в ошибку; ARCA_CORPUS_DIR=<каталог>
 # добавляет сверку гостя с нативным сканером по набору файлов
@@ -433,6 +441,12 @@ ARCA_GUEST_XRAY_WASM=target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm \
 ARCA_FUZZ_ITERS=30000 ARCA_FUZZ_SEED=1 \
     cargo test --release -p arca-xray mutation_fuzz   # структурные мутации, детерминированно
 cd fuzz && cargo +nightly fuzz run scan               # libFuzzer, см. fuzz/README.md
+
+# Android
+bash tools/android/check-android.sh      # ресурсы, манифест, API 26/36, чистая Java-логика
+ARCA_GUEST_WASM=$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm \
+ARCA_CORPUS_DIR=$PWD/tests/fixtures bash android/host-test/run.sh   # JNI + контрактные тесты на JVM
+# пакет и релиз: .github/workflows/android.yml, tools/android/build-apk.sh, docs/RELEASING.md
 
 # Цепочка поставок
 bash tools/check-lockfile.sh
@@ -446,16 +460,19 @@ ARCA_FORK_ATTRIBUTION=$PWD/fork_attribution.example.toml cargo test -p arca-attr
 ARCA_RELEASE=1 cargo build -p arca-attribution --release   # падает, пока есть заглушки
 ```
 
-## 10. Следующие фазы
+## 10. Что дальше
 
-* **Фаза 3.** `arca-render-tree` (неизменяемые персистентные структуры, Piece
-  Table/Rope, сохранение нераспознанных узлов для round-trip), гости-парсеры
-  `arca-ooxml`, `arca-ole2`, `arca-visio`, `arca-access`, чистый вычислитель
-  формул с блокировкой `WEBSERVICE`/`CALL`/`REGISTER`/DDE, «сплющенный» PDF.
-* **Фаза 4.** `arca-ffi` и Flutter-клиент: темы, пружинная навигация, шторка
-  «Рентген безопасности», «Паспорт Хранителя» с двойным блоком поддержки.
-  Golden-тесты вызывают `check_upstream_prominence`.
-* **Фаза 5.** Расширение фаззинга на парсеры Фазы 3 (каркас `fuzz/` и структурный
-  мутационный тест уже есть для сканера, стерилизатора, wire, ZIP, CFB и XML),
-  дифференциальное тестирование с независимыми реализациями, корпус реальных
-  вредоносных образцов в изолированной CI-среде.
+* **Сделано.** Фаза 3 (безопасный просмотр OOXML, OLE2, ODF, RTF, PDF-текст, MSG в песочнице) и
+  Фаза 4 для Android (`arca-engine`, `arca-jni`, приложение, сборка и выпуск). См.
+  [`ANDROID.md`](ANDROID.md) и [`releases/v0.1.0.md`](releases/v0.1.0.md).
+* **Просмотр Visio (в том числе 3D) и Access** — парсеры `arca-visio`, `arca-access`; рентген для
+  этих форматов уже есть.
+* **Рисование страниц** (`ArcaRenderTree`-подобная модель с позициями): точная вёрстка,
+  картинки, диаграммы.
+* **Чистый вычислитель формул** с блокировкой `WEBSERVICE`/`CALL`/`REGISTER`/DDE.
+* **iOS-клиент** над тем же `arca-engine`.
+* **Складные устройства с учётом шарнира и позы** (требует Jetpack WindowManager).
+* **Фаза 5.** Расширение фаззинга на парсеры просмотра (каркас `fuzz/` и структурный мутационный
+  тест уже есть для сканера, стерилизатора, wire, ZIP, CFB и XML; парсеры просмотра покрыты
+  мутационными тестами в самих модулях), дифференциальное тестирование с независимыми
+  реализациями, корпус реальных вредоносных образцов в изолированной CI-среде.

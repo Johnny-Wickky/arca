@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     Title and explanation of every finding of the Threat X-Ray (ThreatKind in
+     crates/arca-xray/src/report.rs). Names: threat_<kind in snake_case>_title / _text. -->
+<resources>
+    <!-- Active content -->
+    <string name="threat_vba_macros_title">VBA macros</string>
+    <string name="threat_vba_macros_text">Visual Basic code stored in the document. Run by Word, Excel or PowerPoint, it can download and start programs, change files and read data. It is the most common way malicious documents attack.</string>
+    <string name="threat_macro_auto_exec_title">Macro that runs by itself</string>
+    <string name="threat_macro_auto_exec_text">A macro is set to start the moment the document is opened or closed, without any click. This is how most macro malware starts.</string>
+    <string name="threat_xlm_macro_sheet_title">Excel 4.0 macro sheet</string>
+    <string name="threat_xlm_macro_sheet_text">An old macro format that keeps commands in spreadsheet cells. Antivirus programs often miss it, and attackers use it to start programs.</string>
+    <string name="threat_xlm_auto_open_name_title">Excel 4.0 macro that starts on opening</string>
+    <string name="threat_xlm_auto_open_name_text">A special name (Auto_Open) makes an Excel 4.0 macro sheet run as soon as the workbook is opened.</string>
+    <string name="threat_star_basic_macros_title">LibreOffice Basic macros</string>
+    <string name="threat_star_basic_macros_text">Scripts in the Basic language of LibreOffice and OpenOffice stored in the document. They can run commands on the computer.</string>
+    <string name="threat_embedded_script_title">Embedded script</string>
+    <string name="threat_embedded_script_text">Python, JavaScript or BeanShell code stored in the document that an office program can run.</string>
+    <string name="threat_dde_field_title">DDE field</string>
+    <string name="threat_dde_field_text">A field that asks the system to run a command through Dynamic Data Exchange. It starts programs without any macro and is a well-known attack technique.</string>
+    <string name="threat_dde_formula_title">DDE formula in a cell</string>
+    <string name="threat_dde_formula_text">A spreadsheet cell holds a formula that calls another program through DDE. It can launch a command when the workbook is opened.</string>
+    <string name="threat_dangerous_formula_title">Dangerous formula</string>
+    <string name="threat_dangerous_formula_text">A spreadsheet formula that calls external programs, reads files or fetches data from the network (CALL, EXEC, WEBSERVICE and similar).</string>
+    <string name="threat_ole_object_title">Embedded OLE object</string>
+    <string name="threat_ole_object_text">An object of another program stored inside the document. When activated, the program that owns it is started, and such programs have many known vulnerabilities.</string>
+    <string name="threat_ole_package_title">Packaged file</string>
+    <string name="threat_ole_package_text">A file stored inside the document that Office can extract and run when you double-click its icon. A classic way to deliver a program.</string>
+    <string name="threat_exploitable_ole_class_title">Object of a type used in attacks</string>
+    <string name="threat_exploitable_ole_class_text">The object belongs to a component that has been used in real attacks (Equation Editor or MSHTML, for example). Opening it in Office could run the attacker’s code.</string>
+    <string name="threat_active_x_control_title">ActiveX control</string>
+    <string name="threat_active_x_control_text">A Windows control embedded in the document. Controls are programs and can do whatever the user can.</string>
+    <string name="threat_ribbon_callbacks_title">Custom toolbar with code</string>
+    <string name="threat_ribbon_callbacks_text">The document changes the program’s toolbar and attaches code to its buttons.</string>
+    <string name="threat_program_action_title">Action that starts a program</string>
+    <string name="threat_program_action_text">A button or shape in the document is wired to start a program or macro when it is clicked or pointed at.</string>
+    <string name="threat_macro_button_field_title">MacroButton field</string>
+    <string name="threat_macro_button_field_text">A Word field that runs a macro when it is clicked or when the document opens.</string>
+    <string name="threat_pdf_java_script_title">JavaScript in the PDF</string>
+    <string name="threat_pdf_java_script_text">A script inside the PDF. Readers that run PDF scripts can be attacked through them, and scripts can send data away or open other files.</string>
+    <string name="threat_pdf_launch_action_title">PDF starts a program</string>
+    <string name="threat_pdf_launch_action_text">The PDF asks the reader to start a program or open a file on the computer. This is almost never legitimate.</string>
+    <string name="threat_pdf_auto_action_title">PDF action on opening</string>
+    <string name="threat_pdf_auto_action_text">The PDF has an action that runs automatically when the document or a page is opened.</string>
+    <string name="threat_pdf_embedded_file_title">File inside the PDF</string>
+    <string name="threat_pdf_embedded_file_text">A file is attached inside the PDF. The reader can offer to extract it, and the attachment may be a program.</string>
+    <string name="threat_pdf_rich_media_title">Active media in the PDF</string>
+    <string name="threat_pdf_rich_media_text">The PDF contains Flash, 3D or other rich media that needs a plug-in with a long history of vulnerabilities.</string>
+    <string name="threat_rtf_embedded_object_title">Object inside the RTF</string>
+    <string name="threat_rtf_embedded_object_text">The RTF stores an embedded object. Word starts the program that owns it, and RTF objects have been used in many attacks.</string>
+    <string name="threat_rtf_auto_update_object_title">RTF object that updates itself</string>
+    <string name="threat_rtf_auto_update_object_text">The RTF object is set to refresh automatically on opening, so its program starts without a click.</string>
+    <string name="threat_embedded_executable_title">Program inside the document</string>
+    <string name="threat_embedded_executable_text">An executable file (EXE, DLL, script) is stored inside the document. A document has no honest reason to contain one.</string>
+    <string name="threat_embedded_document_title">Document inside the document</string>
+    <string name="threat_embedded_document_text">Another document is stored inside this one. It can carry its own macros, so it is inspected separately.</string>
+    <string name="threat_odf_event_script_title">Script bound to an event</string>
+    <string name="threat_odf_event_script_text">An OpenDocument file attaches a script to an event such as opening the document or clicking an element.</string>
+    <string name="threat_signed_macro_project_title">Digitally signed macros</string>
+    <string name="threat_signed_macro_project_text">The macros carry a signature. A signature only says who signed; it does not make the code safe, and stolen certificates are used in attacks. Arca does not trust it.</string>
+    <string name="threat_html_active_content_title">Active content in HTML</string>
+    <string name="threat_html_active_content_text">The page contains scripts, frames or event handlers that a browser would run.</string>
+    <string name="threat_csv_formula_injection_title">Spreadsheet formula in a text table</string>
+    <string name="threat_csv_formula_injection_text">A cell starts with =, +, - or @, so a spreadsheet program would treat it as a formula and could run commands. Arca shows it as plain text.</string>
+    <string name="threat_alt_chunk_import_title">Imported external content</string>
+    <string name="threat_alt_chunk_import_text">Word is told to pull in the content of another file when the document opens, which can bring in HTML or RTF with its own risks.</string>
+
+    <!-- Remote content -->
+    <string name="threat_remote_template_title">Template loaded from the internet</string>
+    <string name="threat_remote_template_text">The document is set to download its template from a server when opened. Attackers use this to load malicious macros or to learn that the document was opened.</string>
+    <string name="threat_external_image_title">Picture loaded from the internet</string>
+    <string name="threat_external_image_text">A picture is fetched from a server when the document is opened. The server learns your address and the time, and can tell that the document was read.</string>
+    <string name="threat_external_frame_title">Frame loaded from the internet</string>
+    <string name="threat_external_frame_text">A frame displays content from a remote address that can change at any time.</string>
+    <string name="threat_external_object_link_title">Object linked to a remote address</string>
+    <string name="threat_external_object_link_text">An object is linked to a file or a server and is refreshed from there.</string>
+    <string name="threat_external_workbook_link_title">Link to another workbook</string>
+    <string name="threat_external_workbook_link_text">The workbook pulls data from another file or server. The address can reveal your network or load data you did not expect.</string>
+    <string name="threat_external_data_connection_title">Data connection</string>
+    <string name="threat_external_data_connection_text">The workbook connects to a database or web service when refreshed. It can send data out as well as bring data in.</string>
+    <string name="threat_remote_field_include_title">Field that includes remote content</string>
+    <string name="threat_remote_field_include_text">A field (INCLUDETEXT, INCLUDEPICTURE, LINK) fetches content from another address when the document is updated.</string>
+    <string name="threat_unc_path_reference_title">Network path (UNC)</string>
+    <string name="threat_unc_path_reference_text">The document refers to a Windows network path (it starts with two backslashes). Opening it makes Windows try to log in to that server, which can leak a password hash.</string>
+    <string name="threat_dangerous_protocol_uri_title">Link with a dangerous protocol</string>
+    <string name="threat_dangerous_protocol_uri_text">A link uses a protocol that starts programs or scripts (such as ms-msdt, file, javascript or vbscript).</string>
+    <string name="threat_external_hyperlink_title">Link to the internet</string>
+    <string name="threat_external_hyperlink_text">The document has a link to a web address. Arca never follows it.</string>
+    <string name="threat_xml_stylesheet_reference_title">Remote style sheet</string>
+    <string name="threat_xml_stylesheet_reference_text">The XML refers to an external style sheet, which can transform the content or fetch data.</string>
+    <string name="threat_mail_merge_data_source_title">Mail merge data source</string>
+    <string name="threat_mail_merge_data_source_text">The document is connected to a data file or database for mail merge, which makes Word open that connection.</string>
+    <string name="threat_pdf_remote_action_title">PDF contacts a remote address</string>
+    <string name="threat_pdf_remote_action_text">The PDF is set to open a web address or to submit a form to a server.</string>
+    <string name="threat_external_resource_title">External resource</string>
+    <string name="threat_external_resource_text">The document refers to something outside itself that is loaded when it is opened.</string>
+    <string name="threat_hyperlink_base_title">Base address for links</string>
+    <string name="threat_hyperlink_base_text">The document sets a base address that changes where its relative links lead.</string>
+
+    <!-- Concealment -->
+    <string name="threat_hidden_sheet_title">Hidden sheet</string>
+    <string name="threat_hidden_sheet_text">A sheet that is not shown in the workbook’s tab bar. It may hold data, formulas or macros.</string>
+    <string name="threat_very_hidden_sheet_title">Very hidden sheet</string>
+    <string name="threat_very_hidden_sheet_text">A sheet that cannot be unhidden from the normal menu; only a macro or an editor can show it. There is almost always a reason to hide it this way.</string>
+    <string name="threat_hidden_rows_or_columns_title">Hidden rows or columns</string>
+    <string name="threat_hidden_rows_or_columns_text">Rows or columns exist but are not displayed.</string>
+    <string name="threat_hidden_text_title">Hidden text</string>
+    <string name="threat_hidden_text_text">Text is marked as hidden, so it neither shows nor prints, but it remains in the file.</string>
+    <string name="threat_invisible_text_title">Invisible text</string>
+    <string name="threat_invisible_text_text">Text is made invisible by a tiny size or by the same colour as the background.</string>
+    <string name="threat_hidden_slide_title">Hidden slide</string>
+    <string name="threat_hidden_slide_text">A slide that is skipped in the presentation but is still in the file.</string>
+    <string name="threat_orphaned_ole_entries_title">Leftover data in the file</string>
+    <string name="threat_orphaned_ole_entries_text">Parts that nothing refers to remain in the old-format file. They may be remains of earlier content or a hidden payload.</string>
+    <string name="threat_unreferenced_archive_data_title">Unused files in the container</string>
+    <string name="threat_unreferenced_archive_data_text">The container holds files that nothing in the document uses, which can hide data.</string>
+    <string name="threat_polyglot_file_title">File that is two formats at once</string>
+    <string name="threat_polyglot_file_text">The file can be read as two different formats, a trick used to get past checks.</string>
+    <string name="threat_trailing_data_title">Data after the end of the file</string>
+    <string name="threat_trailing_data_text">Extra bytes follow the real end of the file. Programs ignore them, and attackers hide payloads there.</string>
+    <string name="threat_document_variables_title">Document variables</string>
+    <string name="threat_document_variables_text">Word stores named values in the file. Macros can read them, so they are used to hide code or settings.</string>
+    <string name="threat_custom_xml_data_title">Custom XML data</string>
+    <string name="threat_custom_xml_data_text">Other programs have attached hidden data blocks to the document.</string>
+    <string name="threat_stale_thumbnail_title">Preview picture of the document</string>
+    <string name="threat_stale_thumbnail_text">A saved thumbnail may show an older version of the content, including text that was later deleted.</string>
+    <string name="threat_bidi_override_title">Text direction trick</string>
+    <string name="threat_bidi_override_text">Invisible characters reverse the order of text, for example to make a file name look like it ends in .txt when it ends in .exe.</string>
+    <string name="threat_obfuscated_name_title">Disguised name</string>
+    <string name="threat_obfuscated_name_text">A name in the document is written with random characters or tricks that hide what it really is.</string>
+
+    <!-- Personal data -->
+    <string name="threat_author_metadata_title">Author information</string>
+    <string name="threat_author_metadata_text">The file carries the names of the people who created or changed it.</string>
+    <string name="threat_local_path_leak_title">Path on the author’s computer</string>
+    <string name="threat_local_path_leak_text">A folder path of the author’s machine is stored in the file, and it often contains a user name.</string>
+    <string name="threat_printer_metadata_title">Printer information</string>
+    <string name="threat_printer_metadata_text">The file stores the name of the printer that was used. It can reveal an office or a network.</string>
+    <string name="threat_tracked_changes_title">Tracked changes</string>
+    <string name="threat_tracked_changes_text">The file keeps the history of edits, including deleted text and who made the changes.</string>
+    <string name="threat_comments_title">Comments</string>
+    <string name="threat_comments_text">Reviewers’ notes are stored in the file.</string>
+    <string name="threat_personal_identifier_title">Identifier tied to a person or device</string>
+    <string name="threat_personal_identifier_text">The file contains identifiers (GUIDs, machine or account names) that can link it to its author.</string>
+    <string name="threat_editing_session_ids_title">Editing session identifiers</string>
+    <string name="threat_editing_session_ids_text">Word’s hidden revision-session numbers can show how and when the file was edited and can link files to each other.</string>
+    <string name="threat_custom_properties_title">Custom properties</string>
+    <string name="threat_custom_properties_text">Extra properties added by the author or by a program, sometimes with internal names or classification labels.</string>
+
+    <!-- Structure of the file -->
+    <string name="threat_malformed_container_title">Damaged container</string>
+    <string name="threat_malformed_container_text">The internal structure of the file is broken or contradicts itself. Different programs may handle it differently, which attackers exploit.</string>
+    <string name="threat_unusual_compression_title">Unusual compression</string>
+    <string name="threat_unusual_compression_text">The archive uses a compression setting that honest programs do not produce.</string>
+    <string name="threat_macro_enabled_content_type_title">Macro-enabled file type</string>
+    <string name="threat_macro_enabled_content_type_text">The file is of a type built to carry macros (such as DOCM or XLSM).</string>
+    <string name="threat_content_type_mismatch_title">Macros do not match the file type</string>
+    <string name="threat_content_type_mismatch_text">The file says it has no macros but contains a macro project, or the other way round. Mislabelled files are used to slip past filters.</string>
+    <string name="threat_disguised_executable_title">Program disguised as a document</string>
+    <string name="threat_disguised_executable_text">The file is a program but has the name or icon of a document.</string>
+    <string name="threat_unsupported_format_title">Unsupported format</string>
+    <string name="threat_unsupported_format_text">Arca could not recognise the format, so it cannot vouch for the file.</string>
+    <string name="threat_scan_limit_reached_title">Inspection limit reached</string>
+    <string name="threat_scan_limit_reached_text">The file is so large or so deeply nested that the inspection stopped at its safety limit. The rest was not examined.</string>
+    <string name="threat_embedded_font_title">Embedded font</string>
+    <string name="threat_embedded_font_text">A font is stored in the file. Fonts are read by complex code that has been attacked before.</string>
+    <string name="threat_compression_bomb_title">Decompression bomb</string>
+    <string name="threat_compression_bomb_text">A small file that expands to a huge size, made to exhaust memory. It was stopped.</string>
+    <string name="threat_path_traversal_title">Path traversal in the archive</string>
+    <string name="threat_path_traversal_text">A file in the archive has a name such as ../ meant to escape its folder and overwrite other files when unpacked.</string>
+    <string name="threat_parser_differential_title">Inconsistent archive structure</string>
+    <string name="threat_parser_differential_text">The internal tables of the file disagree with each other (duplicate names, overlapping entries, mismatched headers), so different programs would read different content. Attackers use this to evade scanners.</string>
+    <string name="threat_xml_entity_attack_title">XML entity attack</string>
+    <string name="threat_xml_entity_attack_text">The XML is built so that reading it expands into a huge amount of data or fetches a local or remote file.</string>
+
+    <!-- Encryption -->
+    <string name="threat_encrypted_document_title">Encrypted document</string>
+    <string name="threat_encrypted_document_text">The content is encrypted, so it cannot be examined. Encrypted attachments are often used to slip past scanners.</string>
+    <string name="threat_encrypted_member_title">Encrypted part</string>
+    <string name="threat_encrypted_member_text">A part inside the file is encrypted and could not be examined.</string>
+</resources>

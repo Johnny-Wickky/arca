@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     Names for the identifiers the engine reports. The resource name is the identifier in
+     snake_case (ui/Labels.java); tools/android/check_resources.py checks that every
+     identifier of the Rust enums has an entry here and in values-ru/. -->
+<resources>
+    <!-- File formats (FileFormat) -->
+    <string name="format_empty">Empty file</string>
+    <string name="format_unknown">Unknown format</string>
+    <string name="format_docx">Word document (DOCX)</string>
+    <string name="format_docm">Word document with macros (DOCM)</string>
+    <string name="format_dotx">Word template (DOTX)</string>
+    <string name="format_dotm">Word template with macros (DOTM)</string>
+    <string name="format_xlsx">Excel workbook (XLSX)</string>
+    <string name="format_xlsm">Excel workbook with macros (XLSM)</string>
+    <string name="format_xltx">Excel template (XLTX)</string>
+    <string name="format_xltm">Excel template with macros (XLTM)</string>
+    <string name="format_xlsb">Excel binary workbook (XLSB)</string>
+    <string name="format_xlam">Excel add-in (XLAM)</string>
+    <string name="format_pptx">PowerPoint presentation (PPTX)</string>
+    <string name="format_pptm">PowerPoint presentation with macros (PPTM)</string>
+    <string name="format_ppsx">PowerPoint slide show (PPSX)</string>
+    <string name="format_ppsm">PowerPoint slide show with macros (PPSM)</string>
+    <string name="format_potx">PowerPoint template (POTX)</string>
+    <string name="format_potm">PowerPoint template with macros (POTM)</string>
+    <string name="format_vsdx">Visio drawing (VSDX)</string>
+    <string name="format_vsdm">Visio drawing with macros (VSDM)</string>
+    <string name="format_visio_template_or_stencil">Visio template or stencil</string>
+    <string name="format_xps">XPS document</string>
+    <string name="format_opc_other">Office Open XML package (other)</string>
+    <string name="format_odt">OpenDocument text (ODT)</string>
+    <string name="format_ods">OpenDocument spreadsheet (ODS)</string>
+    <string name="format_odp">OpenDocument presentation (ODP)</string>
+    <string name="format_odg">OpenDocument drawing (ODG)</string>
+    <string name="format_odf_other">OpenDocument (other)</string>
+    <string name="format_doc">Word 97–2003 document (DOC)</string>
+    <string name="format_xls">Excel 97–2003 workbook (XLS)</string>
+    <string name="format_ppt">PowerPoint 97–2003 presentation (PPT)</string>
+    <string name="format_vsd">Visio 97–2003 drawing (VSD)</string>
+    <string name="format_msg">Outlook message (MSG)</string>
+    <string name="format_encrypted_ooxml">Encrypted Office document</string>
+    <string name="format_msi">Windows Installer package (MSI)</string>
+    <string name="format_ole_other">OLE compound file (other)</string>
+    <string name="format_rtf">Rich Text (RTF)</string>
+    <string name="format_pdf">PDF document</string>
+    <string name="format_access_jet3">Access database (Jet 3)</string>
+    <string name="format_access_jet4">Access database (Jet 4)</string>
+    <string name="format_access_ace">Access database (ACE)</string>
+    <string name="format_plain_text">Plain text</string>
+    <string name="format_csv">CSV table</string>
+    <string name="format_tsv">TSV table</string>
+    <string name="format_markdown">Markdown text</string>
+    <string name="format_html">HTML page</string>
+    <string name="format_flat_xml">Flat XML document</string>
+    <string name="format_zip">ZIP archive</string>
+    <string name="format_executable">Executable program</string>
+
+    <!-- Categories (Category) -->
+    <string name="cat_active_content">Active content</string>
+    <string name="cat_remote_content">Remote content</string>
+    <string name="cat_concealment">Hidden content</string>
+    <string name="cat_privacy_leak">Personal data</string>
+    <string name="cat_structural">Structure of the file</string>
+    <string name="cat_encryption">Encryption</string>
+
+    <!-- Severities (Severity) -->
+    <string name="sev_info">Info</string>
+    <string name="sev_low">Low</string>
+    <string name="sev_medium">Medium</string>
+    <string name="sev_high">High</string>
+    <string name="sev_critical">Critical</string>
+
+    <!-- Metadata keys (MetaKey) -->
+    <string name="meta_title">Title</string>
+    <string name="meta_subject">Subject</string>
+    <string name="meta_author">Author</string>
+    <string name="meta_last_modified_by">Last modified by</string>
+    <string name="meta_company">Company</string>
+    <string name="meta_manager">Manager</string>
+    <string name="meta_application">Application</string>
+    <string name="meta_app_version">Application version</string>
+    <string name="meta_template">Template</string>
+    <string name="meta_revision">Revision</string>
+    <string name="meta_total_edit_minutes">Total editing time (minutes)</string>
+    <string name="meta_created">Created</string>
+    <string name="meta_modified">Modified</string>
+    <string name="meta_last_printed">Last printed</string>
+    <string name="meta_keywords">Keywords</string>
+    <string name="meta_description">Description</string>
+    <string name="meta_category">Category</string>
+    <string name="meta_custom_property">Custom property</string>
+    <string name="meta_local_path">Path on the author\'s computer</string>
+    <string name="meta_printer">Printer</string>
+    <string name="meta_person">Person named in the document</string>
+    <string name="meta_editing_sessions">Editing session identifiers</string>
+    <string name="meta_hyperlink_base">Base address for links</string>
+    <string name="meta_generator">Generator</string>
+    <string name="meta_language">Language</string>
+    <string name="meta_content_status">Content status</string>
+    <string name="meta_machine">Computer name</string>
+    <string name="meta_security">Security setting</string>
+    <string name="meta_editing_cycles">Editing cycles</string>
+
+    <!-- References (RefKind, TargetClass) -->
+    <string name="ref_kind_template">Template</string>
+    <string name="ref_kind_image">Picture</string>
+    <string name="ref_kind_frame">Frame</string>
+    <string name="ref_kind_hyperlink">Hyperlink</string>
+    <string name="ref_kind_object_link">Linked object</string>
+    <string name="ref_kind_workbook_link">Linked workbook</string>
+    <string name="ref_kind_data_connection">Data connection</string>
+    <string name="ref_kind_field">Field</string>
+    <string name="ref_kind_stylesheet">Style sheet</string>
+    <string name="ref_kind_pdf_action">PDF action</string>
+    <string name="ref_kind_other">Other</string>
+    <string name="ref_class_web">Web address</string>
+    <string name="ref_class_unc">Network path (UNC)</string>
+    <string name="ref_class_local_file">Local file</string>
+    <string name="ref_class_dangerous_protocol">Dangerous protocol</string>
+    <string name="ref_class_mail">E-mail</string>
+    <string name="ref_class_other_scheme">Other scheme</string>
+    <string name="ref_class_relative">Relative path</string>
+
+    <!-- Embedded objects (EmbeddedKind) and macro languages (MacroLanguage) -->
+    <string name="emb_kind_ole_object">OLE object</string>
+    <string name="emb_kind_package">Packaged file</string>
+    <string name="emb_kind_document">Document</string>
+    <string name="emb_kind_executable">Executable</string>
+    <string name="emb_kind_active_x">ActiveX control</string>
+    <string name="emb_kind_font">Font</string>
+    <string name="emb_kind_other">Other</string>
+    <string name="macro_lang_vba">VBA</string>
+    <string name="macro_lang_xlm">Excel 4 macros (XLM)</string>
+    <string name="macro_lang_star_basic">StarBasic</string>
+    <string name="macro_lang_python">Python</string>
+    <string name="macro_lang_java_script">JavaScript</string>
+    <string name="macro_lang_bean_shell">BeanShell</string>
+
+    <!-- Changes made to a sterile copy (ActionKind) -->
+    <string name="action_removed_part">Removed part</string>
+    <string name="action_removed_external_reference">Removed external reference</string>
+    <string name="action_removed_relationship">Removed relationship</string>
+    <string name="action_neutralized_field">Neutralised field</string>
+    <string name="action_removed_formula">Removed formula</string>
+    <string name="action_removed_element">Removed element</string>
+    <string name="action_accepted_revisions">Accepted tracked changes</string>
+    <string name="action_removed_comments">Removed comments</string>
+    <string name="action_stripped_metadata">Stripped metadata</string>
+    <string name="action_converted_content_type">Converted content type</string>
+
+    <!-- What a preview leaves out (NoticeKind). %1$d is a count, %2$s a detail. -->
+    <string name="notice_truncated">The document is longer than the preview limit; the rest is not shown.</string>
+    <string name="notice_unsupported">This preview does not support: %2$s.</string>
+    <string name="notice_skipped">Skipped (could not be read or not current): %2$s.</string>
+    <string name="notice_invisible_removed">Invisible and direction-changing characters were marked: %1$d.</string>
+    <string name="notice_images_not_shown">Pictures are never decoded and appear as placeholders: %1$d.</string>
+    <string name="notice_hidden_shown">Hidden content is shown and marked as hidden: %1$d.</string>
+    <string name="notice_tracked_changes">The document has tracked changes; deletions are struck through, insertions are underlined: %1$d.</string>
+    <string name="notice_formulas_not_evaluated">Formulas are not calculated; the stored results are shown: %1$d.</string>
+    <string name="notice_best_effort">The text was recovered from an old binary format as well as possible; layout and some content may be missing.</string>
+    <string name="notice_hidden_omitted">Hidden content is not shown (turn on Show hidden content to see it): %1$d.</string>
+</resources>

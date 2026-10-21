@@ -33,13 +33,49 @@ name = "arca-digest"
 version = "0.1.0"
 
 [[package]]
+name = "arca-engine"
+version = "0.1.0"
+dependencies = [
+ "arca-abi",
+ "arca-attribution",
+ "arca-container",
+ "arca-digest",
+ "arca-guest-xray",
+ "arca-preview",
+ "arca-sandbox",
+ "arca-xray",
+ "zeroize",
+]
+
+[[package]]
 name = "arca-guest-xray"
 version = "0.1.0"
 dependencies = [
  "arca-abi",
  "arca-container",
+ "arca-preview",
  "arca-sandbox",
  "arca-xray",
+]
+
+[[package]]
+name = "arca-jni"
+version = "0.1.0"
+dependencies = [
+ "arca-digest",
+ "arca-engine",
+ "zeroize",
+]
+
+[[package]]
+name = "arca-preview"
+version = "0.1.0"
+dependencies = [
+ "arca-abi",
+ "arca-container",
+ "arca-xray",
+ "miniz_oxide",
+ "quick-xml",
 ]
 
 [[package]]

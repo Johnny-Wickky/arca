@@ -42,23 +42,173 @@ pub enum CodePage {
     Windows1252,
     /// ISO-8859-1 / Latin-1 (28591).
     Latin1,
-    /// Any other code page: decoded as ASCII with U+FFFD for bytes ≥ 0x80.
+    /// Any other single-byte code page from [`crate::codepages`].
+    Single(&'static crate::codepages::SingleByte),
+    /// A code page this crate has no table for (multi-byte East Asian ones, mostly):
+    /// decoded as ASCII with U+FFFD for bytes ≥ 0x80.
     Unsupported(u16),
 }
 
 impl CodePage {
     /// Maps a Windows code page identifier.
     #[must_use]
-    pub const fn from_id(id: u16) -> Self {
+    pub fn from_id(id: u16) -> Self {
         match id {
             65001 => Self::Utf8,
             1200 => Self::Utf16Le,
             1251 => Self::Windows1251,
             1252 | 0 => Self::Windows1252,
             28591 => Self::Latin1,
-            other => Self::Unsupported(other),
+            other => match crate::codepages::lookup(other) {
+                Some(t) => Self::Single(t),
+                None => Self::Unsupported(other),
+            },
         }
     }
+
+    /// `true` if bytes ≥ 0x80 can be decoded faithfully.
+    #[must_use]
+    pub const fn is_supported(self) -> bool {
+        !matches!(self, Self::Unsupported(_))
+    }
+
+    /// The Windows / IANA identifier of this code page.
+    #[must_use]
+    pub const fn id(self) -> u16 {
+        match self {
+            Self::Utf8 => 65001,
+            Self::Utf16Le => 1200,
+            Self::Windows1251 => 1251,
+            Self::Windows1252 => 1252,
+            Self::Latin1 => 28591,
+            Self::Single(t) => t.id,
+            Self::Unsupported(id) => id,
+        }
+    }
+}
+
+/// How many leading bytes [`decode_legacy_text`] looks at when guessing.
+const LEGACY_SAMPLE: usize = 64 << 10;
+
+/// Guesses the encoding of 8-bit text that is not valid UTF-8 and decodes it.
+///
+/// This is for old plain-text files (DOS and early-Windows era `.txt`, `.csv`, logs).
+/// The guess is deliberately conservative:
+///
+/// * any control byte other than tab, line feed, form feed and carriage return (a trailing
+///   DOS end-of-file marker `0x1A` is tolerated) means "binary" and gives `None`;
+/// * Cyrillic code pages (Windows-1251, CP866, KOI8-R) are ranked by how much the decoded
+///   high bytes look like running Russian/Ukrainian text, and the winner must clearly look
+///   like it;
+/// * otherwise Windows-1252 is used if the bytes are mostly ASCII and none of the five
+///   undefined code points occurs;
+/// * anything else (East Asian double-byte text, binary data that happens to be printable)
+///   gives `None`, so the caller reports the file as unidentified instead of showing noise.
+///
+/// The result is a *guess*: callers should tell the reader which code page was assumed.
+#[must_use]
+pub fn decode_legacy_text(bytes: &[u8]) -> Option<(CodePage, String)> {
+    let sample = bytes.get(..bytes.len().min(LEGACY_SAMPLE)).unwrap_or(bytes);
+    let mut high = 0usize;
+    let mut ascii = 0usize;
+    for (i, &b) in sample.iter().enumerate() {
+        match b {
+            b'\n' | b'\r' | b'\t' | 0x0C | 0x20..=0x7E => ascii += 1,
+            0x1A if i + 1 == bytes.len() => {}
+            0x80..=0xFF => high += 1,
+            _ => return None,
+        }
+    }
+    if high == 0 {
+        return None;
+    }
+    // Real text has spaces, digits and punctuation between its words.
+    if ascii * 10 < sample.len() {
+        return None;
+    }
+    let mut best: Option<(i64, CodePage)> = None;
+    for cp in [
+        CodePage::Windows1251,
+        crate::codepages::lookup(866).map_or(CodePage::Windows1251, CodePage::Single),
+        crate::codepages::lookup(20866).map_or(CodePage::Windows1251, CodePage::Single),
+    ] {
+        let score = cyrillic_score(sample, cp);
+        if best.is_none_or(|(b, _)| score > b) {
+            best = Some((score, cp));
+        }
+    }
+    let high = i64::try_from(high).unwrap_or(i64::MAX);
+    if let Some((score, cp)) = best {
+        // A right guess averages about +26 per byte, a wrong one about zero or below.
+        if score >= high * 8 {
+            return Some((cp, decode_codepage(bytes, cp)));
+        }
+    }
+    // Western European: no undefined Windows-1252 code points and few accented letters.
+    let undefined = sample.iter().any(|b| matches!(b, 0x81 | 0x8D | 0x8F | 0x90 | 0x9D));
+    if !undefined && high * 3 <= i64::try_from(sample.len()).unwrap_or(i64::MAX) {
+        return Some((CodePage::Windows1252, decode_codepage(bytes, CodePage::Windows1252)));
+    }
+    None
+}
+
+/// Relative frequency, in tenths of a percent, of the letters of Russian (and the extra
+/// Ukrainian ones) in running text.
+const LETTER_FREQ: [(char, i64); 37] = [
+    ('о', 110),
+    ('е', 85),
+    ('а', 80),
+    ('и', 74),
+    ('н', 67),
+    ('т', 63),
+    ('с', 55),
+    ('р', 47),
+    ('в', 45),
+    ('л', 43),
+    ('к', 35),
+    ('п', 32),
+    ('м', 30),
+    ('д', 30),
+    ('у', 26),
+    ('я', 20),
+    ('ы', 19),
+    ('ь', 17),
+    ('г', 17),
+    ('з', 17),
+    ('б', 16),
+    ('ч', 15),
+    ('й', 12),
+    ('х', 10),
+    ('ж', 9),
+    ('ш', 7),
+    ('ю', 6),
+    ('ц', 5),
+    ('щ', 4),
+    ('э', 3),
+    ('ф', 3),
+    ('ъ', 0),
+    ('ё', 0),
+    ('і', 45),
+    ('ї', 7),
+    ('є', 6),
+    ('ґ', 1),
+];
+
+/// Rates how much `sample` looks like Russian / Ukrainian text when read in `cp`: the sum,
+/// over the bytes ≥ 0x80, of the letter's frequency minus 3 % (so a permuted alphabet scores
+/// about zero and the right one clearly positive) — and a heavy penalty for anything else
+/// (box drawing, accented Latin, symbols). Case does not matter, so all-capitals text works.
+fn cyrillic_score(sample: &[u8], cp: CodePage) -> i64 {
+    let mut score = 0i64;
+    for &b in sample.iter().filter(|b| **b >= 0x80) {
+        let c = decode_codepage(&[b], cp).chars().next().unwrap_or(char::REPLACEMENT_CHARACTER);
+        let lower = c.to_lowercase().next().unwrap_or(c);
+        score += match LETTER_FREQ.iter().find(|(l, _)| *l == lower) {
+            Some((_, f)) => f - 30,
+            None => -50,
+        };
+    }
+    score
 }
 
 /// Decodes `bytes` in the given code page. Never fails.
@@ -70,6 +220,13 @@ pub fn decode_codepage(bytes: &[u8], cp: CodePage) -> String {
         CodePage::Windows1251 => bytes.iter().map(|&b| cp1251(b)).collect(),
         CodePage::Windows1252 => bytes.iter().map(|&b| cp1252(b)).collect(),
         CodePage::Latin1 => bytes.iter().map(|&b| char::from(b)).collect(),
+        CodePage::Single(t) => bytes
+            .iter()
+            .map(|&b| match b.checked_sub(0x80).and_then(|i| t.high.get(usize::from(i))) {
+                Some(&cp) => bmp(cp),
+                None => char::from(b),
+            })
+            .collect(),
         CodePage::Unsupported(_) => bytes
             .iter()
             .map(|&b| if b < 0x80 { char::from(b) } else { char::REPLACEMENT_CHARACTER })
@@ -189,5 +346,72 @@ mod tests {
     fn truncate_on_boundary() {
         assert_eq!(truncate_utf8("ПРИВЕТ", 3), "П");
         assert_eq!(truncate_utf8("abc", 10), "abc");
+    }
+
+    /// Encodes `text` with `table` (a Windows / DOS / KOI8 single-byte code page).
+    fn encode(text: &str, cp: CodePage) -> Vec<u8> {
+        (0..=255u8)
+            .map(|b| (decode_codepage(&[b], cp), b))
+            .filter(|(c, _)| c.chars().count() == 1)
+            .fold(std::collections::HashMap::new(), |mut m, (c, b)| {
+                m.entry(c.chars().next().unwrap_or(' ')).or_insert(b);
+                m
+            })
+            .pipe(|m| text.chars().map(|c| *m.get(&c).unwrap_or(&b'?')).collect())
+    }
+
+    trait Pipe: Sized {
+        fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
+            f(self)
+        }
+    }
+    impl<T> Pipe for T {}
+
+    const RUSSIAN: &str = "Отчёт о проделанной работе за квартал.\nВсе показатели в норме, \
+        замечаний нет. Следующая проверка состоится в начале октября.\r\n";
+
+    #[test]
+    fn legacy_cyrillic_encodings_are_told_apart() {
+        for (id, cp) in [
+            (1251u16, CodePage::Windows1251),
+            (866, CodePage::from_id(866)),
+            (20866, CodePage::from_id(20866)),
+        ] {
+            let bytes = encode(RUSSIAN, cp);
+            let (guess, text) = decode_legacy_text(&bytes).expect("text");
+            assert_eq!(guess.id(), id, "wrong code page for {id}");
+            assert_eq!(text, RUSSIAN, "{id}");
+        }
+    }
+
+    #[test]
+    fn legacy_all_caps_cyrillic_is_still_cp1251() {
+        let bytes = encode("ВНИМАНИЕ! ОПАСНАЯ ЗОНА. ПРОХОД ЗАПРЕЩЁН.", CodePage::Windows1251);
+        assert_eq!(decode_legacy_text(&bytes).map(|(c, _)| c.id()), Some(1251));
+    }
+
+    #[test]
+    fn legacy_western_text_is_windows_1252() {
+        let bytes =
+            encode("Café crème brûlée costs €4 – très bon, señor Müller.\n", CodePage::Windows1252);
+        let (cp, text) = decode_legacy_text(&bytes).expect("text");
+        assert_eq!(cp.id(), 1252);
+        assert!(text.contains("Café") && text.contains('€') && text.contains("Müller"));
+    }
+
+    #[test]
+    fn legacy_rejects_binary_and_unconvincing_data() {
+        // Control bytes.
+        assert!(decode_legacy_text(b"abc\x00def \xE9").is_none());
+        assert!(decode_legacy_text(b"abc\x07def \xE9").is_none());
+        // Pure ASCII is not "legacy" (the caller handles it as UTF-8).
+        assert!(decode_legacy_text(b"hello").is_none());
+        // Mostly high bytes without ASCII structure (double-byte East Asian text, noise).
+        assert!(decode_legacy_text(&[0xB0, 0xA1, 0xB0, 0xA2, 0xB1, 0xA3, 0xC4, 0xE3]).is_none());
+        // Undefined Windows-1252 code points.
+        assert!(decode_legacy_text(b"(c) \xA9 2020 \xAE \xB0 \x81").is_none());
+        // A DOS end-of-file marker at the very end is fine, in the middle it is not.
+        assert!(decode_legacy_text(b"caf\xE9 au lait \x1A").is_some());
+        assert!(decode_legacy_text(b"caf\xE9 \x1A au lait").is_none());
     }
 }

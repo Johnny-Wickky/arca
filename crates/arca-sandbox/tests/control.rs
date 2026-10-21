@@ -9,7 +9,7 @@ use arca_sandbox::{
     CancelToken, FuelPolicy, GuestModule, Progress, RunOptions, Sandbox, SandboxError,
     SandboxPolicy,
 };
-use common::{I32, ModuleBuilder, RunBody, code, guest, op};
+use common::{ABI, I32, ModuleBuilder, RunBody, code, guest, op};
 
 /// A budget no test run is expected to reach: only the controls can stop it.
 const ENDLESS: FuelPolicy =
@@ -20,7 +20,7 @@ fn policy(slice_fuel: u64) -> SandboxPolicy {
 }
 
 fn pinned(body: RunBody, policy: SandboxPolicy) -> (Sandbox, GuestModule) {
-    let m = GuestModule::new("test-guest", guest(body, 1, None, 2));
+    let m = GuestModule::new("test-guest", guest(body, ABI, None, 2));
     (Sandbox::new(policy, [m.pin()]), m)
 }
 
@@ -180,7 +180,7 @@ fn bulk_fill_guest(pages: u32) -> Vec<u8> {
     let t0 = b.ty(&[], &[I32]);
     let t1 = b.ty(&[I32], &[I32]);
     b.memory(pages, Some(pages), true);
-    b.func(t0, op::i32_const(1), Some("arca_abi_version"));
+    b.func(t0, op::i32_const(ABI), Some("arca_abi_version"));
     b.func(t1, op::i32_const(1024), Some("arca_input_reserve"));
     let fill = code(&[
         &op::i32_const(0),
@@ -254,7 +254,7 @@ fn the_per_run_memory_cap_follows_the_input() {
         memory_per_input_byte: 1_000,
         ..policy(1_000_000)
     };
-    let m = GuestModule::new("two-mib", guest(RunBody::Echo, 1, None, 32));
+    let m = GuestModule::new("two-mib", guest(RunBody::Echo, ABI, None, 32));
     let sb = Sandbox::new(policy, [m.pin()]);
     assert_eq!(sb.run(&m, &[7; 10]).unwrap_err(), SandboxError::MemoryLimitExceeded);
     let out = sb.run(&m, &vec![7u8; 10_000]).unwrap();

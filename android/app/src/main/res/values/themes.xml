@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root. -->
+<resources>
+    <!-- Light by default; values-night switches the parent. The in-app theme setting works by
+         overriding the configuration's night mode in attachBaseContext, so these two files
+         are the only place that decides. -->
+    <style name="Theme.Arca" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/arca_bg</item>
+        <item name="android:colorBackground">@color/arca_bg</item>
+        <item name="android:colorPrimary">@color/arca_primary</item>
+        <item name="android:colorAccent">@color/arca_primary</item>
+        <item name="android:textColorPrimary">@color/arca_on_surface</item>
+        <item name="android:textColorSecondary">@color/arca_on_surface_variant</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

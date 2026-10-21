@@ -14,7 +14,8 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use arca_sandbox::{GuestModule, Sandbox, SandboxPolicy};
+use arca_abi::request::{Op, flags, header};
+use arca_sandbox::{GuestModule, RunOptions, Sandbox, SandboxPolicy};
 
 fn main() -> ExitCode {
     let Some(path) = std::env::var_os("ARCA_GUEST_XRAY_WASM") else {
@@ -52,24 +53,27 @@ fn main() -> ExitCode {
         let t = Instant::now();
         let native = arca_xray::scan_default(&data);
         let native_ms = t.elapsed().as_millis();
-        match sandbox.run(&module, &data) {
-            Ok(out) => {
-                let per_byte =
-                    out.stats.fuel_consumed / u64::try_from(data.len().max(1)).unwrap_or(1);
-                let flag = if per_byte > policy_per_byte { "  <-- over budget" } else { "" };
-                println!(
-                    "{:<34} {:>11} {:>14} {:>9} {:>10.1} {:>9} {:>9} {:?}{flag}",
-                    name,
-                    data.len(),
-                    out.stats.fuel_consumed,
-                    per_byte,
-                    out.stats.peak_memory_bytes as f64 / 1_048_576.0,
-                    out.stats.wall_time.as_millis(),
-                    native_ms,
-                    native.verdict,
-                );
+        for op in [Op::Scan, Op::Preview] {
+            let op_flags = if op == Op::Preview { flags::REVEAL_HIDDEN } else { 0 };
+            match sandbox.run_request(&module, &header(op, op_flags), &data, &RunOptions::new()) {
+                Ok(out) => {
+                    let per_byte =
+                        out.stats.fuel_consumed / u64::try_from(data.len().max(1)).unwrap_or(1);
+                    let flag = if per_byte > policy_per_byte { "  <-- over budget" } else { "" };
+                    println!(
+                        "{:<34} {:>11} {:>14} {:>9} {:>10.1} {:>9} {:>9} {:?}{flag}",
+                        format!("{name} [{op:?}]"),
+                        data.len(),
+                        out.stats.fuel_consumed,
+                        per_byte,
+                        out.stats.peak_memory_bytes as f64 / 1_048_576.0,
+                        out.stats.wall_time.as_millis(),
+                        native_ms,
+                        native.verdict,
+                    );
+                }
+                Err(e) => println!("{name:<34} {:>11}  FAILED: {e}", data.len()),
             }
-            Err(e) => println!("{name:<34} {:>11}  FAILED: {e}", data.len()),
         }
     }
     ExitCode::SUCCESS

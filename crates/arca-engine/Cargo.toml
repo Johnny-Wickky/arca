@@ -1,0 +1,23 @@
+[package]
+name = "arca-engine"
+description = "Host-side orchestration of the Arca sandbox for the apps: policies, sessions, handles and JSON views"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arca-abi.workspace = true
+arca-attribution.workspace = true
+arca-container.workspace = true
+arca-digest.workspace = true
+arca-guest-xray.workspace = true
+arca-preview.workspace = true
+arca-sandbox.workspace = true
+arca-xray.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

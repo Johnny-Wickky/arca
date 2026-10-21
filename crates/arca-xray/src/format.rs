@@ -241,20 +241,30 @@ impl FileFormat {
 
 /// Container kind recognised from magic bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Magic {
+pub enum Magic {
+    /// Zero-length input.
     Empty,
+    /// ZIP archive (OPC, ODF, plain archive).
     Zip,
+    /// OLE2 compound file.
     Ole2,
+    /// PDF.
     Pdf,
+    /// Rich Text Format.
     Rtf,
+    /// Access database (format already known).
     Jet(FileFormat),
+    /// Native executable, script or shortcut (description).
     Executable(&'static str),
+    /// Looks like UTF-8 / UTF-16 text.
     Text,
+    /// Anything else.
     Unknown,
 }
 
 /// Classifies by magic bytes only.
-pub(crate) fn sniff(data: &[u8]) -> Magic {
+#[must_use]
+pub fn sniff(data: &[u8]) -> Magic {
     if data.is_empty() {
         return Magic::Empty;
     }
@@ -324,8 +334,10 @@ fn executable_magic(data: &[u8]) -> Option<&'static str> {
     None
 }
 
-/// Heuristic: valid UTF-8 / UTF-16 (BOM) without binary control bytes.
-pub(crate) fn looks_like_text(data: &[u8]) -> bool {
+/// Heuristic: valid UTF-8 / UTF-16 (BOM) or convincing legacy 8-bit text, without binary
+/// control bytes.
+#[must_use]
+pub fn looks_like_text(data: &[u8]) -> bool {
     if data.starts_with(&[0xFF, 0xFE]) || data.starts_with(&[0xFE, 0xFF]) {
         return data.len().is_multiple_of(2);
     }
@@ -339,7 +351,8 @@ pub(crate) fn looks_like_text(data: &[u8]) -> bool {
                 _ => return false,
             }
         }
-        Err(_) => return false,
+        // Old 8-bit text (DOS / early Windows): accepted when it convincingly decodes.
+        Err(_) => return arca_container::text::decode_legacy_text(sample).is_some(),
     };
     let bad = text
         .chars()
@@ -349,7 +362,8 @@ pub(crate) fn looks_like_text(data: &[u8]) -> bool {
 }
 
 /// Refines a text file into its likely sub-format.
-pub(crate) fn classify_text(text: &str) -> FileFormat {
+#[must_use]
+pub fn classify_text(text: &str) -> FileFormat {
     let head = arca_container::text::truncate_utf8(text, 64 << 10);
     let trimmed = head.trim_start_matches('\u{feff}').trim_start();
     let lower: String = trimmed.chars().take(512).collect::<String>().to_ascii_lowercase();
@@ -396,7 +410,8 @@ pub(crate) fn classify_text(text: &str) -> FileFormat {
 }
 
 /// Maps the content type of an OPC main part to a format.
-pub(crate) fn opc_format_from_content_type(ct: &str) -> FileFormat {
+#[must_use]
+pub fn opc_format_from_content_type(ct: &str) -> FileFormat {
     let ct = ct.trim().to_ascii_lowercase();
     match ct.as_str() {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" => {
@@ -445,7 +460,8 @@ pub(crate) fn opc_format_from_content_type(ct: &str) -> FileFormat {
 }
 
 /// Maps an ODF `mimetype` value to a format.
-pub(crate) fn odf_format_from_mimetype(mt: &str) -> FileFormat {
+#[must_use]
+pub fn odf_format_from_mimetype(mt: &str) -> FileFormat {
     let mt = mt.trim();
     let base = mt.strip_suffix("-template").unwrap_or(mt);
     match base {
@@ -477,6 +493,23 @@ mod tests {
         assert_eq!(sniff(&jet), Magic::Jet(FileFormat::AccessJet4));
         assert_eq!(sniff("Привет, мир".as_bytes()), Magic::Text);
         assert_eq!(sniff(&[0x00, 0x01, 0x02, 0x03]), Magic::Unknown);
+    }
+
+    #[test]
+    fn legacy_eight_bit_text_is_text_but_binary_is_not() {
+        // Windows-1251: "Отчёт за квартал: все в порядке."
+        let cp1251 = [
+            0xCE, 0xF2, 0xF7, 0xB8, 0xF2, b' ', 0xE7, 0xE0, b' ', 0xEA, 0xE2, 0xE0, 0xF0, 0xF2,
+            0xE0, 0xEB, b':', b' ', 0xE2, 0xF1, 0xE5, b' ', 0xE2, b' ', 0xEF, 0xEE, 0xF0, 0xFF,
+            0xE4, 0xEA, 0xE5, b'.',
+        ];
+        assert_eq!(sniff(&cp1251), Magic::Text);
+        // Latin-1 accents in Western text.
+        assert_eq!(sniff(b"Caf\xE9 cr\xE8me, tr\xE8s bon, se\xF1or M\xFCller.\n"), Magic::Text);
+        // Binary stays unknown: control bytes, or high bytes with no text structure.
+        assert_eq!(sniff(&[0x01, 0xE9, 0x20, 0x41]), Magic::Unknown);
+        assert_eq!(sniff(&[0xB0, 0xA1, 0xB0, 0xA2, 0xB1, 0xA3, 0xC4, 0xE3]), Magic::Unknown);
+        assert_eq!(sniff(&[0xFF, 0xFF, 0xFF]), Magic::Unknown);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! # arca-abi — the contract between the sandbox host and parser guests
 //!
 //! A parser guest is a `wasm32-unknown-unknown` module with **zero imports**.
-//! It exports exactly the following items (version 1):
+//! It exports exactly the following items (version 2):
 //!
 //! | export                         | signature           | meaning |
 //! |--------------------------------|---------------------|---------|
@@ -16,10 +16,15 @@
 //! | `arca_output_len`             | `() -> i32`         | length of the result envelope |
 //!
 //! Protocol: the host calls `arca_abi_version`, then `arca_input_reserve`,
-//! writes the document bytes into the returned region, calls `arca_run`,
-//! and copies `arca_output_len` bytes from `arca_output_ptr` out of the
-//! guest memory after bounds-checking them. The result is an [`envelope`]
-//! wrapping a payload encoded with the [`wire`] codec.
+//! writes a [`request`] (a 16-byte header naming the operation followed by the
+//! document bytes) into the returned region, calls `arca_run`, and copies
+//! `arca_output_len` bytes from `arca_output_ptr` out of the guest memory after
+//! bounds-checking them. The result is an [`envelope`] wrapping a payload
+//! encoded with the [`wire`] codec.
+//!
+//! Version 2 (this version) added the request header: a guest now serves
+//! several operations (scan, sterilise, preview) instead of one. A version-1
+//! guest is refused by the sandbox because its `arca_abi_version` differs.
 //!
 //! Nothing in the ABI requires `unsafe` code on either side: the host uses
 //! the interpreter's checked memory accessors and the guest only hands out
@@ -31,10 +36,11 @@
 extern crate alloc;
 
 pub mod envelope;
+pub mod request;
 pub mod wire;
 
 /// Version of the guest ABI described in this crate.
-pub const ABI_VERSION: i32 = 1;
+pub const ABI_VERSION: i32 = 2;
 
 /// Names of the items a guest must export.
 pub mod exports {
@@ -62,6 +68,17 @@ pub mod status {
     pub const LENGTH_MISMATCH: i32 = 2;
     /// The guest could not encode its result.
     pub const ENCODE_FAILED: i32 = 3;
-    /// The guest rejected the document; the envelope holds an error payload.
+    /// The guest rejected the document as damaged, hostile or beyond a safety
+    /// limit; the envelope holds an error payload.
     pub const DOCUMENT_REJECTED: i32 = 4;
+    /// The request header is malformed or names an unknown operation.
+    pub const BAD_REQUEST: i32 = 5;
+    /// The format cannot be sterilised structurally (the payload names it).
+    pub const UNSUPPORTED_FORMAT: i32 = 6;
+    /// The operation failed after the document was accepted (rebuild or
+    /// verification failure, resource limit of the extractor ...).
+    pub const OPERATION_FAILED: i32 = 7;
+    /// The document is password protected / encrypted: nothing can be read
+    /// from it (the X-ray still reports what is visible from outside).
+    pub const ENCRYPTED: i32 = 8;
 }

@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     Названия идентификаторов, о которых сообщает движок (см. values/strings_labels.xml). -->
+<resources>
+    <!-- Форматы файлов (FileFormat) -->
+    <string name="format_empty">Пустой файл</string>
+    <string name="format_unknown">Неизвестный формат</string>
+    <string name="format_docx">Документ Word (DOCX)</string>
+    <string name="format_docm">Документ Word с макросами (DOCM)</string>
+    <string name="format_dotx">Шаблон Word (DOTX)</string>
+    <string name="format_dotm">Шаблон Word с макросами (DOTM)</string>
+    <string name="format_xlsx">Книга Excel (XLSX)</string>
+    <string name="format_xlsm">Книга Excel с макросами (XLSM)</string>
+    <string name="format_xltx">Шаблон Excel (XLTX)</string>
+    <string name="format_xltm">Шаблон Excel с макросами (XLTM)</string>
+    <string name="format_xlsb">Двоичная книга Excel (XLSB)</string>
+    <string name="format_xlam">Надстройка Excel (XLAM)</string>
+    <string name="format_pptx">Презентация PowerPoint (PPTX)</string>
+    <string name="format_pptm">Презентация PowerPoint с макросами (PPTM)</string>
+    <string name="format_ppsx">Показ слайдов PowerPoint (PPSX)</string>
+    <string name="format_ppsm">Показ слайдов PowerPoint с макросами (PPSM)</string>
+    <string name="format_potx">Шаблон PowerPoint (POTX)</string>
+    <string name="format_potm">Шаблон PowerPoint с макросами (POTM)</string>
+    <string name="format_vsdx">Чертёж Visio (VSDX)</string>
+    <string name="format_vsdm">Чертёж Visio с макросами (VSDM)</string>
+    <string name="format_visio_template_or_stencil">Шаблон или набор элементов Visio</string>
+    <string name="format_xps">Документ XPS</string>
+    <string name="format_opc_other">Пакет Office Open XML (другой)</string>
+    <string name="format_odt">Текст OpenDocument (ODT)</string>
+    <string name="format_ods">Таблица OpenDocument (ODS)</string>
+    <string name="format_odp">Презентация OpenDocument (ODP)</string>
+    <string name="format_odg">Рисунок OpenDocument (ODG)</string>
+    <string name="format_odf_other">OpenDocument (другой)</string>
+    <string name="format_doc">Документ Word 97–2003 (DOC)</string>
+    <string name="format_xls">Книга Excel 97–2003 (XLS)</string>
+    <string name="format_ppt">Презентация PowerPoint 97–2003 (PPT)</string>
+    <string name="format_vsd">Чертёж Visio 97–2003 (VSD)</string>
+    <string name="format_msg">Сообщение Outlook (MSG)</string>
+    <string name="format_encrypted_ooxml">Зашифрованный документ Office</string>
+    <string name="format_msi">Пакет Windows Installer (MSI)</string>
+    <string name="format_ole_other">Составной файл OLE (другой)</string>
+    <string name="format_rtf">Rich Text (RTF)</string>
+    <string name="format_pdf">Документ PDF</string>
+    <string name="format_access_jet3">База данных Access (Jet 3)</string>
+    <string name="format_access_jet4">База данных Access (Jet 4)</string>
+    <string name="format_access_ace">База данных Access (ACE)</string>
+    <string name="format_plain_text">Простой текст</string>
+    <string name="format_csv">Таблица CSV</string>
+    <string name="format_tsv">Таблица TSV</string>
+    <string name="format_markdown">Текст Markdown</string>
+    <string name="format_html">Страница HTML</string>
+    <string name="format_flat_xml">Плоский документ XML</string>
+    <string name="format_zip">Архив ZIP</string>
+    <string name="format_executable">Исполняемая программа</string>
+
+    <!-- Категории (Category) -->
+    <string name="cat_active_content">Активное содержимое</string>
+    <string name="cat_remote_content">Внешнее содержимое</string>
+    <string name="cat_concealment">Скрытое содержимое</string>
+    <string name="cat_privacy_leak">Личные данные</string>
+    <string name="cat_structural">Устройство файла</string>
+    <string name="cat_encryption">Шифрование</string>
+
+    <!-- Серьёзность (Severity) -->
+    <string name="sev_info">Сведения</string>
+    <string name="sev_low">Низкая</string>
+    <string name="sev_medium">Средняя</string>
+    <string name="sev_high">Высокая</string>
+    <string name="sev_critical">Критическая</string>
+
+    <!-- Метаданные (MetaKey) -->
+    <string name="meta_title">Заголовок</string>
+    <string name="meta_subject">Тема</string>
+    <string name="meta_author">Автор</string>
+    <string name="meta_last_modified_by">Кто изменил последним</string>
+    <string name="meta_company">Организация</string>
+    <string name="meta_manager">Руководитель</string>
+    <string name="meta_application">Программа</string>
+    <string name="meta_app_version">Версия программы</string>
+    <string name="meta_template">Шаблон</string>
+    <string name="meta_revision">Редакция</string>
+    <string name="meta_total_edit_minutes">Общее время правки (минуты)</string>
+    <string name="meta_created">Создан</string>
+    <string name="meta_modified">Изменён</string>
+    <string name="meta_last_printed">Последняя печать</string>
+    <string name="meta_keywords">Ключевые слова</string>
+    <string name="meta_description">Описание</string>
+    <string name="meta_category">Категория</string>
+    <string name="meta_custom_property">Пользовательское свойство</string>
+    <string name="meta_local_path">Путь на компьютере автора</string>
+    <string name="meta_printer">Принтер</string>
+    <string name="meta_person">Человек, названный в документе</string>
+    <string name="meta_editing_sessions">Идентификаторы сеансов правки</string>
+    <string name="meta_hyperlink_base">Базовый адрес для ссылок</string>
+    <string name="meta_generator">Создавшая программа</string>
+    <string name="meta_language">Язык</string>
+    <string name="meta_content_status">Состояние содержимого</string>
+    <string name="meta_machine">Имя компьютера</string>
+    <string name="meta_security">Настройка безопасности</string>
+    <string name="meta_editing_cycles">Циклы правки</string>
+
+    <!-- Ссылки (RefKind, TargetClass) -->
+    <string name="ref_kind_template">Шаблон</string>
+    <string name="ref_kind_image">Рисунок</string>
+    <string name="ref_kind_frame">Фрейм</string>
+    <string name="ref_kind_hyperlink">Гиперссылка</string>
+    <string name="ref_kind_object_link">Связанный объект</string>
+    <string name="ref_kind_workbook_link">Связанная книга</string>
+    <string name="ref_kind_data_connection">Подключение к данным</string>
+    <string name="ref_kind_field">Поле</string>
+    <string name="ref_kind_stylesheet">Таблица стилей</string>
+    <string name="ref_kind_pdf_action">Действие PDF</string>
+    <string name="ref_kind_other">Другое</string>
+    <string name="ref_class_web">Веб-адрес</string>
+    <string name="ref_class_unc">Сетевой путь (UNC)</string>
+    <string name="ref_class_local_file">Локальный файл</string>
+    <string name="ref_class_dangerous_protocol">Опасный протокол</string>
+    <string name="ref_class_mail">Электронная почта</string>
+    <string name="ref_class_other_scheme">Другая схема</string>
+    <string name="ref_class_relative">Относительный путь</string>
+
+    <!-- Вложенные объекты (EmbeddedKind) и языки макросов (MacroLanguage) -->
+    <string name="emb_kind_ole_object">Объект OLE</string>
+    <string name="emb_kind_package">Вложенный файл</string>
+    <string name="emb_kind_document">Документ</string>
+    <string name="emb_kind_executable">Исполняемый файл</string>
+    <string name="emb_kind_active_x">Элемент ActiveX</string>
+    <string name="emb_kind_font">Шрифт</string>
+    <string name="emb_kind_other">Другое</string>
+    <string name="macro_lang_vba">VBA</string>
+    <string name="macro_lang_xlm">Макросы Excel 4 (XLM)</string>
+    <string name="macro_lang_star_basic">StarBasic</string>
+    <string name="macro_lang_python">Python</string>
+    <string name="macro_lang_java_script">JavaScript</string>
+    <string name="macro_lang_bean_shell">BeanShell</string>
+
+    <!-- Изменения в стерильной копии (ActionKind) -->
+    <string name="action_removed_part">Удалена часть</string>
+    <string name="action_removed_external_reference">Удалена внешняя ссылка</string>
+    <string name="action_removed_relationship">Удалена связь</string>
+    <string name="action_neutralized_field">Обезврежено поле</string>
+    <string name="action_removed_formula">Удалена формула</string>
+    <string name="action_removed_element">Удалён элемент</string>
+    <string name="action_accepted_revisions">Приняты исправления</string>
+    <string name="action_removed_comments">Удалены комментарии</string>
+    <string name="action_stripped_metadata">Удалены метаданные</string>
+    <string name="action_converted_content_type">Изменён тип содержимого</string>
+
+    <!-- Чего нет в просмотре (NoticeKind). %1$d — количество, %2$s — подробность. -->
+    <string name="notice_truncated">Документ длиннее предела просмотра; остальное не показано.</string>
+    <string name="notice_unsupported">Просмотр не поддерживает: %2$s.</string>
+    <string name="notice_skipped">Пропущено (не удалось прочитать или устарело): %2$s.</string>
+    <string name="notice_invisible_removed">Невидимые символы и символы, меняющие направление текста, помечены: %1$d.</string>
+    <string name="notice_images_not_shown">Рисунки никогда не расшифровываются и показаны заглушками: %1$d.</string>
+    <string name="notice_hidden_shown">Скрытое содержимое показано и помечено как скрытое: %1$d.</string>
+    <string name="notice_tracked_changes">В документе есть исправления: удалённое зачёркнуто, вставленное подчёркнуто: %1$d.</string>
+    <string name="notice_formulas_not_evaluated">Формулы не вычисляются; показаны сохранённые результаты: %1$d.</string>
+    <string name="notice_best_effort">Текст восстановлен из старого двоичного формата как удалось; вёрстка и часть содержимого могут отсутствовать.</string>
+    <string name="notice_hidden_omitted">Скрытое содержимое не показано (включите «Показать скрытое», чтобы увидеть его): %1$d.</string>
+</resources>

@@ -30,6 +30,8 @@
 pub mod budget;
 pub mod bytes;
 pub mod cfb;
+pub mod codepages;
+pub mod inflate;
 pub mod text;
 pub mod xml;
 pub mod zip;

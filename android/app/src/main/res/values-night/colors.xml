@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root. -->
+<resources>
+    <color name="arca_bg">#0E1216</color>
+    <color name="arca_surface">#171C22</color>
+    <color name="arca_surface_variant">#222931</color>
+    <color name="arca_on_surface">#E6EAEE</color>
+    <color name="arca_on_surface_variant">#A9B3BE</color>
+    <color name="arca_outline">#38424E</color>
+    <color name="arca_scrim">#99000000</color>
+
+    <color name="arca_primary">#4FD1C5</color>
+    <color name="arca_on_primary">#00201D</color>
+    <color name="arca_primary_container">#10423D</color>
+    <color name="arca_on_primary_container">#CFF5F0</color>
+
+    <color name="arca_safe">#6FDA94</color>
+    <color name="arca_safe_container">#12301D</color>
+    <color name="arca_warn">#FFC857</color>
+    <color name="arca_warn_container">#3A2D0B</color>
+    <color name="arca_danger">#FF9188</color>
+    <color name="arca_danger_container">#431816</color>
+    <color name="arca_unknown">#A5BFDD</color>
+    <color name="arca_unknown_container">#1C2837</color>
+
+    <color name="arca_sev_critical">#FF9188</color>
+    <color name="arca_sev_high">#FFAB70</color>
+    <color name="arca_sev_medium">#FFC857</color>
+    <color name="arca_sev_low">#8EC1FF</color>
+    <color name="arca_sev_info">#A9B3BE</color>
+
+    <color name="arca_hidden_text">#8A94A0</color>
+    <color name="arca_deleted">#FF9188</color>
+    <color name="arca_inserted">#6FDA94</color>
+    <color name="arca_link">#8EC1FF</color>
+    <color name="arca_code_bg">#1D242C</color>
+</resources>

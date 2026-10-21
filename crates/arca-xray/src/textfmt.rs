@@ -13,8 +13,12 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileForm
     let text = match xml::decode_xml_bytes(data, &limits) {
         Ok(t) => t,
         Err(_) => {
-            // Not strictly UTF-8: degrade gracefully for detection purposes.
-            std::borrow::Cow::Owned(String::from_utf8_lossy(data).into_owned())
+            // Not UTF-8: legacy 8-bit text if it looks like it, otherwise lossy.
+            let decoded = match arca_container::text::decode_legacy_text(data) {
+                Some((_, text)) => text,
+                None => String::from_utf8_lossy(data).into_owned(),
+            };
+            std::borrow::Cow::Owned(decoded)
         }
     };
     let format = classify_text(&text);
