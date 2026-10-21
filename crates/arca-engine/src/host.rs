@@ -67,6 +67,8 @@ pub enum Status {
     BadArgument = 12,
     /// The engine has not been initialised.
     NotReady = 13,
+    /// The document is encrypted and the password does not open it.
+    WrongPassword = 14,
 }
 
 impl Status {
@@ -128,6 +130,8 @@ pub struct Engine {
 pub struct RunOutput {
     /// Classification of the outcome.
     pub status: Status,
+    /// Whether the document had to be decrypted to be read.
+    pub unlock: Unlock,
     /// Technical message (English), empty on success.
     pub message: String,
     /// The decoded result.
@@ -136,9 +140,21 @@ pub struct RunOutput {
     pub stats: Option<ExecutionStats>,
 }
 
+/// How an encrypted document was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Unlock {
+    /// The document was not encrypted.
+    Not = 0,
+    /// The password the reader gave opened it.
+    Password = 1,
+    /// It was locked but needed no password (a PDF that only restricts editing).
+    NoPassword = 2,
+}
+
 impl RunOutput {
     fn failure(status: Status, message: impl Into<String>) -> Self {
-        Self { status, message: message.into(), data: None, stats: None }
+        Self { status, unlock: Unlock::Not, message: message.into(), data: None, stats: None }
     }
 }
 
@@ -174,6 +190,7 @@ fn classify_guest(code: i32) -> Status {
         guest_status::UNSUPPORTED_FORMAT => Status::Unsupported,
         guest_status::OPERATION_FAILED => Status::Failed,
         guest_status::ENCRYPTED => Status::Encrypted,
+        guest_status::WRONG_PASSWORD => Status::WrongPassword,
         _ => Status::Fault,
     }
 }
@@ -202,7 +219,9 @@ impl Engine {
     fn policy_for(&self, op: Op, len: usize) -> SandboxPolicy {
         let c = &self.config;
         let mut policy = SandboxPolicy {
-            max_input_bytes: c.max_input_bytes.saturating_add(request::HEADER_LEN),
+            max_input_bytes: c
+                .max_input_bytes
+                .saturating_add(request::HEADER_LEN + request::MAX_PASSWORD),
             max_memory_bytes: c.max_memory_bytes,
             max_wall_time: Some(match op {
                 Op::Scan | Op::Sanitize => c.scan_timeout,
@@ -222,24 +241,44 @@ impl Engine {
 
     /// Runs `op` over `document` in the sandbox and decodes the result.
     #[must_use]
-    pub fn run(&self, op: Op, op_flags: u32, document: &[u8], cancel: &CancelToken) -> RunOutput {
+    pub fn run(
+        &self,
+        op: Op,
+        op_flags: u32,
+        password: &[u8],
+        document: &[u8],
+        cancel: &CancelToken,
+    ) -> RunOutput {
         if op_flags & !op.known_flags() != 0 {
             return RunOutput::failure(Status::BadArgument, "unknown flag bits");
         }
         let sandbox = Sandbox::new(self.policy_for(op, document.len()), [self.module.pin()]);
         let options = RunOptions::new().cancel_token(cancel.clone());
-        let header = request::header(op, op_flags);
-        let out = match sandbox.run_request(&self.module, &header, document, &options) {
+        let Some(prefix) = request::prefix(op, op_flags, password) else {
+            return RunOutput::failure(Status::BadArgument, "the password is too long");
+        };
+        let out = match sandbox.run_request(&self.module, &prefix, document, &options) {
             Ok(out) => out,
             Err(e) => return RunOutput::failure(classify(&e), e.to_string()),
         };
         let stats = Some(out.stats);
-        if out.status != guest_status::OK {
+        let unlock = match out.status {
+            guest_status::OK_DECRYPTED => Unlock::Password,
+            guest_status::OK_UNLOCKED => Unlock::NoPassword,
+            _ => Unlock::Not,
+        };
+        if !guest_status::is_success(out.status) {
             let message = match decode(out.kind, &out.payload) {
                 Err(DecodeError::Guest(m)) => m,
                 _ => format!("guest status {}", out.status),
             };
-            return RunOutput { status: classify_guest(out.status), message, data: None, stats };
+            return RunOutput {
+                status: classify_guest(out.status),
+                unlock,
+                message,
+                data: None,
+                stats,
+            };
         }
         let expected = match op {
             Op::Scan => PayloadKind::XRayReport,
@@ -249,18 +288,27 @@ impl Engine {
         if out.kind != expected {
             return RunOutput {
                 status: Status::Fault,
+                unlock,
                 message: format!("the guest answered with {:?} instead of {expected:?}", out.kind),
                 data: None,
                 stats,
             };
         }
         match decode(out.kind, &out.payload) {
-            Ok(data) => {
-                RunOutput { status: Status::Ok, message: String::new(), data: Some(data), stats }
-            }
-            Err(e) => {
-                RunOutput { status: Status::Fault, message: e.to_string(), data: None, stats }
-            }
+            Ok(data) => RunOutput {
+                status: Status::Ok,
+                unlock,
+                message: String::new(),
+                data: Some(data),
+                stats,
+            },
+            Err(e) => RunOutput {
+                status: Status::Fault,
+                unlock,
+                message: e.to_string(),
+                data: None,
+                stats,
+            },
         }
     }
 }
@@ -311,6 +359,8 @@ enum DocState {
 struct Document {
     limit: usize,
     state: Mutex<DocState>,
+    /// What the reader typed for an encrypted document; wiped when the document goes.
+    password: Mutex<Zeroizing<Vec<u8>>>,
 }
 
 /// What a finished run keeps for the app to query.
@@ -326,6 +376,7 @@ enum Body {
 struct Outcome {
     op: Op,
     status: Status,
+    unlock: Unlock,
     message: String,
     stats: Option<ExecutionStats>,
     body: Body,
@@ -366,7 +417,23 @@ impl Host {
         self.docs.insert(Document {
             limit,
             state: Mutex::new(DocState::Loading(Zeroizing::new(Vec::new()))),
+            password: Mutex::new(Zeroizing::new(Vec::new())),
         })
+    }
+
+    /// Remembers the password for the next runs over the document (UTF-8; empty forgets it).
+    ///
+    /// # Errors
+    /// [`Status::BadHandle`], [`Status::BadArgument`] for a password longer than the protocol
+    /// allows.
+    pub fn doc_set_password(&self, doc: Handle, password: &[u8]) -> Result<(), Status> {
+        if password.len() > request::MAX_PASSWORD {
+            return Err(Status::BadArgument);
+        }
+        let d = self.docs.get(doc).ok_or(Status::BadHandle)?;
+        let mut slot = d.password.lock().unwrap_or_else(PoisonError::into_inner);
+        *slot = Zeroizing::new(password.to_vec());
+        Ok(())
     }
 
     /// Appends `chunk`.
@@ -475,7 +542,12 @@ impl Host {
             return Err(Status::BadArgument);
         }
         let bytes = self.seal(doc)?;
-        let out = self.engine.run(op, op_flags, &bytes, &token);
+        let password = {
+            let d = self.docs.get(doc).ok_or(Status::BadHandle)?;
+            let p = d.password.lock().unwrap_or_else(PoisonError::into_inner);
+            Zeroizing::new(p.to_vec())
+        };
+        let out = self.engine.run(op, op_flags, &password, &bytes, &token);
         let body = match out.data {
             Some(Output::Report(r)) => Body::Report(r),
             Some(Output::Preview(p)) => Body::Preview(Box::new(PreviewIndex::new(*p))),
@@ -491,6 +563,7 @@ impl Host {
         Ok(self.outcomes.insert(Outcome {
             op,
             status: out.status,
+            unlock: out.unlock,
             message: out.message,
             stats: out.stats,
             body,
@@ -520,6 +593,7 @@ impl Host {
         w.field_u64("status", u64::try_from(o.status.code()).unwrap_or(0));
         w.field_name("statusName", &o.status);
         w.field_u64("op", u64::from(o.op.code()));
+        w.field_u64("unlock", u64::from(o.unlock as u8));
         w.field_str("message", &o.message);
         if let Some(s) = &o.stats {
             w.key("stats");

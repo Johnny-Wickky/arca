@@ -575,6 +575,24 @@ public final class CoreTest {
         check(Capabilities.previewFormats().containsAll(Arrays.asList(previews)), "the sets agree");
     }
 
+    static void needsPassword() {
+        Model.Report office = new Model.Report();
+        office.format = "EncryptedOoxml";
+        check(office.needsPassword(), "an encrypted Office package asks for a password");
+        Model.Report pdf = new Model.Report();
+        pdf.format = "Pdf";
+        check(!pdf.needsPassword(), "a plain PDF does not");
+        Model.Finding f = new Model.Finding();
+        f.kind = "EncryptedDocument";
+        pdf.findings.add(f);
+        check(pdf.needsPassword(), "an encrypted PDF does");
+        Model.Report doc = new Model.Report();
+        doc.format = "Doc";
+        doc.findings.add(f);
+        check(!doc.needsPassword(), "a legacy binary file cannot be opened with a password");
+        check(!new Model.Report().needsPassword(), "an empty report does not");
+    }
+
     static void numericLooking() {
         String[] yes = {"1", "-3", "+4.5", "1,234.50", "12%", "(1 234)", "$5.00", "\u20ac12", "1E+21",
             "2024-03-05", "12:30:15", "3/5/24", "1.5E-3"};
@@ -910,7 +928,7 @@ public final class CoreTest {
 
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -928,6 +946,7 @@ public final class CoreTest {
                     case "search": search(); break;
                     case "outlineBookmarksZoom": outlineBookmarksZoom(); break;
                     case "numericLooking": numericLooking(); break;
+                    case "needsPassword": needsPassword(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

@@ -66,6 +66,8 @@ public final class ContractTest {
      * appear in the preview. Mutated copies are only held to the generic invariants.
      */
     private static final java.util.Map<String, String[]> EXPECT = new java.util.HashMap<>();
+    /** The passwords of the encrypted documents of the corpus. */
+    private static final java.util.Map<String, String> PASSWORDS = new java.util.HashMap<>();
     /** Text that exists only in hidden parts of a document. */
     private static final java.util.Map<String, String[]> CONCEALED = new java.util.HashMap<>();
 
@@ -89,6 +91,14 @@ public final class ContractTest {
         // Formulas without stored results are calculated: the sum, the text built from it, the lookup.
         EXPECT.put("formulas.xlsx", new String[] {"Xlsx", "Яблоки", "Всего: 100.00 руб."});
         EXPECT.put("drawing.vsdx", new String[] {"Vsdx", "Принять заказ", "Проверить оплату", "Ответственный", "Склад"});
+
+        PASSWORDS.put("enc-agile.docx", "пароль-123");
+        PASSWORDS.put("enc-agile.xlsx", "s3cret");
+        PASSWORDS.put("enc-standard.docx", "Password1234_");
+        PASSWORDS.put("enc-rc4-40.pdf", "user-40");
+        PASSWORDS.put("enc-rc4-128.pdf", "user-128");
+        PASSWORDS.put("enc-aes-128.pdf", "p\u00e4ssword");
+        PASSWORDS.put("enc-aes-256.pdf", "user-256");
 
         // Hidden content: absent by default (the viewer never shows what the author concealed
         // unless asked) and present, labelled by the app, when the reader asks for it.
@@ -264,12 +274,88 @@ public final class ContractTest {
                 }
                 Native.outcomeFree(outcome);
             }
+            if (pristine && PASSWORDS.containsKey(name)) {
+                passwordChecks(name, doc, PASSWORDS.get(name));
+            }
         } catch (RuntimeException e) {
             check(false, name + ": exception " + e);
             e.printStackTrace(System.out);
         } finally {
             Native.docFree(doc);
         }
+    }
+
+    private static byte[] utf8(String s) {
+        return s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static long scan(long doc, int op, int flags) {
+        long job = Native.jobNew();
+        long outcome = Native.run(job, doc, op, flags);
+        Native.jobFree(job);
+        runs++;
+        return outcome;
+    }
+
+    /**
+     * An encrypted document through the real engine: it asks for a password, refuses a wrong one,
+     * and with the right one reports, previews and sterilises what is inside.
+     */
+    private static void passwordChecks(String name, long doc, String password) {
+        long outcome = scan(doc, Native.OP_SCAN, 0);
+        check(outcome > 0, name + ": scan without a password");
+        Model.Report locked = Model.parseReport(Native.report(outcome));
+        check(locked.needsPassword(), name + ": the report does not ask for a password (" + locked.format + ")");
+        Native.outcomeFree(outcome);
+
+        byte[] wrong = utf8("definitely not it");
+        check(Native.docSetPassword(doc, wrong, 0, wrong.length) == Native.OK, name + ": set a password");
+        outcome = scan(doc, Native.OP_SCAN, 0);
+        check(outcome > 0 && Native.outcomeStatus(outcome) == Native.WRONG_PASSWORD,
+            name + ": a wrong password gave status " + (outcome > 0 ? Native.outcomeStatus(outcome) : outcome));
+        check(Native.report(outcome) == null, name + ": a report for a wrong password");
+        Native.outcomeFree(outcome);
+
+        byte[] right = utf8(password);
+        check(Native.docSetPassword(doc, right, 0, right.length) == Native.OK, name + ": set the password");
+        outcome = scan(doc, Native.OP_SCAN, 0);
+        check(outcome > 0 && Native.outcomeStatus(outcome) == Native.OK, name + ": scan with the password");
+        if (outcome > 0 && Native.outcomeStatus(outcome) == Native.OK) {
+            Model.Report open = Model.parseReport(Native.report(outcome));
+            check(!open.needsPassword(), name + ": still asks for a password (" + open.format + ")");
+            check(Model.parseRunInfo(Native.outcomeInfo(outcome)).unlock == 1, name + ": not marked as decrypted");
+            check(open.sha256.equals(locked.sha256), name + ": the hash is not that of the file");
+        }
+        Native.outcomeFree(outcome);
+
+        outcome = scan(doc, Native.OP_PREVIEW, 0);
+        check(outcome > 0 && Native.outcomeStatus(outcome) == Native.OK, name + ": preview with the password");
+        if (outcome > 0 && Native.outcomeStatus(outcome) == Native.OK) {
+            Model.PreviewMeta meta = Native.previewMeta(outcome) == null ? null : Model.parsePreviewMeta(Native.previewMeta(outcome));
+            check(meta != null && !meta.sections.isEmpty(), name + ": the preview has no sections");
+            StringBuilder all = new StringBuilder();
+            for (int sec = 0; meta != null && sec < meta.sections.size(); sec++) {
+                byte[] json = Native.previewItems(outcome, sec, 0, 64);
+                if (json != null) {
+                    all.append(new String(json, java.nio.charset.StandardCharsets.UTF_8));
+                }
+            }
+            String expect = name.endsWith("xlsx") ? "\u042f\u0431\u043b\u043e\u043a\u0438" : "\u041a\u0432\u0430\u0440\u0442\u0430\u043b\u044c\u043d\u044b\u0439";
+            check(all.indexOf(expect) >= 0, name + ": the decrypted text is not in the preview");
+        }
+        Native.outcomeFree(outcome);
+
+        outcome = scan(doc, Native.OP_SANITIZE, Native.SANITIZE_ALL);
+        check(outcome > 0 && Native.outcomeStatus(outcome) == Native.OK, name + ": sterile copy with the password");
+        Native.outcomeFree(outcome);
+
+        // Forgetting the password makes the document locked again.
+        check(Native.docSetPassword(doc, new byte[0], 0, 0) == Native.OK, name + ": forget the password");
+        outcome = scan(doc, Native.OP_PREVIEW, 0);
+        check(outcome > 0 && Native.outcomeStatus(outcome) == Native.ENCRYPTED, name + ": locked again");
+        Native.outcomeFree(outcome);
+        check(Native.docSetPassword(doc, new byte[2000], 0, 2000) == Native.BAD_ARGUMENT, name + ": a 2000-byte password");
+        check(Native.docSetPassword(0, right, 0, right.length) != Native.OK, name + ": a password for no document");
     }
 
     /**

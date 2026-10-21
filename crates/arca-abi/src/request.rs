@@ -6,8 +6,9 @@
 //! 4       2     ABI version (u16, = ABI_VERSION)
 //! 6       2     operation (u16, see Op)
 //! 8       4     flags (u32, operation specific, unknown bits must be zero)
-//! 12      4     reserved (u32, must be zero)
-//! 16      n     the document, byte for byte
+//! 12      4     password length in bytes (u32, at most MAX_PASSWORD; 0 for none)
+//! 16      p     the password, UTF-8 (only if the length is not zero)
+//! 16 + p  n     the document, byte for byte
 //! ```
 //!
 //! The header is parsed by the *guest*, which treats the host as trusted but
@@ -23,6 +24,8 @@ use crate::ABI_VERSION;
 pub const MAGIC: [u8; 4] = *b"ARCQ";
 /// Header size in bytes.
 pub const HEADER_LEN: usize = 16;
+/// Longest password a request may carry.
+pub const MAX_PASSWORD: usize = 1024;
 
 /// What the guest is asked to do with the document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +98,8 @@ pub struct Request<'a> {
     pub op: Op,
     /// Operation flags (already checked against [`Op::known_flags`]).
     pub flags: u32,
+    /// The password the reader gave for an encrypted document (empty if none).
+    pub password: &'a [u8],
     /// The document.
     pub document: &'a [u8],
 }
@@ -112,8 +117,8 @@ pub enum RequestError {
     UnknownOp(u16),
     /// A flag bit the operation does not define is set.
     UnknownFlags(u32),
-    /// The reserved word is not zero.
-    ReservedNotZero,
+    /// The password is longer than [`MAX_PASSWORD`].
+    PasswordTooLong,
 }
 
 impl fmt::Display for RequestError {
@@ -124,7 +129,7 @@ impl fmt::Display for RequestError {
             Self::VersionMismatch(v) => write!(f, "request is for ABI version {v}"),
             Self::UnknownOp(c) => write!(f, "unknown operation {c}"),
             Self::UnknownFlags(b) => write!(f, "unknown flag bits {b:#x}"),
-            Self::ReservedNotZero => f.write_str("reserved header word is not zero"),
+            Self::PasswordTooLong => f.write_str("the password is too long"),
         }
     }
 }
@@ -142,9 +147,24 @@ pub fn header(op: Op, flags: u32) -> [u8; HEADER_LEN] {
     ver.copy_from_slice(&version.to_le_bytes());
     let (code, rest) = rest.split_at_mut(2);
     code.copy_from_slice(&op.code().to_le_bytes());
-    let (fl, _reserved) = rest.split_at_mut(4);
+    let (fl, _password_len) = rest.split_at_mut(4);
     fl.copy_from_slice(&flags.to_le_bytes());
     h
+}
+
+/// The header for `op` with `flags`, followed by `password`: everything that goes in front of
+/// the document. `None` if the password is longer than [`MAX_PASSWORD`].
+#[must_use]
+pub fn prefix(op: Op, flags: u32, password: &[u8]) -> Option<alloc::vec::Vec<u8>> {
+    if password.len() > MAX_PASSWORD {
+        return None;
+    }
+    let mut h = header(op, flags);
+    let len = u32::try_from(password.len()).ok()?;
+    h.get_mut(12..16)?.copy_from_slice(&len.to_le_bytes());
+    let mut out = h.to_vec();
+    out.extend_from_slice(password);
+    Some(out)
 }
 
 fn u16_at(data: &[u8], at: usize) -> Option<u16> {
@@ -160,7 +180,7 @@ fn u32_at(data: &[u8], at: usize) -> Option<u32> {
 /// # Errors
 /// See [`RequestError`].
 pub fn parse(input: &[u8]) -> Result<Request<'_>, RequestError> {
-    let document = input.get(HEADER_LEN..).ok_or(RequestError::Truncated)?;
+    let rest = input.get(HEADER_LEN..).ok_or(RequestError::Truncated)?;
     if input.get(..4) != Some(&MAGIC[..]) {
         return Err(RequestError::BadMagic);
     }
@@ -175,10 +195,14 @@ pub fn parse(input: &[u8]) -> Result<Request<'_>, RequestError> {
     if unknown != 0 {
         return Err(RequestError::UnknownFlags(unknown));
     }
-    if u32_at(input, 12).ok_or(RequestError::Truncated)? != 0 {
-        return Err(RequestError::ReservedNotZero);
+    let password_len =
+        usize::try_from(u32_at(input, 12).ok_or(RequestError::Truncated)?).unwrap_or(usize::MAX);
+    if password_len > MAX_PASSWORD {
+        return Err(RequestError::PasswordTooLong);
     }
-    Ok(Request { op, flags, document })
+    let password = rest.get(..password_len).ok_or(RequestError::Truncated)?;
+    let document = rest.get(password_len..).ok_or(RequestError::Truncated)?;
+    Ok(Request { op, flags, password, document })
 }
 
 #[cfg(test)]
@@ -232,9 +256,27 @@ mod tests {
         let r = request(Op::Sanitize, flags::SANITIZE_ALL | 0x100, b"");
         assert_eq!(parse(&r), Err(RequestError::UnknownFlags(0x100)));
 
+        // A password longer than the limit, or longer than the request.
+        let mut bad = good.clone();
+        bad[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(parse(&bad), Err(RequestError::PasswordTooLong));
         let mut bad = good;
-        bad[12] = 1;
-        assert_eq!(parse(&bad), Err(RequestError::ReservedNotZero));
+        bad[12] = 100;
+        assert_eq!(parse(&bad), Err(RequestError::Truncated));
+    }
+
+    #[test]
+    fn a_password_travels_in_front_of_the_document() {
+        let mut r = prefix(Op::Preview, 0, "пароль".as_bytes()).unwrap();
+        r.extend_from_slice(b"the document");
+        let parsed = parse(&r).unwrap();
+        assert_eq!(parsed.password, "пароль".as_bytes());
+        assert_eq!(parsed.document, b"the document");
+        assert!(prefix(Op::Scan, 0, &[b'x'; MAX_PASSWORD + 1]).is_none());
+        let plain = request(Op::Scan, 0, b"d");
+        let none = parse(&plain).unwrap();
+        assert_eq!(none.password, b"");
+        assert_eq!(none.document, b"d");
     }
 
     #[test]

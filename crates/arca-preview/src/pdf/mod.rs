@@ -11,6 +11,8 @@ mod agl;
 mod clean;
 mod cmap;
 mod content;
+mod crypt;
+mod decrypt;
 mod encoding;
 mod file;
 mod filter;
@@ -26,6 +28,7 @@ use arca_container::text::{CodePage, decode_codepage, utf16le_lossy};
 
 pub(crate) use self::clean::{CleanOptions, clean};
 use self::content::{Item, Line, PageInput, Seg, Shared, run_page};
+pub(crate) use self::decrypt::decrypt;
 use self::file::PdfFile;
 use self::lex::{Dict, Obj};
 use crate::PreviewError;

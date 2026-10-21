@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 arca-abi.workspace = true
+arca-digest.workspace = true
 arca-xray.workspace = true
 arca-preview.workspace = true
 

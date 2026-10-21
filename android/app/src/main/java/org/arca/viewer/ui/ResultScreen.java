@@ -120,12 +120,53 @@ public final class ResultScreen extends Screen {
         LinearLayout col = ui.vbox();
         col.addView(verdictBanner(r));
         col.addView(ui.space(12));
+        if (r.needsPassword()) {
+            col.addView(passwordCard());
+            col.addView(ui.space(12));
+        }
+        int opened = Session.get().unlock();
+        if (opened != 0) {
+            col.addView(ui.text(opened == 1 ? R.string.unlock_password_note : R.string.unlock_nopassword_note, Ui.SMALL));
+            col.addView(ui.space(12));
+        }
         col.addView(fileCard(r));
         col.addView(ui.space(12));
         col.addView(counters(r));
         col.addView(ui.space(16));
         col.addView(actions(r));
         return col;
+    }
+
+    /** The way to open a document that a password protects. */
+    private View passwordCard() {
+        LinearLayout card = ui.card();
+        card.addView(ui.heading(ui.str(R.string.password_card_title), Ui.LABEL));
+        card.addView(ui.space(4));
+        card.addView(ui.text(R.string.password_card_text, Ui.SMALL));
+        card.addView(ui.space(12));
+        final boolean wrong = Session.get().wrongPassword();
+        if (wrong) {
+            TextView err = ui.text(R.string.password_wrong, Ui.SMALL);
+            err.setTextColor(ui.color(R.color.arca_danger));
+            card.addView(err);
+            card.addView(ui.space(8));
+        }
+        if (Session.get().unlocking()) {
+            card.addView(ui.text(R.string.password_opening, Ui.BODY));
+            return card;
+        }
+        card.addView(ui.button(R.string.password_button, Ui.PRIMARY, R.drawable.ic_lock, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                ui.askPassword(act, wrong, new Ui.PasswordListener() {
+                    @Override
+                    public void onPassword(char[] password) {
+                        Session.get().unlock(password);
+                    }
+                });
+            }
+        }), ui.fillWidth());
+        return card;
     }
 
     private View verdictBanner(Model.Report r) {

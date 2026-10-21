@@ -246,7 +246,7 @@ impl Cleaner<'_, '_> {
             out.extend_from_slice(b"null");
             return;
         }
-        let raw = self.pdf.raw(s).to_vec();
+        let raw = self.pdf.raw(s).into_owned();
         out.extend_from_slice(b"<<");
         for (k, v) in &s.dict {
             if DROP_KEYS.contains(&&**k) || STREAM_DROP_KEYS.contains(&&**k) {
@@ -277,7 +277,7 @@ fn is_action(d: &Dict) -> bool {
     ACTIONS.contains(&s) || matches!(ty, "Action" | "Filespec")
 }
 
-fn real(v: f64) -> String {
+pub(super) fn real(v: f64) -> String {
     if !v.is_finite() {
         return "0".to_owned();
     }
@@ -286,7 +286,7 @@ fn real(v: f64) -> String {
     if s.is_empty() || s == "-" || s == "-0" { "0".to_owned() } else { s.to_owned() }
 }
 
-fn hex_string(s: &[u8], out: &mut Vec<u8>) {
+pub(super) fn hex_string(s: &[u8], out: &mut Vec<u8>) {
     const H: &[u8; 16] = b"0123456789ABCDEF";
     out.push(b'<');
     for b in s {
@@ -296,7 +296,7 @@ fn hex_string(s: &[u8], out: &mut Vec<u8>) {
     out.push(b'>');
 }
 
-fn name(n: &str, out: &mut Vec<u8>) {
+pub(super) fn name(n: &str, out: &mut Vec<u8>) {
     const H: &[u8; 16] = b"0123456789ABCDEF";
     out.push(b'/');
     for b in n.bytes() {

@@ -353,6 +353,53 @@ public final class Ui {
         }
     }
 
+    /** Receives the password the reader typed (the array is theirs to wipe). */
+    public interface PasswordListener {
+        void onPassword(char[] password);
+    }
+
+    /**
+     * Asks for the password of a document. The field is a password field that is not remembered,
+     * suggested or offered to autofill; what was typed is wiped from it as soon as it is read.
+     */
+    public void askPassword(Activity activity, boolean wrong, final PasswordListener listener) {
+        final android.widget.EditText field = new android.widget.EditText(activity);
+        field.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        field.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            | android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        field.setHint(R.string.password_hint);
+        field.setSingleLine(true);
+        LinearLayout box = vbox();
+        int p = dp(20);
+        box.setPadding(p, dp(8), p, 0);
+        if (wrong) {
+            TextView err = text(R.string.password_wrong, SMALL);
+            err.setTextColor(color(R.color.arca_danger));
+            box.addView(err);
+        }
+        box.addView(field);
+        new AlertDialog.Builder(activity)
+            .setTitle(R.string.password_dialog_title)
+            .setView(box)
+            .setPositiveButton(R.string.password_open, new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int w) {
+                    android.text.Editable e = field.getText();
+                    char[] pw = new char[e.length()];
+                    e.getChars(0, pw.length, pw, 0);
+                    e.clear();
+                    if (pw.length > 0) {
+                        listener.onPassword(pw);
+                    }
+                }
+            })
+            .setNegativeButton(R.string.cancel, null)
+            .show();
+    }
+
     /** A dialog with long untrusted text (a link target, say), selectable, with a Copy button. */
     public void showText(Activity activity, CharSequence title, final String value, final String copyLabel) {
         TextView body = text(value, MONO);

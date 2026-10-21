@@ -46,6 +46,20 @@ public final class Fmt {
     }
 
     /**
+     * The UTF-8 bytes of {@code chars} without going through an immutable String, so that the
+     * caller can wipe both arrays. At most 1024 bytes are returned (the protocol's limit).
+     */
+    public static byte[] utf8(char[] chars) {
+        java.nio.ByteBuffer bb = java.nio.charset.StandardCharsets.UTF_8.encode(java.nio.CharBuffer.wrap(chars));
+        byte[] out = new byte[Math.min(bb.remaining(), 1024)];
+        bb.get(out);
+        if (bb.hasArray()) {
+            java.util.Arrays.fill(bb.array(), (byte) 0);
+        }
+        return out;
+    }
+
+    /**
      * Whether {@code s} is written like a number: digits with signs, separators, a currency sign, a
      * percent sign, a date or an exponent, and nothing else. Such cells keep to the right edge.
      */

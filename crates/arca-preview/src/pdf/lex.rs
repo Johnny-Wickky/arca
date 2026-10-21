@@ -21,6 +21,9 @@ pub(super) struct Stream {
     pub(super) dict: Dict,
     pub(super) start: usize,
     pub(super) end: usize,
+    /// The object that holds the stream (its key depends on it in an encrypted file).
+    pub(super) num: u32,
+    pub(super) generation: u16,
 }
 
 /// A PDF object. Cloning is cheap: containers are reference counted.

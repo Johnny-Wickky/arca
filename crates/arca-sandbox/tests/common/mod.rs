@@ -256,9 +256,9 @@ fn echo_body() -> Vec<u8> {
         &op::i32_const(INPUT - 12),
         &op::i32_const(i32::from_le_bytes(*b"ARCA")),
         &op::I32_STORE,
-        // ABI version 2, kind 1 (X-ray report)
+        // the current ABI version, kind 1 (X-ray report)
         &op::i32_const(INPUT - 8),
-        &op::i32_const(0x0001_0002),
+        &op::i32_const(0x0001_0000 | ABI),
         &op::I32_STORE,
         // payload length = reserved length (parameter 0)
         &op::i32_const(INPUT - 4),

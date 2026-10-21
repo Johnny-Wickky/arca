@@ -38,6 +38,8 @@ public final class Native {
     public static final int IO = 11;
     public static final int BAD_ARGUMENT = 12;
     public static final int NOT_READY = 13;
+    /** The document is encrypted and the password given does not open it. */
+    public static final int WRONG_PASSWORD = 14;
 
     // ---- operations and flags (arca_abi::request) -------------------------------------------
     public static final int OP_SCAN = 1;
@@ -90,6 +92,12 @@ public final class Native {
     public static native long docNew(long maxBytes);
 
     public static native int docAppend(long doc, byte[] buf, int off, int len);
+
+    /**
+     * Remembers the password (UTF-8 bytes, at most 1024) for the next runs over the document; an
+     * empty one forgets it. The caller wipes its own copy.
+     */
+    public static native int docSetPassword(long doc, byte[] buf, int off, int len);
 
     /** Reads the descriptor to its end into the document and closes it. */
     public static native long docReadFd(long doc, int fd);

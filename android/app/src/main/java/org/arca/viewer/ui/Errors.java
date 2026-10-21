@@ -19,6 +19,7 @@ public final class Errors {
             case Native.REJECTED: return R.string.err_rejected_title;
             case Native.UNSUPPORTED: return R.string.err_unsupported_title;
             case Native.ENCRYPTED: return R.string.err_encrypted_title;
+            case Native.WRONG_PASSWORD: return R.string.err_wrong_password_title;
             case Native.RESOURCE_LIMIT: return R.string.err_resource_title;
             case Native.IO: return R.string.err_io_title;
             case Session.F_OPEN: return R.string.err_open_title;
@@ -36,6 +37,7 @@ public final class Errors {
             case Native.REJECTED: return R.string.err_rejected_text;
             case Native.UNSUPPORTED: return R.string.err_unsupported_text;
             case Native.ENCRYPTED: return R.string.err_encrypted_text;
+            case Native.WRONG_PASSWORD: return R.string.err_wrong_password_text;
             case Native.RESOURCE_LIMIT: return R.string.err_resource_text;
             case Native.IO: return R.string.err_io_text;
             case Session.F_OPEN: return R.string.err_open_text;
@@ -54,6 +56,7 @@ public final class Errors {
             case Native.REJECTED: return "rejected";
             case Native.UNSUPPORTED: return "unsupported";
             case Native.ENCRYPTED: return "encrypted";
+            case Native.WRONG_PASSWORD: return "wrong-password";
             case Native.FAILED: return "failed";
             case Native.RESOURCE_LIMIT: return "resource-limit";
             case Native.FAULT: return "fault";

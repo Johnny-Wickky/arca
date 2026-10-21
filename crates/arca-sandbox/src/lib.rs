@@ -873,7 +873,7 @@ fn protocol(
     let (kind, payload) = envelope::open(&out)
         .map_err(|_| SandboxError::OutputInvalid("malformed result envelope"))?;
     let payload = Zeroizing::new(payload.to_vec());
-    if status != arca_abi::status::OK && kind != PayloadKind::Error {
+    if !arca_abi::status::is_success(status) && kind != PayloadKind::Error {
         return Err(SandboxError::GuestStatus(status));
     }
 

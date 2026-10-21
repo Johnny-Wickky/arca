@@ -59,20 +59,79 @@ fn error_envelope(msg: &str) -> Vec<u8> {
 
 /// Answers one request and returns `(status, envelope)`. Pure and testable.
 ///
-/// `input` is the whole request: the 16-byte header followed by the document.
+/// `input` is the whole request: the 16-byte header, the password if there is one, and the
+/// document.
 #[must_use]
 pub fn process(input: &[u8]) -> (i32, Vec<u8>) {
     let req = match request::parse(input) {
         Ok(r) => r,
         Err(e) => return (status::BAD_REQUEST, error_envelope(&e.to_string())),
     };
-    match req.op {
+    // An encrypted document is opened first, here in the sandbox; everything after that is
+    // about the decrypted content, exactly as for a document that never was encrypted.
+    let (document, success) = match open_document(req.document, req.password) {
+        Ok(opened) => opened,
+        Err(refusal) => return refusal,
+    };
+    let (code, envelope) = match req.op {
         Op::Scan => {
-            let report = arca_xray::scan(req.document, &ScanPolicy::default());
+            let mut report = arca_xray::scan(&document, &ScanPolicy::default());
+            if success != status::OK {
+                // The hash is the one of the file the reader holds, not of the decrypted copy.
+                report.sha256 = arca_digest::sha256(req.document).to_string();
+            }
             seal(PayloadKind::XRayReport, &report, "could not encode the X-ray report")
         }
-        Op::Sanitize => sanitize(req.document, req.flags),
-        Op::Preview => preview(req.document, req.flags),
+        Op::Sanitize => sanitize(&document, req.flags),
+        Op::Preview => preview(&document, req.flags),
+    };
+    if code == status::OK { (success, envelope) } else { (code, envelope) }
+}
+
+/// Whether `data` is a PDF that declares an encryption dictionary.
+fn is_encrypted_pdf(data: &[u8]) -> bool {
+    data.get(..data.len().min(1024)).is_some_and(|h| h.windows(5).any(|w| w == b"%PDF-"))
+        && data.windows(8).any(|w| w == b"/Encrypt")
+}
+
+/// The bytes to work on and the status of a success, or the answer to give instead.
+type Opened<'a> = Result<(std::borrow::Cow<'a, [u8]>, i32), (i32, Vec<u8>)>;
+
+/// Opens an encrypted document. A document that is not encrypted passes through untouched.
+fn open_document<'a>(document: &'a [u8], password: &[u8]) -> Opened<'a> {
+    use arca_preview::DecryptError;
+    let plain = || Ok((std::borrow::Cow::Borrowed(document), status::OK));
+    let pdf = is_encrypted_pdf(document);
+    let office = !pdf && arca_preview::is_encrypted_package(document);
+    if !pdf && !office {
+        return plain();
+    }
+    // An Office package is never tried without a password; a PDF always is, because many are
+    // locked only against editing.
+    if office && password.is_empty() {
+        return plain();
+    }
+    match arca_preview::decrypt(document, password) {
+        Ok(d) => {
+            let code = if d.without_password { status::OK_UNLOCKED } else { status::OK_DECRYPTED };
+            Ok((std::borrow::Cow::Owned(d.bytes), code))
+        }
+        // A PDF that needs a password and has none yet is reported as it was before.
+        Err(DecryptError::WrongPassword) if password.is_empty() => plain(),
+        Err(DecryptError::WrongPassword) => {
+            Err((status::WRONG_PASSWORD, error_envelope("the password does not open the document")))
+        }
+        Err(e @ DecryptError::Unsupported(_)) => {
+            Err((status::UNSUPPORTED_FORMAT, error_envelope(&e.to_string())))
+        }
+        Err(e @ DecryptError::TooExpensive) => {
+            Err((status::OPERATION_FAILED, error_envelope(&e.to_string())))
+        }
+        Err(DecryptError::Malformed(_)) if password.is_empty() => plain(),
+        Err(e @ DecryptError::Malformed(_)) => {
+            Err((status::DOCUMENT_REJECTED, error_envelope(&e.to_string())))
+        }
+        Err(DecryptError::NotEncrypted) => plain(),
     }
 }
 
@@ -557,6 +616,83 @@ mod tests {
         }
     }
 
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/").to_owned() + name,
+        )
+        .unwrap()
+    }
+
+    fn with_password(op: Op, flags: u32, password: &str, doc: &[u8]) -> Vec<u8> {
+        let mut v = request::prefix(op, flags, password.as_bytes()).unwrap();
+        v.extend_from_slice(doc);
+        v
+    }
+
+    #[test]
+    fn an_encrypted_document_opens_inside_the_sandbox_with_its_password() {
+        let enc = fixture("enc-agile.docx");
+        // Without a password: reported as encrypted, as ever.
+        let (code, env) = process(&request_for(Op::Scan, 0, &enc));
+        assert_eq!(code, status::OK);
+        let (kind, payload) = open(&env);
+        let r = decode_report(kind, payload).unwrap();
+        assert_eq!(r.format, FileFormat::EncryptedOoxml);
+        let (code, _) = process(&request_for(Op::Preview, 0, &enc));
+        assert_eq!(code, status::ENCRYPTED);
+        // With the wrong one.
+        let (code, _) = process(&with_password(Op::Preview, 0, "nope", &enc));
+        assert_eq!(code, status::WRONG_PASSWORD);
+        // With the right one: the X-ray, the preview and the sterile copy are about the content.
+        let (code, env) = process(&with_password(Op::Scan, 0, "пароль-123", &enc));
+        assert_eq!(code, status::OK_DECRYPTED);
+        let (kind, payload) = open(&env);
+        let r = decode_report(kind, payload).unwrap();
+        assert_eq!(r.format, FileFormat::Docx);
+        assert_eq!(r.sha256, arca_digest::sha256(&enc).to_string(), "the hash is the file's");
+        let (code, env) = process(&with_password(Op::Preview, 0, "пароль-123", &enc));
+        assert_eq!(code, status::OK_DECRYPTED);
+        let (kind, payload) = open(&env);
+        let p = decode_preview(kind, payload).unwrap();
+        assert!(format!("{:?}", p.sections).contains("Квартальный отчёт"));
+        let (code, env) =
+            process(&with_password(Op::Sanitize, flags::SANITIZE_ALL, "пароль-123", &enc));
+        assert_eq!(code, status::OK_DECRYPTED);
+        let (kind, payload) = open(&env);
+        let sd = decode_sanitized(kind, payload).unwrap();
+        assert_eq!(sd.format, FileFormat::Docx);
+        assert_eq!(sd.verification.verdict, Verdict::Clean);
+        // A password given for a file that needs none changes nothing.
+        let (code, _) = process(&with_password(Op::Preview, 0, "x", &fixture("report.docx")));
+        assert_eq!(code, status::OK);
+    }
+
+    #[test]
+    fn a_pdf_locked_only_against_editing_opens_by_itself() {
+        let (code, env) = process(&request_for(Op::Preview, 0, &fixture("enc-open.pdf")));
+        assert_eq!(code, status::OK_UNLOCKED);
+        let (kind, payload) = open(&env);
+        assert!(
+            format!("{:?}", decode_preview(kind, payload).unwrap().sections).contains("Шаг два")
+        );
+        // One that needs a password says so, and then opens with it.
+        let locked = fixture("enc-aes-256.pdf");
+        assert_eq!(process(&request_for(Op::Preview, 0, &locked)).0, status::ENCRYPTED);
+        assert_eq!(
+            process(&with_password(Op::Preview, 0, "wrong", &locked)).0,
+            status::WRONG_PASSWORD
+        );
+        assert_eq!(
+            process(&with_password(Op::Preview, 0, "user-256", &locked)).0,
+            status::OK_DECRYPTED
+        );
+        let (code, env) =
+            process(&with_password(Op::Sanitize, flags::SANITIZE_ALL, "user-256", &locked));
+        assert_eq!(code, status::OK_DECRYPTED);
+        let (kind, payload) = open(&env);
+        assert_eq!(decode_sanitized(kind, payload).unwrap().format, FileFormat::Pdf);
+    }
+
     #[test]
     fn unsupported_and_failed_operations_have_their_own_statuses() {
         // Plain text cannot be rebuilt structurally.
@@ -589,9 +725,12 @@ mod tests {
         let mut wrong_version = request_for(Op::Scan, 0, b"x");
         wrong_version[4] = 1;
         assert_eq!(process(&wrong_version).0, status::BAD_REQUEST);
-        let mut reserved = request_for(Op::Scan, 0, b"x");
-        reserved[12] = 1;
-        assert_eq!(process(&reserved).0, status::BAD_REQUEST);
+        // A password length that runs past the request, or past the limit.
+        let mut password = request_for(Op::Scan, 0, b"x");
+        password[12] = 9;
+        assert_eq!(process(&password).0, status::BAD_REQUEST);
+        password[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(process(&password).0, status::BAD_REQUEST);
     }
 
     #[test]
@@ -631,7 +770,7 @@ mod tests {
         assert!(decode_preview(PayloadKind::Preview, &[0xFF; 64]).is_err());
         assert!(decode_preview(PayloadKind::Preview, &[]).is_err());
         assert!(decode(PayloadKind::Error, &[0xFF; 8]).is_err());
-        assert_eq!(abi_version(), 2);
+        assert_eq!(abi_version(), 3);
     }
 
     #[test]

@@ -53,6 +53,7 @@ version = "0.1.0"
 dependencies = [
  "arca-abi",
  "arca-container",
+ "arca-digest",
  "arca-preview",
  "arca-sandbox",
  "arca-xray",

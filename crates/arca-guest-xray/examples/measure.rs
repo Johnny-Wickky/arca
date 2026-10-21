@@ -6,6 +6,8 @@
 //!     cargo run --release -p arca-guest-xray --example measure -- file1.xlsx file2.docx
 //! ```
 //!
+//! `ARCA_PASSWORD` is given to the guest as the password of every file.
+//!
 //! The fuel budget is lifted to the policy ceiling so the *real* cost is
 //! visible; compare `fuel/byte` with `FuelPolicy::per_input_byte`.
 
@@ -14,7 +16,7 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use arca_abi::request::{Op, flags, header};
+use arca_abi::request::{Op, flags, prefix};
 use arca_sandbox::{GuestModule, RunOptions, Sandbox, SandboxPolicy};
 
 fn main() -> ExitCode {
@@ -59,7 +61,9 @@ fn main() -> ExitCode {
                 Op::Sanitize => flags::SANITIZE_ALL,
                 Op::Scan => 0,
             };
-            match sandbox.run_request(&module, &header(op, op_flags), &data, &RunOptions::new()) {
+            let password = std::env::var("ARCA_PASSWORD").unwrap_or_default();
+            let Some(head) = prefix(op, op_flags, password.as_bytes()) else { continue };
+            match sandbox.run_request(&module, &head, &data, &RunOptions::new()) {
                 Ok(out) => {
                     let per_byte =
                         out.stats.fuel_consumed / u64::try_from(data.len().max(1)).unwrap_or(1);

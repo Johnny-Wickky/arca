@@ -124,6 +124,12 @@ pub fn doc_append(doc: i64, data: &[u8]) -> i32 {
     code(host().and_then(|h| h.doc_append(handle(doc)?, data)))
 }
 
+/// Remembers the password (UTF-8) for the next runs over the document; empty forgets it.
+#[must_use]
+pub fn doc_set_password(doc: i64, password: &[u8]) -> i32 {
+    code(host().and_then(|h| h.doc_set_password(handle(doc)?, password)))
+}
+
 /// Reads `reader` to its end into the document; returns the byte count or `-status`.
 pub fn doc_read(doc: i64, reader: &mut dyn Read) -> i64 {
     count_or_status(host().and_then(|h| h.doc_read_from(handle(doc)?, reader)))

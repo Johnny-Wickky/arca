@@ -270,6 +270,28 @@ pub extern "system" fn Java_org_arca_viewer_Native_docAppend(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_docSetPassword(
+    env: Env,
+    _class: JObject,
+    doc: JLong,
+    buf: JObject,
+    off: JInt,
+    len: JInt,
+) -> JInt {
+    guard(FAULT, || {
+        let (Ok(off), Ok(len)) = (usize::try_from(off), usize::try_from(len)) else {
+            return BAD_ARGUMENT;
+        };
+        let Some(mut data) = JniEnv::new(env).and_then(|e| e.read_array(buf, off, len)) else {
+            return BAD_ARGUMENT;
+        };
+        let status = api::doc_set_password(doc, &data);
+        data.zeroize();
+        status
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_arca_viewer_Native_docReadFd(
     _env: Env,
     _class: JObject,

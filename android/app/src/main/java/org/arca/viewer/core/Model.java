@@ -155,6 +155,25 @@ public final class Model {
         public long inflated;
         public long nesting;
 
+        /**
+         * Whether a password the reader knows would open the document: an encrypted Office package
+         * or a PDF with a password (the formats the engine can decrypt).
+         */
+        public boolean needsPassword() {
+            if ("EncryptedOoxml".equals(format)) {
+                return true;
+            }
+            if (!"Pdf".equals(format)) {
+                return false;
+            }
+            for (Finding f : findings) {
+                if ("EncryptedDocument".equals(f.kind)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /** Number of findings of {@code category}. */
         public int count(String category) {
             int n = 0;
@@ -597,6 +616,8 @@ public final class Model {
         public long peakMemory;
         public long slices;
         public long wallMs;
+        /** 0: the document was not encrypted; 1: the password opened it; 2: it needed no password. */
+        public int unlock;
     }
 
     /** Parses {@code outcomeInfo}. */
@@ -606,6 +627,7 @@ public final class Model {
         r.status = Json.integer(root, "status");
         r.statusName = Json.str(root, "statusName");
         r.message = Json.str(root, "message");
+        r.unlock = Json.integer(root, "unlock");
         Map<String, Object> st = Json.obj(root.get("stats"));
         r.fuel = Json.num(st, "fuel");
         r.fuelLimit = Json.num(st, "fuelLimit");

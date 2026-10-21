@@ -4,7 +4,7 @@
 //! # arca-abi — the contract between the sandbox host and parser guests
 //!
 //! A parser guest is a `wasm32-unknown-unknown` module with **zero imports**.
-//! It exports exactly the following items (version 2):
+//! It exports exactly the following items (version 3):
 //!
 //! | export                         | signature           | meaning |
 //! |--------------------------------|---------------------|---------|
@@ -22,9 +22,11 @@
 //! bounds-checking them. The result is an [`envelope`] wrapping a payload
 //! encoded with the [`wire`] codec.
 //!
-//! Version 2 (this version) added the request header: a guest now serves
-//! several operations (scan, sterilise, preview) instead of one. A version-1
-//! guest is refused by the sandbox because its `arca_abi_version` differs.
+//! Version 2 added the request header: a guest now serves several operations
+//! (scan, sterilise, preview) instead of one. Version 3 (this version) lets the
+//! header carry a password, which the guest uses to open an encrypted document
+//! inside the sandbox. A guest of another version is refused by the sandbox
+//! because its `arca_abi_version` differs.
 //!
 //! Nothing in the ABI requires `unsafe` code on either side: the host uses
 //! the interpreter's checked memory accessors and the guest only hands out
@@ -40,7 +42,7 @@ pub mod request;
 pub mod wire;
 
 /// Version of the guest ABI described in this crate.
-pub const ABI_VERSION: i32 = 2;
+pub const ABI_VERSION: i32 = 3;
 
 /// Names of the items a guest must export.
 pub mod exports {
@@ -81,4 +83,18 @@ pub mod status {
     /// The document is password protected / encrypted: nothing can be read
     /// from it (the X-ray still reports what is visible from outside).
     pub const ENCRYPTED: i32 = 8;
+    /// The document is encrypted and the password given does not open it.
+    pub const WRONG_PASSWORD: i32 = 9;
+    /// Success: the document was encrypted and the password opened it; the result is about the
+    /// decrypted content.
+    pub const OK_DECRYPTED: i32 = 10;
+    /// Success: the document was encrypted but needed no password (a PDF that only restricts
+    /// editing); the result is about the decrypted content.
+    pub const OK_UNLOCKED: i32 = 11;
+
+    /// Whether `code` means that the output envelope holds a successful result.
+    #[must_use]
+    pub const fn is_success(code: i32) -> bool {
+        matches!(code, OK | OK_DECRYPTED | OK_UNLOCKED)
+    }
 }

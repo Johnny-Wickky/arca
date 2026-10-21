@@ -119,6 +119,10 @@ public final class Session {
     private Uri uri;
     private Failure failure;
     private Model.Report report;
+    /** How the document was opened if it was encrypted (see {@link Model.RunInfo#unlock}). */
+    private int unlock;
+    private boolean wrongPassword;
+    private boolean unlocking;
     private long doc;
     private long job;
     private final PreviewState preview = new PreviewState();
@@ -190,6 +194,21 @@ public final class Session {
         return failure;
     }
 
+    /** 0: the document was not encrypted; 1: opened with the reader's password; 2: needed none. */
+    public int unlock() {
+        return unlock;
+    }
+
+    /** Whether a password is being tried (the X-ray runs again over the decrypted content). */
+    public boolean unlocking() {
+        return unlocking;
+    }
+
+    /** Whether the last password the reader typed was refused. */
+    public boolean wrongPassword() {
+        return wrongPassword;
+    }
+
     public Model.Report report() {
         return report;
     }
@@ -235,6 +254,9 @@ public final class Session {
         size = -1;
         failure = null;
         report = null;
+        unlock = 0;
+        wrongPassword = false;
+        unlocking = false;
         changed();
         worker.execute(new Runnable() {
             @Override
@@ -261,6 +283,7 @@ public final class Session {
                 if (!current(ep)) {
                     return;
                 }
+                unlocking = false;
                 if (status == Native.CANCELLED) {
                     phase = Phase.IDLE;
                 } else {
@@ -377,6 +400,7 @@ public final class Session {
             fail(ep, status, message);
             return;
         }
+        final int unlockLevel = unlockOf(outcome);
         final Model.Report parsed;
         try {
             byte[] json = Native.report(outcome);
@@ -399,10 +423,127 @@ public final class Session {
                     return;
                 }
                 report = parsed;
+                unlock = unlockLevel;
                 phase = Phase.READY;
                 changed();
             }
         });
+    }
+
+    /**
+     * Opens the encrypted document with the password the reader typed (the engine decrypts it in
+     * the sandbox and the X-ray runs again over what is inside). A wrong password leaves the
+     * session as it was and sets {@link #wrongPassword()}. The array is wiped.
+     */
+    public void unlock(final char[] password) {
+        final byte[] bytes = Fmt.utf8(password);
+        java.util.Arrays.fill(password, '\0');
+        if (phase != Phase.READY) {
+            java.util.Arrays.fill(bytes, (byte) 0);
+            return;
+        }
+        final int ep = epoch;
+        final long d = docHandle();
+        unlocking = true;
+        wrongPassword = false;
+        changed();
+        worker.execute(new Runnable() {
+            @Override
+            public void run() {
+                int st = Native.docSetPassword(d, bytes, 0, bytes.length);
+                java.util.Arrays.fill(bytes, (byte) 0);
+                if (st != Native.OK) {
+                    fail(ep, st, "docSetPassword");
+                    return;
+                }
+                long j = Native.jobNew();
+                setJob(ep, j);
+                long outcome = Native.run(j, d, Native.OP_SCAN, 0);
+                clearJob(ep, j);
+                Native.jobFree(j);
+                if (outcome <= 0) {
+                    fail(ep, (int) -outcome, "run");
+                    return;
+                }
+                int status = Native.outcomeStatus(outcome);
+                if (status == Native.WRONG_PASSWORD) {
+                    Native.outcomeFree(outcome);
+                    Native.docSetPassword(d, new byte[0], 0, 0);
+                    post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (current(ep)) {
+                                wrongPassword = true;
+                                unlocking = false;
+                                changed();
+                            }
+                        }
+                    });
+                    return;
+                }
+                if (status != Native.OK) {
+                    String message = describe(outcome);
+                    Native.outcomeFree(outcome);
+                    fail(ep, status, message);
+                    return;
+                }
+                final int unlockLevel = unlockOf(outcome);
+                final Model.Report parsed;
+                try {
+                    byte[] json = Native.report(outcome);
+                    if (json == null) {
+                        fail(ep, F_PARSE, "no report");
+                        return;
+                    }
+                    parsed = Model.parseReport(json);
+                } catch (RuntimeException e) {
+                    fail(ep, F_PARSE, e.toString());
+                    return;
+                } finally {
+                    Native.outcomeFree(outcome);
+                }
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!current(ep)) {
+                            return;
+                        }
+                        // What was computed for the locked file is about something else now.
+                        final long po = preview.outcome;
+                        final long so = sanitize.outcome;
+                        resetPreview();
+                        resetSanitize();
+                        if (po > 0 || so > 0) {
+                            worker.execute(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (po > 0) {
+                                        Native.outcomeFree(po);
+                                    }
+                                    if (so > 0) {
+                                        Native.outcomeFree(so);
+                                    }
+                                }
+                            });
+                        }
+                        report = parsed;
+                        unlock = unlockLevel;
+                        wrongPassword = false;
+                        unlocking = false;
+                        changed();
+                    }
+                });
+            }
+        });
+    }
+
+    private static int unlockOf(long outcome) {
+        try {
+            byte[] json = Native.outcomeInfo(outcome);
+            return json == null ? 0 : Model.parseRunInfo(json).unlock;
+        } catch (RuntimeException e) {
+            return 0;
+        }
     }
 
     /** Counts the document in the Patron Passport (local statistics only). */

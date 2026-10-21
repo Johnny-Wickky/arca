@@ -5,11 +5,13 @@
 //! (`/Prev`, reference-to-reference, object streams) carry visit guards, and every
 //! decompression is charged to the shared [`InflateBudget`].
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use arca_container::InflateBudget;
 
+use super::crypt::Crypt;
 use super::filter::{self, Decoded, FilterError, FilterSpec};
 use super::lex::{Dict, Lexer, Obj, Stream, Tok, is_delim, is_ws};
 use crate::{PreviewError, PreviewPolicy};
@@ -68,12 +70,24 @@ pub(super) struct PdfFile<'a> {
     objstms: HashMap<u32, Option<Rc<ObjStm>>>,
     budget: InflateBudget,
     rebuilt: bool,
+    /// The key of an encrypted file that was opened with its password.
+    crypt: Option<Rc<Crypt>>,
     /// Human-readable notes about things that could not be read (deduplicated).
     pub(super) skipped: Vec<String>,
 }
 
 impl<'a> PdfFile<'a> {
     pub(super) fn open(data: &'a [u8], policy: &PreviewPolicy) -> Result<Self, PreviewError> {
+        Self::open_with(data, policy, false)
+    }
+
+    /// Opens the file; with `allow_encrypted` an encrypted file is returned as it is (its
+    /// strings and streams are not readable until [`Self::set_crypt`]).
+    pub(super) fn open_with(
+        data: &'a [u8],
+        policy: &PreviewPolicy,
+        allow_encrypted: bool,
+    ) -> Result<Self, PreviewError> {
         let head = data.get(..data.len().min(1024)).unwrap_or(&[]);
         let base = find(head, b"%PDF-", 0).unwrap_or(0);
         let mut f = Self {
@@ -86,19 +100,23 @@ impl<'a> PdfFile<'a> {
             objstms: HashMap::new(),
             budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20),
             rebuilt: false,
+            crypt: None,
             skipped: Vec::new(),
         };
         if f.read_xref_chain().is_none() || (!f.encrypted() && !f.root_ok()) {
             f.rebuild();
         }
-        if f.encrypted() {
+        if f.encrypted() && !allow_encrypted {
             return Err(PreviewError::Encrypted);
         }
         if !f.root_ok() && !f.rebuilt {
             f.rebuild();
-            if f.encrypted() {
+            if f.encrypted() && !allow_encrypted {
                 return Err(PreviewError::Encrypted);
             }
+        }
+        if f.encrypted() && allow_encrypted {
+            return Ok(f);
         }
         if !f.root_ok() {
             return Err(PreviewError::Malformed("PDF has no readable document catalog".into()));
@@ -108,6 +126,14 @@ impl<'a> PdfFile<'a> {
 
     pub(super) fn encrypted(&self) -> bool {
         self.trailer.contains_key("Encrypt")
+    }
+
+    /// From now on strings and streams are decrypted as they are read.
+    pub(super) fn set_crypt(&mut self, crypt: Rc<Crypt>) {
+        self.crypt = Some(crypt);
+        self.cache.clear();
+        self.objstms.clear();
+        self.loading.clear();
     }
 
     pub(super) const fn rebuilt(&self) -> bool {
@@ -422,19 +448,20 @@ impl<'a> PdfFile<'a> {
         let data = self.data;
         let mut lx = Lexer::new(data, pos);
         let Tok::Int(n) = lx.next_tok() else { return None };
-        let Tok::Int(_) = lx.next_tok() else { return None };
+        let Tok::Int(g) = lx.next_tok() else { return None };
         if lx.next_tok() != Tok::Kw(b"obj") {
             return None;
         }
+        let (num, generation) = (u32::try_from(n).unwrap_or(0), u16::try_from(g).unwrap_or(0));
         if let Some(e) = expect
             && u32::try_from(n).ok() != Some(e)
         {
             return None;
         }
         let Some(obj) = lx.object(true) else { return Some(Obj::Null) };
-        let Obj::Dict(dict) = &obj else { return Some(obj) };
+        let Obj::Dict(dict) = &obj else { return Some(self.decrypted(obj, num, generation)) };
         if lx.next_tok() != Tok::Kw(b"stream") {
-            return Some(obj);
+            return Some(self.decrypted(obj, num, generation));
         }
         let mut start = lx.pos;
         match data.get(start) {
@@ -448,7 +475,22 @@ impl<'a> PdfFile<'a> {
             _ => {}
         }
         let end = self.stream_end(dict, start);
-        Some(Obj::Stream(Rc::new(Stream { dict: (**dict).clone(), start, end })))
+        let stream =
+            Obj::Stream(Rc::new(Stream { dict: (**dict).clone(), start, end, num, generation }));
+        Some(self.decrypted(stream, num, generation))
+    }
+
+    /// The object with its strings decrypted, if the file is encrypted and was opened.
+    fn decrypted(&self, obj: Obj, num: u32, generation: u16) -> Obj {
+        match &self.crypt {
+            Some(c) if c.encrypt_obj != Some(num) => {
+                let is_xref = obj
+                    .as_dict()
+                    .is_some_and(|d| d.get("Type").and_then(Obj::as_name) == Some("XRef"));
+                if is_xref { obj } else { c.object(&obj, num, generation) }
+            }
+            _ => obj,
+        }
     }
 
     /// Finds the end of a stream's raw data: by `/Length` if it is consistent, else by
@@ -600,13 +642,22 @@ impl<'a> PdfFile<'a> {
     /// Decodes a stream, capped at `max` bytes and charged to the document's budget.
     pub(super) fn stream_data(&mut self, s: &Stream, max: usize) -> Result<Decoded, FilterError> {
         let specs = self.filter_specs(&s.dict);
-        let raw = self.data.get(s.start..s.end).unwrap_or(&[]);
-        filter::apply(raw, &specs, max, &mut self.budget)
+        let data = self.data;
+        let raw = self.raw_in(data, s);
+        filter::apply(&raw, &specs, max, &mut self.budget)
     }
 
     /// The raw (still encoded) bytes of a stream, exactly as they lie in the file.
-    pub(super) fn raw(&self, s: &Stream) -> &[u8] {
-        self.data.get(s.start..s.end).unwrap_or(&[])
+    pub(super) fn raw(&self, s: &Stream) -> Cow<'a, [u8]> {
+        self.raw_in(self.data, s)
+    }
+
+    fn raw_in(&self, data: &'a [u8], s: &Stream) -> Cow<'a, [u8]> {
+        let raw = data.get(s.start..s.end).unwrap_or(&[]);
+        match &self.crypt {
+            Some(c) if c.touches_streams(s) => Cow::Owned(c.stream(s, raw)),
+            _ => Cow::Borrowed(raw),
+        }
     }
 
     /// Raw (encoded) length of a stream, for picture placeholders.
