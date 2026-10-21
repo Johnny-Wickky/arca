@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+#
+# Coverage-guided fuzzing (libFuzzer via cargo-fuzz, nightly) of the parsers and the scanner.
+#
+#   pull request  a short run (60 s per target) from the seeds in tests/fixtures
+#   weekly        a long run (30 min per target)
+#   dispatch      the same, with a duration of your choice
+#
+# Corpora and crash artifacts are uploaded, never committed (they may contain hostile files).
+name: fuzz
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "fuzz/**"
+      - "tests/fixtures/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "seconds per target"
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scan, sanitize, wire, zip, cfb, xml, preview, decrypt]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --version 0.12.0 --locked
+      - name: seeds (the real-software fixtures, plus the scanner's own corpus)
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          cp tests/fixtures/* "fuzz/corpus/${{ matrix.target }}/"
+      - name: fuzz
+        working-directory: fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || github.event.inputs.seconds || '1800' }}
+        run: |
+          dict=dictionaries/documents.dict
+          case "${{ matrix.target }}" in scan|sanitize|zip|cfb|xml) dict=dictionaries/ooxml.dict;; esac
+          cargo +nightly fuzz run "${{ matrix.target }}" -- \
+            -dict="$dict" -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

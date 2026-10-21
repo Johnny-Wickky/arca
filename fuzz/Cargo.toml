@@ -23,6 +23,7 @@ libfuzzer-sys = "0.4"
 arca-abi = { path = "../crates/arca-abi" }
 arca-container = { path = "../crates/arca-container" }
 arca-xray = { path = "../crates/arca-xray" }
+arca-preview = { path = "../crates/arca-preview" }
 
 # Detach from the root workspace.
 [workspace]
@@ -70,6 +71,20 @@ bench = false
 [[bin]]
 name = "xml"
 path = "fuzz_targets/xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "preview"
+path = "fuzz_targets/preview.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decrypt"
+path = "fuzz_targets/decrypt.rs"
 test = false
 doc = false
 bench = false
