@@ -4,7 +4,6 @@
 package org.arca.viewer.ui;
 
 import android.content.Context;
-import android.content.res.Configuration;
 
 import org.arca.viewer.core.Breakpoints;
 
@@ -21,14 +20,19 @@ public final class Adaptive {
     public static final int MEDIUM = Breakpoints.MEDIUM;
     public static final int EXPANDED = Breakpoints.EXPANDED;
 
-    /** Window width in dp. */
+    /**
+     * Width in dp of the part of the window the app uses: the whole window, or one half of it
+     * while a half-open foldable has its fold across it (see {@link Hinge}).
+     */
     public static int widthDp(Context c) {
-        return c.getResources().getConfiguration().screenWidthDp;
+        int[] free = Hinge.freeArea(c);
+        return free != null ? free[2] : c.getResources().getConfiguration().screenWidthDp;
     }
 
-    /** Window height in dp. */
+    /** Height in dp of the part of the window the app uses. */
     public static int heightDp(Context c) {
-        return c.getResources().getConfiguration().screenHeightDp;
+        int[] free = Hinge.freeArea(c);
+        return free != null ? free[3] : c.getResources().getConfiguration().screenHeightDp;
     }
 
     /** The width class of the window {@code c} lives in. */
@@ -43,8 +47,7 @@ public final class Adaptive {
 
     /** {@code true} when the window is landscape-shaped. */
     public static boolean isLandscape(Context c) {
-        Configuration conf = c.getResources().getConfiguration();
-        return conf.screenWidthDp > conf.screenHeightDp;
+        return widthDp(c) > heightDp(c);
     }
 
     /** Side padding for page content, in dp. */

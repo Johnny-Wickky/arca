@@ -18,6 +18,7 @@ import org.arca.viewer.core.Json;
 import org.arca.viewer.core.Model;
 import org.arca.viewer.core.Names;
 import org.arca.viewer.core.PageCache;
+import org.arca.viewer.core.Posture;
 import org.arca.viewer.core.Zoom;
 
 /** Unit tests of the pure-Java core (no Android, no JUnit: a plain runner, see run.sh). */
@@ -543,11 +544,12 @@ public final class CoreTest {
 
     static void capabilities() {
         String[] previews = {"Docx", "Xlsx", "Pptx", "Odt", "Ods", "Odp", "Doc", "Xls", "Ppt", "Pdf", "Msg",
-            "Rtf", "PlainText", "Csv", "Tsv", "Markdown", "Vsdx", "Vsdm", "VisioTemplateOrStencil"};
+            "Rtf", "PlainText", "Csv", "Tsv", "Markdown", "Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd",
+            "AccessJet3", "AccessJet4", "AccessAce"};
         for (String f : previews) {
             check(Capabilities.canPreview(f), "preview of " + f);
         }
-        String[] noPreview = {"Vsd", "Msi", "OleOther", "Exe", "", "docx", "Unknown"};
+        String[] noPreview = {"Msi", "OleOther", "Exe", "", "docx", "Unknown"};
         for (String f : noPreview) {
             check(!Capabilities.canPreview(f), "no preview of " + f);
         }
@@ -573,6 +575,41 @@ public final class CoreTest {
             check(true, "the set of sanitizable formats is read-only");
         }
         check(Capabilities.previewFormats().containsAll(Arrays.asList(previews)), "the sets agree");
+    }
+
+    static void posture() {
+        // Readings: closed, half open, flat; the thresholds have a hysteresis.
+        eq(Posture.CLOSED, Posture.next(Posture.FLAT, 5f), "closed");
+        eq(Posture.HALF_OPEN, Posture.next(Posture.FLAT, 100f), "half open");
+        eq(Posture.FLAT, Posture.next(Posture.FLAT, 175f), "flat");
+        eq(Posture.FLAT, Posture.next(Posture.UNKNOWN, 161f), "161 is flat when coming from unknown");
+        eq(Posture.HALF_OPEN, Posture.next(Posture.HALF_OPEN, 165f), "stays half open until 170");
+        eq(Posture.FLAT, Posture.next(Posture.HALF_OPEN, 170f), "flat from 170");
+        eq(Posture.UNKNOWN, Posture.next(Posture.FLAT, Float.NaN), "no number");
+        eq(Posture.UNKNOWN, Posture.next(Posture.FLAT, -1f), "negative");
+        eq(Posture.UNKNOWN, Posture.next(Posture.FLAT, 400f), "beyond a full turn");
+
+        // A nearly square inner display (Galaxy Z Fold, Pixel Fold) folds along its long side;
+        // a tall narrow one (Z Flip) across it; rotation turns the fold with the window.
+        check(Posture.foldIsVertical(1812, 2176, 0), "book, upright: the fold is vertical");
+        check(!Posture.foldIsVertical(1812, 2176, 1), "book, turned: the fold is horizontal");
+        check(!Posture.foldIsVertical(1080, 2640, 0), "flip, upright: the fold is horizontal");
+        check(Posture.foldIsVertical(1080, 2640, 3), "flip, turned: the fold is vertical");
+        check(!Posture.foldIsVertical(0, 0, 0), "an unknown display folds across");
+
+        // Free area: only while half open and only if the side along the fold is long enough.
+        check(Posture.freeArea(Posture.FLAT, 900, 700, true, false) == null, "flat: all of it");
+        check(Posture.freeArea(Posture.UNKNOWN, 900, 700, true, false) == null, "unknown: all of it");
+        check(Posture.freeArea(Posture.CLOSED, 900, 700, true, false) == null, "closed: all of it");
+        int[] left = Posture.freeArea(Posture.HALF_OPEN, 904, 750, true, false);
+        check(left != null && left[0] == 0 && left[1] == 0 && left[2] == 440 && left[3] == 750, "left half");
+        int[] right = Posture.freeArea(Posture.HALF_OPEN, 904, 750, true, true);
+        check(right != null && right[0] == 464 && right[2] == 440, "the right half when reading right to left");
+        check(left != null && left[2] <= (904 - Posture.GAP_DP) / 2, "the half stays clear of the gap");
+        int[] top = Posture.freeArea(Posture.HALF_OPEN, 412, 900, false, false);
+        check(top != null && top[1] == 0 && top[2] == 412 && top[3] == 438, "upper half across a horizontal fold");
+        check(Posture.freeArea(Posture.HALF_OPEN, 400, 700, true, false) == null, "too narrow to split");
+        check(Posture.freeArea(Posture.HALF_OPEN, 900, 400, false, false) == null, "too short to split");
     }
 
     static void needsPassword() {
@@ -928,7 +965,7 @@ public final class CoreTest {
 
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -947,6 +984,7 @@ public final class CoreTest {
                     case "outlineBookmarksZoom": outlineBookmarksZoom(); break;
                     case "numericLooking": numericLooking(); break;
                     case "needsPassword": needsPassword(); break;
+                    case "posture": posture(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

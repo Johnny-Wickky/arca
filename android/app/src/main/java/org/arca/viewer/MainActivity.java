@@ -17,6 +17,7 @@ import android.widget.Toast;
 import org.arca.viewer.ui.AboutScreen;
 import org.arca.viewer.ui.Compat;
 import org.arca.viewer.ui.DiagnosticsScreen;
+import org.arca.viewer.ui.Hinge;
 import org.arca.viewer.ui.HomeScreen;
 import org.arca.viewer.ui.LicensesScreen;
 import org.arca.viewer.ui.PreviewScreen;
@@ -133,6 +134,12 @@ public final class MainActivity extends Activity implements Session.Listener, En
     protected void onStart() {
         super.onStart();
         started = true;
+        Hinge.start(this, new Runnable() {
+            @Override
+            public void run() {
+                show();
+            }
+        });
         Session.get().addListener(this);
         Engine.addListener(this);
         // Anything that happened while stopped (a scan finishing in the background).
@@ -142,6 +149,7 @@ public final class MainActivity extends Activity implements Session.Listener, En
     @Override
     protected void onStop() {
         started = false;
+        Hinge.stop();
         Session.get().removeListener(this);
         Engine.removeListener(this);
         super.onStop();
@@ -206,8 +214,8 @@ public final class MainActivity extends Activity implements Session.Listener, En
                 top = create(r);
                 View view = top.build();
                 root.removeAllViews();
-                root.addView(view, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT));
+                // Across the fold of a half-open foldable the screen takes one half of the window.
+                root.addView(view, Hinge.layout(this));
             } while (rebuildRequested);
         } finally {
             building = false;

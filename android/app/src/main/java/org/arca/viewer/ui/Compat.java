@@ -109,6 +109,41 @@ public final class Compat {
         }
     }
 
+    /**
+     * The hinge angle of a foldable (a platform sensor, Android 11+). {@link #start()} returns
+     * {@code false} where there is none, which is every device that does not fold.
+     */
+    public static final class HingeSensor {
+        /** Receives the angle in degrees (0 closed, 180 flat). */
+        public interface Listener {
+            void onAngle(float degrees);
+        }
+
+        private final Activity activity;
+        private final Listener listener;
+        private Object registration;
+
+        public HingeSensor(Activity activity, Listener listener) {
+            this.activity = activity;
+            this.listener = listener;
+        }
+
+        public boolean start() {
+            if (Build.VERSION.SDK_INT < 30 || registration != null) {
+                return false;
+            }
+            registration = Api30.hinge(activity, listener);
+            return registration != null;
+        }
+
+        public void stop() {
+            if (Build.VERSION.SDK_INT >= 30 && registration != null) {
+                Api30.unhinge(activity, registration);
+                registration = null;
+            }
+        }
+    }
+
     /** API 28+ calls, isolated so that older devices never load them. */
     private static final class Api28 {
         static void markHeading(View v) {
@@ -151,6 +186,38 @@ public final class Compat {
                 int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                     | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
                 c.setSystemBarsAppearance(night ? 0 : mask, mask);
+            }
+        }
+
+        static Object hinge(Activity a, final HingeSensor.Listener listener) {
+            android.hardware.SensorManager sm =
+                (android.hardware.SensorManager) a.getSystemService(android.content.Context.SENSOR_SERVICE);
+            if (sm == null) {
+                return null;
+            }
+            android.hardware.Sensor sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE);
+            if (sensor == null) {
+                return null;
+            }
+            android.hardware.SensorEventListener l = new android.hardware.SensorEventListener() {
+                @Override
+                public void onSensorChanged(android.hardware.SensorEvent e) {
+                    if (e.values.length > 0) {
+                        listener.onAngle(e.values[0]);
+                    }
+                }
+
+                @Override
+                public void onAccuracyChanged(android.hardware.Sensor s, int accuracy) {}
+            };
+            return sm.registerListener(l, sensor, android.hardware.SensorManager.SENSOR_DELAY_NORMAL) ? l : null;
+        }
+
+        static void unhinge(Activity a, Object registration) {
+            android.hardware.SensorManager sm =
+                (android.hardware.SensorManager) a.getSystemService(android.content.Context.SENSOR_SERVICE);
+            if (sm != null) {
+                sm.unregisterListener((android.hardware.SensorEventListener) registration);
             }
         }
 
