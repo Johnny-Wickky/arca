@@ -3,13 +3,18 @@
 
 package org.arca.viewer.ui;
 
+import android.content.Context;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.text.Editable;
+import android.text.InputFilter;
+import android.text.InputType;
 import android.text.Layout;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.TextWatcher;
 import android.text.method.LinkMovementMethod;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ClickableSpan;
@@ -23,10 +28,14 @@ import android.text.style.TypefaceSpan;
 import android.text.style.UnderlineSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
@@ -40,6 +49,7 @@ import org.arca.viewer.MainActivity;
 import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
 import org.arca.viewer.Session;
+import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Model;
 import org.arca.viewer.core.PageCache;
@@ -74,7 +84,21 @@ public final class PreviewScreen extends Screen {
     private static int savedPosition;
     private static boolean noticesOpen;
 
+    // The search survives rebuilds too (the window changes shape, a match is in another section).
+    private static boolean searchOpen;
+    private static boolean focusSearch;
+    private static String searchQuery = "";
+    private static DocSearch search;
+    private static int hitIndex = -1;
+    /** The screen on display: the one the search tells about new matches. */
+    private static PreviewScreen live;
+
     private final float scale;
+    private Model.PreviewMeta metaShown;
+    private long outcomeShown;
+    private TextView countView;
+    /** The row being built holds the match the person is on (drawn stronger). */
+    private boolean currentHitRow;
     private PageCache cache;
     private ItemAdapter adapter;
     private ListView list;
@@ -172,7 +196,11 @@ public final class PreviewScreen extends Screen {
             shownOutcomeKey = outcome;
             section = 0;
             savedPosition = 0;
+            resetSearch();
         }
+        metaShown = meta;
+        outcomeShown = outcome;
+        live = this;
         if (section >= meta.sections.size()) {
             section = 0;
         }
@@ -181,13 +209,26 @@ public final class PreviewScreen extends Screen {
             st.reveal ? R.string.hide_hidden : R.string.show_hidden, new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
+                    // The run replaces the preview, and the matches belong to the old one.
+                    resetSearch();
                     s.startPreview(!st.reveal);
                 }
             });
         String title = Fmt.clip(Fmt.safe(s.name().isEmpty() ? ui.str(R.string.preview_title) : s.name()), 60);
-        View head = header(title, true, reveal);
+        View find = ui.iconButton(R.drawable.ic_search, R.string.search_open, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                searchOpen = true;
+                focusSearch = true;
+                act.refresh();
+            }
+        });
+        View head = meta.sections.isEmpty() ? header(title, true, reveal) : header(title, true, find, reveal);
 
         LinearLayout body = ui.vbox();
+        if (searchOpen && !meta.sections.isEmpty()) {
+            body.addView(searchBar(), ui.fillWidth());
+        }
         View notices = notices(meta, st);
         if (notices != null) {
             body.addView(notices, ui.fillWidth());
@@ -216,6 +257,249 @@ public final class PreviewScreen extends Screen {
         main.addView(sectionContent(s, meta, outcome), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         body.addView(main, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return page(head, body);
+    }
+
+    // ---- search -----------------------------------------------------------------------------
+
+    private View searchBar() {
+        LinearLayout bar = ui.hbox();
+        int pad = ui.dp(Adaptive.padding(act));
+        bar.setPadding(pad, ui.dp(2), ui.dp(4), ui.dp(6));
+        final EditText edit = new EditText(act);
+        edit.setSingleLine(true);
+        edit.setHint(R.string.search_hint);
+        edit.setHintTextColor(ui.color(R.color.arca_on_surface_variant));
+        edit.setTextColor(ui.color(R.color.arca_on_surface));
+        edit.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        // What is searched for is nobody else's business: no learning, no autofill.
+        edit.setImeOptions(EditorInfo.IME_ACTION_SEARCH | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        edit.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        edit.setFilters(new InputFilter[] {new InputFilter.LengthFilter(DocSearch.MAX_QUERY)});
+        edit.setBackground(ui.rounded(ui.color(R.color.arca_surface_variant), 0, 22));
+        edit.setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(8));
+        edit.setMinHeight(ui.dp(44));
+        edit.setText(searchQuery);
+        edit.setSelection(edit.getText().length());
+        edit.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence c, int a, int b, int d) {}
+
+            @Override
+            public void onTextChanged(CharSequence c, int a, int b, int d) {}
+
+            @Override
+            public void afterTextChanged(Editable e) {
+                searchQuery = e.toString();
+            }
+        });
+        edit.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView v, int action, KeyEvent event) {
+                boolean enter = event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN;
+                if (action == EditorInfo.IME_ACTION_SEARCH || enter) {
+                    runSearch(v.getText().toString());
+                    hideKeyboard(v);
+                    return true;
+                }
+                return false;
+            }
+        });
+        bar.addView(edit, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        countView = ui.text("", Ui.SMALL);
+        countView.setPadding(ui.dp(8), 0, ui.dp(2), 0);
+        countView.setGravity(Gravity.CENTER);
+        bar.addView(countView, ui.wrapLp());
+        bar.addView(ui.iconButton(R.drawable.ic_chevron_up, R.string.search_prev, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (search != null && search.hitCount() > 0) {
+                    goTo(hitIndex < 0 ? search.hitCount() - 1 : hitIndex - 1);
+                }
+            }
+        }));
+        bar.addView(ui.iconButton(R.drawable.ic_chevron_down, R.string.search_next, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (search != null && search.hitCount() > 0) {
+                    goTo(hitIndex < 0 ? 0 : hitIndex + 1);
+                }
+            }
+        }));
+        bar.addView(ui.iconButton(R.drawable.ic_close, R.string.search_close, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeSearch();
+            }
+        }));
+        updateCount();
+        if (focusSearch) {
+            focusSearch = false;
+            edit.post(new Runnable() {
+                @Override
+                public void run() {
+                    edit.requestFocus();
+                    InputMethodManager imm = (InputMethodManager) act.getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if (imm != null) {
+                        imm.showSoftInput(edit, InputMethodManager.SHOW_IMPLICIT);
+                    }
+                }
+            });
+        }
+        return bar;
+    }
+
+    private void hideKeyboard(View v) {
+        InputMethodManager imm = (InputMethodManager) act.getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+        }
+    }
+
+    /** Forgets the search (a new document or preview, or the bar was closed). */
+    private static void resetSearch() {
+        if (search != null) {
+            search.cancel();
+        }
+        search = null;
+        searchOpen = false;
+        focusSearch = false;
+        searchQuery = "";
+        hitIndex = -1;
+    }
+
+    private void closeSearch() {
+        View focus = act.getCurrentFocus();
+        if (focus != null) {
+            hideKeyboard(focus);
+        }
+        resetSearch();
+        act.refresh();
+    }
+
+    /** Looks for {@code raw} in every section, in the background. */
+    private void runSearch(String raw) {
+        searchQuery = raw;
+        if (search != null) {
+            search.cancel();
+            search = null;
+        }
+        hitIndex = -1;
+        String q = raw.trim();
+        if (DocSearch.usable(q) && metaShown != null) {
+            final Session s = Session.get();
+            final long outcome = outcomeShown;
+            long[] sizes = new long[metaShown.sections.size()];
+            for (int i = 0; i < sizes.length; i++) {
+                sizes[i] = metaShown.sections.get(i).items;
+            }
+            search = new DocSearch(q, sizes, new DocSearch.Loader() {
+                @Override
+                public List<Model.Item> load(int sec, long from, int count) {
+                    return s.loadItems(outcome, sec, from, count);
+                }
+            }, s.pageExecutor(), s.mainExecutor(), new DocSearch.Listener() {
+                @Override
+                public void onChanged() {
+                    PreviewScreen now = live;
+                    if (now != null) {
+                        now.onSearchChanged();
+                    }
+                }
+            });
+            search.start();
+        }
+        updateCount();
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
+    }
+
+    /** More matches arrived, or the scan ended. */
+    private void onSearchChanged() {
+        if (search == null) {
+            return;
+        }
+        if (hitIndex < 0 && search.hitCount() > 0) {
+            // The first match at or after where the person is reading.
+            int first = search.firstAtOrAfter(section, savedPosition);
+            goTo(first < 0 ? 0 : first);
+            return;
+        }
+        updateCount();
+    }
+
+    /** Shows match {@code index} (wrapping round): switches section if it has to, then scrolls. */
+    private void goTo(int index) {
+        if (search == null || search.hitCount() == 0) {
+            return;
+        }
+        int n = search.hitCount();
+        hitIndex = ((index % n) + n) % n;
+        int sec = search.hitSection(hitIndex);
+        long item = search.hitItem(hitIndex);
+        if (sec != section) {
+            section = sec;
+            savedPosition = (int) Math.min(item, Integer.MAX_VALUE);
+            act.refresh();
+            return;
+        }
+        if (list != null) {
+            list.setSelectionFromTop((int) Math.min(item, Integer.MAX_VALUE), ui.dp(24));
+        }
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
+        updateCount();
+    }
+
+    private void updateCount() {
+        if (countView == null) {
+            return;
+        }
+        String text = "";
+        if (search != null) {
+            int n = search.hitCount();
+            if (n > 0) {
+                text = ui.str(search.capped() ? R.string.search_count_capped : R.string.search_count,
+                    hitIndex + 1, n);
+                if (!search.done()) {
+                    text += " …";
+                }
+            } else if (!search.done()) {
+                long total = Math.max(1, search.total());
+                text = ui.str(R.string.search_progress, (int) Math.min(100, search.scanned() * 100 / total));
+            } else if (!search.failed()) {
+                text = ui.str(R.string.search_none);
+            }
+            if (search.done() && search.failed()) {
+                text = (text.isEmpty() ? "" : text + "\n") + ui.str(R.string.search_incomplete);
+            }
+        }
+        countView.setText(text);
+    }
+
+    /** {@code text} with every match of the search marked. */
+    private CharSequence highlighted(CharSequence text) {
+        if (search == null || text.length() == 0) {
+            return text;
+        }
+        int[] at = DocSearch.occurrences(text.toString(), search.needle());
+        if (at.length == 0) {
+            return text;
+        }
+        SpannableStringBuilder sb = text instanceof SpannableStringBuilder
+            ? (SpannableStringBuilder) text : new SpannableStringBuilder(text);
+        int color = ui.color(currentHitRow ? R.color.arca_search_current : R.color.arca_search_hit);
+        int len = search.needle().length();
+        for (int start : at) {
+            sb.setSpan(new BackgroundColorSpan(color), start, Math.min(sb.length(), start + len),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return sb;
     }
 
     // ---- notices ----------------------------------------------------------------------------
@@ -504,6 +788,15 @@ public final class PreviewScreen extends Screen {
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
+            currentHitRow = search != null && search.isHit(hitIndex, sectionIndex, position);
+            try {
+                return buildView(position, convertView);
+            } finally {
+                currentHitRow = false;
+            }
+        }
+
+        private View buildView(int position, View convertView) {
             Model.Item item = (Model.Item) getItem(position);
             switch (getItemViewType(position)) {
                 case TYPE_PARA:
@@ -707,7 +1000,7 @@ public final class PreviewScreen extends Screen {
                 }, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
         }
-        return sb;
+        return highlighted(sb);
     }
 
     // ---- tables -----------------------------------------------------------------------------
@@ -815,7 +1108,7 @@ public final class PreviewScreen extends Screen {
                 continue;
             }
             TextView c = (TextView) row.getChildAt(cell.col + 1);
-            c.setText(Fmt.safe(cell.text));
+            c.setText(highlighted(Fmt.safe(cell.text)));
             switch (cell.kind) {
                 case Model.CELL_NUMBER:
                 case Model.CELL_DATE:
@@ -859,7 +1152,20 @@ public final class PreviewScreen extends Screen {
     }
 
     @Override
+    public boolean onBack() {
+        if (searchOpen) {
+            closeSearch();
+            return true;
+        }
+        return false;
+    }
+
+    @Override
     public void onLeave() {
+        resetSearch();
+        if (live == this) {
+            live = null;
+        }
         Session.get().closePreview();
         shownOutcomeKey = 0;
     }

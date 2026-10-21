@@ -10,11 +10,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.Executor;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.arca.viewer.Native;
 import org.arca.viewer.core.Capabilities;
+import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Model;
 
 /**
@@ -202,6 +204,9 @@ public final class ContractTest {
                                 check(allText.indexOf(expect[e]) >= 0,
                                     name + " (flags " + flags + "): preview lacks <" + expect[e] + ">");
                             }
+                            if (flags == 0) {
+                                searchChecks(name, outcome, meta, expect);
+                            }
                         }
                         String[] concealed = CONCEALED.get(name);
                         if (concealed != null) {
@@ -255,6 +260,52 @@ public final class ContractTest {
         } finally {
             Native.docFree(doc);
         }
+    }
+
+    /**
+     * The in-document search over the real engine's pages: every phrase the preview must show is
+     * found even when typed in capitals (case folding), and a phrase that is nowhere is not.
+     */
+    private static void searchChecks(String name, final long outcome, Model.PreviewMeta meta, String[] expect) {
+        final Executor direct = new Executor() {
+            @Override
+            public void execute(Runnable r) {
+                r.run();
+            }
+        };
+        DocSearch.Loader loader = new DocSearch.Loader() {
+            @Override
+            public List<Model.Item> load(int section, long from, int count) {
+                byte[] json = Native.previewItems(outcome, section, from, count);
+                if (json == null) {
+                    throw new IllegalStateException("page not available");
+                }
+                return Model.parseItems(json);
+            }
+        };
+        DocSearch.Listener quiet = new DocSearch.Listener() {
+            @Override
+            public void onChanged() {}
+        };
+        long[] sizes = new long[meta.sections.size()];
+        long total = 0;
+        for (int i = 0; i < sizes.length; i++) {
+            sizes[i] = meta.sections.get(i).items;
+            total += sizes[i];
+        }
+        for (int e = 1; e < expect.length; e++) {
+            DocSearch ds = new DocSearch(expect[e].toUpperCase(java.util.Locale.ROOT), sizes, loader, direct, direct, quiet);
+            ds.start();
+            check(ds.done() && !ds.failed(), name + ": search for <" + expect[e] + "> did not finish");
+            check(ds.hitCount() > 0, name + ": search does not find <" + expect[e] + ">");
+            check(ds.scanned() >= total || ds.capped(), name + ": search looked at " + ds.scanned() + " of " + total);
+            for (int h = 0; h < ds.hitCount(); h++) {
+                check(ds.hitItem(h) >= 0 && ds.hitItem(h) < sizes[ds.hitSection(h)], name + ": hit outside its section");
+            }
+        }
+        DocSearch none = new DocSearch("zzqq-nowhere-" + name, sizes, loader, direct, direct, quiet);
+        none.start();
+        check(none.done() && none.hitCount() == 0, name + ": search found text that is not there");
     }
 
     private static byte[] mutate(byte[] src, Random rnd) {

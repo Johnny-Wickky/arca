@@ -148,6 +148,16 @@
     <string name="preview_building">Building the preview…</string>
     <string name="show_hidden">Show hidden content</string>
     <string name="hide_hidden">Hide hidden content</string>
+    <string name="search_open">Search in document</string>
+    <string name="search_hint">Find in document</string>
+    <string name="search_prev">Previous match</string>
+    <string name="search_next">Next match</string>
+    <string name="search_close">Close search</string>
+    <string name="search_count">%1$d of %2$d</string>
+    <string name="search_count_capped">%1$d of %2$d+</string>
+    <string name="search_none">Nothing found</string>
+    <string name="search_progress">Searching… %1$d%%</string>
+    <string name="search_incomplete">Some pages could not be read</string>
     <string name="notices_summary">What this preview leaves out: %1$d</string>
     <string name="notice_truncated_preview">The document is very long, so only the first part is shown.</string>
     <string name="section_body">Document</string>

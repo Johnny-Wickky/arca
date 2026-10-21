@@ -146,6 +146,16 @@
     <string name="preview_building">Готовим просмотр…</string>
     <string name="show_hidden">Показать скрытое</string>
     <string name="hide_hidden">Скрыть скрытое</string>
+    <string name="search_open">Поиск по документу</string>
+    <string name="search_hint">Найти в документе</string>
+    <string name="search_prev">Предыдущее совпадение</string>
+    <string name="search_next">Следующее совпадение</string>
+    <string name="search_close">Закрыть поиск</string>
+    <string name="search_count">%1$d из %2$d</string>
+    <string name="search_count_capped">%1$d из %2$d+</string>
+    <string name="search_none">Ничего не найдено</string>
+    <string name="search_progress">Ищем… %1$d%%</string>
+    <string name="search_incomplete">Часть страниц не прочитана</string>
     <string name="notices_summary">Чего нет в просмотре: %1$d</string>
     <string name="notice_truncated_preview">Документ очень длинный, поэтому показано только его начало.</string>
     <string name="section_body">Документ</string>

@@ -10,6 +10,7 @@ import java.util.concurrent.Executor;
 
 import org.arca.viewer.core.Breakpoints;
 import org.arca.viewer.core.Capabilities;
+import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Json;
 import org.arca.viewer.core.Model;
@@ -604,9 +605,178 @@ public final class CoreTest {
 
     // ---------------------------------------------------------------------------------------
 
+    private static List<Model.Item> items(String json) {
+        return Model.parseItems(json.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String para(String text) {
+        return "{\"k\":\"p\",\"r\":[[\"" + text + "\",0]]}";
+    }
+
+    static void search() {
+        // Folding keeps one character per character, so offsets map back to the original text.
+        eq("hello", DocSearch.fold("HeLLo"), "ASCII case");
+        eq("cafe", DocSearch.fold("Caf\u00e9"), "accents are dropped");
+        eq("\u0435\u0436", DocSearch.fold("\u0401\u0436"), "Cyrillic yo finds ye");
+        eq("\u0439", DocSearch.fold("\u0419"), "short i keeps its breve");
+        eq("stra\u00dfe".length(), DocSearch.fold("Stra\u00dfe").length(), "length never changes");
+        eq("\ud83d\ude00", DocSearch.fold("\ud83d\ude00"), "astral characters pass through");
+        eq("", DocSearch.fold(null), "null folds to nothing");
+
+        int[] at = DocSearch.occurrences("Abc abC aBc", DocSearch.fold("abc"));
+        check(Arrays.equals(new int[] {0, 4, 8}, at), "three matches, any case: " + Arrays.toString(at));
+        check(Arrays.equals(new int[] {0, 2}, DocSearch.occurrences("aaaa", "aa")), "matches do not overlap");
+        eq(0, DocSearch.occurrences("abc", "").length, "an empty needle matches nothing");
+        eq(0, DocSearch.occurrences("ab", "abc").length, "a needle longer than the text");
+        eq(0, DocSearch.occurrences(null, "a").length, "null text");
+        check(DocSearch.usable("x"), "one character is a query");
+        check(!DocSearch.usable("   "), "blanks are not");
+        check(!DocSearch.usable(null), "null is not");
+
+        // What is searched is what is shown.
+        List<Model.Item> sample = items("[" + para("Caf\u00e9 au lait") + ","
+            + "{\"k\":\"p\",\"m\":\"1.\",\"r\":[[\"item\",0]]},"
+            + "{\"k\":\"tr\",\"n\":2,\"first\":true,\"last\":true,\"cells\":[{\"c\":1,\"h\":false,\"p\":[{\"r\":[[\"left\",0]]}]},"
+            + "{\"c\":1,\"h\":false,\"p\":[{\"r\":[[\"right\",0]]}]}]},"
+            + "{\"k\":\"gr\",\"i\":0,\"h\":false,\"c\":[[0,0,\"alpha\"],[1,0,\"beta\"]]},"
+            + "{\"k\":\"i\",\"alt\":\"logo\",\"media\":\"png\",\"bytes\":1,\"ext\":false},{\"k\":\"r\"}]");
+        eq("Caf\u00e9 au lait", DocSearch.textOf(sample.get(0)), "paragraph text");
+        eq("1. item", DocSearch.textOf(sample.get(1)), "the marker is part of the text");
+        eq("left\tright", DocSearch.textOf(sample.get(2)), "table cells are tab separated");
+        eq("alpha\tbeta", DocSearch.textOf(sample.get(3)), "grid cells are tab separated");
+        eq("logo", DocSearch.textOf(sample.get(4)), "alt text of a picture");
+        eq("", DocSearch.textOf(sample.get(5)), "a rule has no text");
+        eq("\u2039U+202E\u203a", DocSearch.textOf(items("[" + para("\\u202e") + "]").get(0)),
+            "invisible characters are searched as the marker the screen shows");
+
+        // A scan over three sections, one page per task, interleaved with other work.
+        final long[] sizes = {150, 0, 70, 10};
+        final List<long[]> requests = new ArrayList<>();
+        final Queue worker = new Queue();
+        final Queue ui = new Queue();
+        final int[] told = {0};
+        final boolean[] failAt = {false};
+        DocSearch.Loader loader = new DocSearch.Loader() {
+            @Override
+            public List<Model.Item> load(int section, long from, int count) throws Exception {
+                requests.add(new long[] {section, from, count});
+                if (failAt[0] && section == 2) {
+                    throw new Exception("boom");
+                }
+                StringBuilder sb = new StringBuilder("[");
+                for (int i = 0; i < count; i++) {
+                    long item = from + i;
+                    // Every 50th item says "needle" (twice in section 0's item 100).
+                    String text = item % 50 == 0 ? "Some NEEDLE here" + (section == 0 && item == 100 ? " needle" : "") : "hay";
+                    sb.append(i == 0 ? "" : ",").append(para(text));
+                }
+                return items(sb.append("]").toString());
+            }
+        };
+        DocSearch.Listener listener = new DocSearch.Listener() {
+            @Override
+            public void onChanged() {
+                told[0]++;
+            }
+        };
+        DocSearch search = new DocSearch("  needle".trim(), sizes, loader, worker, ui, listener);
+        eq("needle", search.needle(), "the query is folded");
+        eq(230L, search.total(), "all items to look at");
+        search.start();
+        eq(1, worker.tasks.size(), "the first page is queued");
+        int rounds = 0;
+        while (!search.done() && rounds++ < 100) {
+            worker.drain();
+            ui.drain();
+        }
+        check(search.done(), "the scan finishes");
+        check(!search.failed(), "without a failure");
+        eq(230L, search.scanned(), "every item was looked at");
+        // Pages: section 0 -> 64, 64, 22; section 2 -> 64, 6; section 3 -> 10 (the empty section is skipped).
+        eq(6, requests.size(), "one request per page: " + requests.size());
+        eq(0L, requests.get(0)[1], "starts at the beginning");
+        eq(64L, requests.get(0)[2], "a full page");
+        eq(2L, requests.get(3)[0], "the empty section 1 was skipped");
+        // Matches: section 0 items 0, 50, 100 (x2), 150 is outside; section 2 items 0, 50; section 3 item 0.
+        eq(7, search.hitCount(), "matches (the second one in the same item counts)");
+        eq(0, search.hitSection(0), "first match section");
+        eq(0L, search.hitItem(0), "first match item");
+        eq(100L, search.hitItem(2), "item with two matches");
+        eq(100L, search.hitItem(3), "item with two matches, second");
+        eq(2, search.hitSection(4), "later section");
+        eq(3, search.hitSection(6), "last section");
+        eq(2, search.firstAtOrAfter(0, 51), "first match at or after item 51");
+        eq(4, search.firstAtOrAfter(1, 0), "an empty section is passed over");
+        eq(-1, search.firstAtOrAfter(3, 1), "none after the last");
+        check(search.isHit(2, 0, 100), "isHit is true for its own place");
+        check(!search.isHit(2, 0, 99), "and false elsewhere");
+        check(!search.isHit(-1, 0, 0) && !search.isHit(99, 0, 0), "out of range is no hit");
+        check(told[0] >= 6, "the UI was told after every page");
+
+        // Cancelling stops the scan and the callbacks.
+        requests.clear();
+        told[0] = 0;
+        DocSearch stopped = new DocSearch("needle", sizes, loader, worker, ui, listener);
+        stopped.start();
+        worker.drain();
+        stopped.cancel();
+        ui.drain();
+        worker.drain();
+        ui.drain();
+        eq(1, requests.size(), "no page is requested after cancel");
+        eq(0, told[0], "and the UI is not told");
+        check(!stopped.done(), "a cancelled scan is not 'done'");
+
+        // A page that cannot be read ends the scan but keeps what was found.
+        failAt[0] = true;
+        DocSearch broken = new DocSearch("needle", sizes, loader, worker, ui, listener);
+        broken.start();
+        rounds = 0;
+        while (!broken.done() && rounds++ < 100) {
+            worker.drain();
+            ui.drain();
+        }
+        check(broken.done() && broken.failed(), "failure is reported");
+        eq(4, broken.hitCount(), "matches before the failure are kept");
+
+        // Nothing to look for or nothing to look in.
+        DocSearch empty = new DocSearch("", sizes, loader, worker, ui, listener);
+        empty.start();
+        check(empty.done() && empty.hitCount() == 0, "empty query finishes at once");
+        DocSearch nothing = new DocSearch("a", new long[] {0, 0}, loader, worker, ui, listener);
+        nothing.start();
+        check(nothing.done(), "no items finishes at once");
+        eq(0, worker.tasks.size(), "and queues nothing");
+
+        // The match list is capped.
+        final long many = 6_000;
+        DocSearch.Loader every = new DocSearch.Loader() {
+            @Override
+            public List<Model.Item> load(int section, long from, int count) {
+                StringBuilder sb = new StringBuilder("[");
+                for (int i = 0; i < count; i++) {
+                    sb.append(i == 0 ? "" : ",").append(para("needle"));
+                }
+                return items(sb.append("]").toString());
+            }
+        };
+        DocSearch capped = new DocSearch("needle", new long[] {many}, every, worker, ui, listener);
+        capped.start();
+        rounds = 0;
+        while (!capped.done() && rounds++ < 200) {
+            worker.drain();
+            ui.drain();
+        }
+        check(capped.done() && capped.capped(), "the cap stops the scan");
+        eq(DocSearch.MAX_HITS, capped.hitCount(), "and keeps exactly the cap");
+        check(capped.scanned() < many, "without reading the whole document");
+    }
+
+    // ---------------------------------------------------------------------------------------
+
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks"};
+            "capabilities", "chunks", "search"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -621,6 +791,7 @@ public final class CoreTest {
                     case "breakpoints": breakpoints(); break;
                     case "capabilities": capabilities(); break;
                     case "chunks": chunks(); break;
+                    case "search": search(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {
