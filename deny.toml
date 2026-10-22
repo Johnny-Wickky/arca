@@ -38,6 +38,8 @@ ignore = true
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
+# Workspace crates depend on each other by path (nothing is published): that is not a wildcard.
+allow-wildcard-paths = true
 # The core must not compile or link C/C++ code.
 deny = [
     { crate = "cc", reason = "no C/C++ in the trust base" },

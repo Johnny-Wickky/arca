@@ -529,7 +529,8 @@ mod tests {
             }
         }
         let index = |n: &str| names.iter().position(|x| x == n);
-        assert_eq!(names.len(), 235);
+        // 234 entries up to JDK 17, 235 from JDK 21 (IsVirtualThread); the slots used here are stable.
+        assert!(names.len() >= 234, "{}", names.len());
         assert_eq!(index("ExceptionClear"), Some(super::EXCEPTION_CLEAR));
         assert_eq!(index("GetArrayLength"), Some(super::GET_ARRAY_LENGTH));
         assert_eq!(index("NewByteArray"), Some(super::NEW_BYTE_ARRAY));
