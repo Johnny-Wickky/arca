@@ -17,3 +17,7 @@
 /dist/
 /native/
 /smoke-out/
+
+# IDE
+.idea/
+*.iml
