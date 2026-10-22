@@ -181,6 +181,9 @@ public final class Compat {
     private static final class Api30 {
         static void edgeToEdge(Window w, boolean night) {
             w.setDecorFitsSystemWindows(false);
+            // Installs the decor view: without it getInsetsController() is null-dereferenced
+            // when this runs in onCreate before setContentView.
+            w.getDecorView();
             WindowInsetsController c = w.getInsetsController();
             if (c != null) {
                 int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS

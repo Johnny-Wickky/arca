@@ -178,7 +178,7 @@ stored() { # every line of the listing matching $1 is Stored, and there is at le
 }
 need "package org.arca.viewer $VERSION_CODE/$VERSION_NAME" \
     badging_has "^package: name='org.arca.viewer' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
-need "minSdk $MIN_SDK" badging_has "^sdkVersion:'$MIN_SDK'"
+need "minSdk $MIN_SDK" badging_has "^\(min\)\{0,1\}[sS]dkVersion:'$MIN_SDK'"
 need "targetSdk $TARGET_SDK" badging_has "^targetSdkVersion:'$TARGET_SDK'"
 need "no permission requested" badging_lacks "^uses-permission"
 need "no INTERNET permission" badging_lacks "android.permission.INTERNET"
