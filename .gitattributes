@@ -1,3 +1,5 @@
 # Shell scripts must keep LF endings on Windows checkouts (CI runs them with bash).
 *.sh text eol=lf
 *.wasm binary
+# Fixtures are compared byte for byte (dumps, text, RTF): never convert their line endings.
+tests/fixtures/** -text

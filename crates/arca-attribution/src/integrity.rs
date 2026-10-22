@@ -125,8 +125,7 @@ pub fn release_blockers(fork: Option<&ForkAttribution>) -> Vec<ReleaseBlocker> {
             urls.push((format!("fork.donations[{i}].url"), &d.url));
         }
     }
-    urls
-        .into_iter()
+    urls.into_iter()
         .filter(|(_, u)| is_placeholder_url(u))
         .map(|(field, url)| ReleaseBlocker::PlaceholderUrl { field, url: url.to_owned() })
         .collect()

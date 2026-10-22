@@ -46,8 +46,7 @@ pub const UPSTREAM_HOMEPAGE: &str = "https://github.com/Johnny-Wickky/arca";
 pub const UPSTREAM_SOURCE: &str = "https://github.com/Johnny-Wickky/arca";
 
 /// Creators of the original Arca core.
-pub const UPSTREAM_AUTHORS: &[Author] =
-    &[Author { name: "Pharos", url: None }];
+pub const UPSTREAM_AUTHORS: &[Author] = &[Author { name: "Pharos", url: None }];
 
 /// Donation links of the original creators (none yet; add them here when they exist).
 pub const UPSTREAM_DONATION_LINKS: &[DonationLink] = &[];

@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.97"
 # Placeholder identity; kept in sync with AUTHORS and arca-attribution (see AUTHORS).

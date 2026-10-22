@@ -61,8 +61,10 @@ grep -E "minSdk|targetSdk|versionName|versionCode|primaryCpuAbi" <<<"$dump" | he
 shot() { adb exec-out screencap -p > "$OUT/$1.png" 2>/dev/null || log "note: no screenshot $1"; }
 
 # Anything the system or the runtime says about our process dying.
+# Only this app's own process counts: a bare "FATAL EXCEPTION" is also printed for the
+# system UI or any other process of the image, which is not the app's fault (API 31 images).
 crashes() {
-    adb logcat -d -v brief 2>/dev/null | grep -E "FATAL EXCEPTION|Fatal signal|ANR in $PKG|AndroidRuntime.*$PKG|Process: $PKG|libc.*Fatal" || true
+    adb logcat -d -v brief 2>/dev/null | grep -E "ANR in $PKG|AndroidRuntime.*$PKG|Process: $PKG|Fatal signal.*$PKG|libc.*Fatal.*$PKG" || true
 }
 alive() { [ -n "$(sh_ pidof $PKG)" ]; }
 check_state() { # check_state <label>
@@ -175,24 +177,46 @@ mime_of() {
 }
 
 open_doc() { # open_doc <file> <label>
-    local f=$1 label=$2 id
+    local f=$1 label=$2 id uri
     adb push "$FIX/$f" "/sdcard/Download/$f" >/dev/null 2>&1 || { log "note: cannot push $f"; return 1; }
-    sh_ am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d "file:///sdcard/Download/$f" >/dev/null 2>&1 || true
-    sleep 1
-    id=$(sh_ content query --uri content://media/external/file --projection _id \
-        --where "_display_name='$f'" 2>/dev/null | sed -n 's/.*_id=\([0-9][0-9]*\).*/\1/p' | head -n1)
-    if [ -z "$id" ]; then
+    # The whole `content` command goes to the device shell as ONE string: with separate arguments
+    # adb joins them and the shell strips the quotes of the --where clause ("Invalid token").
+    if [ "$API" -ge 29 ]; then
+        # A row of the Downloads collection that the app can be handed (shell may write it).
+        adb shell "content insert --uri content://media/external/downloads --bind _display_name:s:$f --bind mime_type:s:$(mime_of "$f") --bind relative_path:s:Download/Arca-smoke" >/dev/null 2>&1 || true
+        id=$(adb shell "content query --uri content://media/external/downloads --projection _id --where \"_display_name='$f'\"" 2>/dev/null \
+            | tr -d '\r' | sed -n 's/.*_id=\([0-9][0-9]*\).*/\1/p' | tail -n1)
+        if [ -n "$id" ] && adb shell "cat /sdcard/Download/$f | content write --uri content://media/external/downloads/$id" >/dev/null 2>&1; then
+            uri="content://media/external/downloads/$id"
+        fi
+    fi
+    if [ -z "${uri:-}" ]; then
+        adb shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download/$f" >/dev/null 2>&1 || true
+        sleep 1
+        id=$(adb shell "content query --uri content://media/external/file --projection _id --where \"_display_name='$f'\"" 2>/dev/null \
+            | tr -d '\r' | sed -n 's/.*_id=\([0-9][0-9]*\).*/\1/p' | head -n1)
+        [ -n "$id" ] && uri="content://media/external/file/$id"
+    fi
+    if [ -z "${uri:-}" ]; then
         log "skip: $f cannot be exposed through MediaStore on API $API"
         return 1
     fi
     sh_ am force-stop $PKG >/dev/null
     start --grant-read-uri-permission -a android.intent.action.VIEW \
-        -d "content://media/external/file/$id" -t "$(mime_of "$f")"
+        -d "$uri" -t "$(mime_of "$f")"
     sleep 10
     check_state "$label: $f"
     shot "30-$label-${f//./_}"
     sh_ uiautomator dump /sdcard/arca-ui.xml >/dev/null 2>&1 || true
     adb pull /sdcard/arca-ui.xml "$OUT/ui-$label-${f//./_}.xml" >/dev/null 2>&1 || true
+    # The app must have read the document, not just stayed alive on an error screen.
+    if grep -q "Could not open the file" "$OUT/ui-$label-${f//./_}.xml" 2>/dev/null; then
+        fail "$label: $f: the app could not open the document it was handed"
+    elif grep -q "Threat X-Ray" "$OUT/ui-$label-${f//./_}.xml" 2>/dev/null; then
+        log "ok: $label: $f was scanned"
+    else
+        log "note: $label: $f: no result screen found in the view hierarchy"
+    fi
     return 0
 }
 
