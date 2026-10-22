@@ -325,9 +325,10 @@ fn about_screen_keeps_the_upstream_card_first_in_both_languages() {
         assert!(cards.len() >= 1);
         let first = cards.at(0).unwrap();
         assert_eq!(first.get("role").and_then(Value::str), Some("Upstream"));
-        assert!(
-            first.get("support").map(Value::len).unwrap_or(0) >= 1,
-            "the support link is present"
+        assert_eq!(
+            first.get("support").map(Value::len).unwrap_or(0),
+            arca_attribution::UPSTREAM_DONATION_LINKS.len(),
+            "the upstream support links are all present"
         );
         assert_eq!(v.get("fingerprint").and_then(Value::str).map(str::len), Some(64));
         assert!(

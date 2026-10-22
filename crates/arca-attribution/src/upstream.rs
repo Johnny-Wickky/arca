@@ -40,24 +40,23 @@ pub struct DonationLink {
 pub const UPSTREAM_PROJECT: &str = "Arca";
 
 /// Homepage of the original project.
-pub const UPSTREAM_HOMEPAGE: &str = "https://arca.invalid/";
+pub const UPSTREAM_HOMEPAGE: &str = "https://github.com/Johnny-Wickky/arca";
 
 /// Where the original Corresponding Source is published.
-pub const UPSTREAM_SOURCE: &str = "https://arca.invalid/source";
+pub const UPSTREAM_SOURCE: &str = "https://github.com/Johnny-Wickky/arca";
 
 /// Creators of the original Arca core.
 pub const UPSTREAM_AUTHORS: &[Author] =
-    &[Author { name: "Arca Core Team", url: Some("https://arca.invalid/team") }];
+    &[Author { name: "Pharos", url: None }];
 
-/// Donation links of the original creators.
-pub const UPSTREAM_DONATION_LINKS: &[DonationLink] =
-    &[DonationLink { label: "Support Arca", url: "https://arca.invalid/donate" }];
+/// Donation links of the original creators (none yet; add them here when they exist).
+pub const UPSTREAM_DONATION_LINKS: &[DonationLink] = &[];
 
 /// Copyright line of the original project.
-pub const UPSTREAM_COPYRIGHT: &str = "Copyright © 2026 Arca Core Team and contributors";
+pub const UPSTREAM_COPYRIGHT: &str = "Copyright © 2026 Pharos and contributors";
 
 /// Appropriate Legal Notices (AGPLv3 §0) shown under the cards (English).
-pub const LEGAL_NOTICE_EN: &str = "Copyright © 2026 Arca Core Team and contributors. \
+pub const LEGAL_NOTICE_EN: &str = "Copyright © 2026 Pharos and contributors. \
 Arca is free software: you can redistribute it and/or modify it under the terms of the \
 GNU Affero General Public License, version 3, with additional terms under its Section 7. \
 It comes with ABSOLUTELY NO WARRANTY. The full license and the additional terms are \
@@ -66,7 +65,7 @@ and their support link on this screen are a required legal notice: every modifie
 version must keep them visible.";
 
 /// Appropriate Legal Notices (AGPLv3 §0) shown under the cards (Russian).
-pub const LEGAL_NOTICE_RU: &str = "Copyright © 2026 Arca Core Team and contributors. \
+pub const LEGAL_NOTICE_RU: &str = "Copyright © 2026 Pharos and contributors. \
 Arca — свободная программа: вы можете распространять и изменять её на условиях \
 GNU Affero General Public License версии 3 с дополнительными условиями по её разделу 7. \
 Программа поставляется БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ. Полный текст лицензии и дополнительных \

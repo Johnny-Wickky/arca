@@ -68,8 +68,6 @@ pub enum ReleaseBlocker {
         /// The URL.
         url: String,
     },
-    /// The original project ships without any donation link.
-    NoUpstreamDonationLink,
 }
 
 impl fmt::Display for ReleaseBlocker {
@@ -78,7 +76,6 @@ impl fmt::Display for ReleaseBlocker {
             Self::PlaceholderUrl { field, url } => {
                 write!(f, "{field} = {url:?} is a reserved placeholder domain (RFC 2606/6761)")
             }
-            Self::NoUpstreamDonationLink => f.write_str("UPSTREAM_DONATION_LINKS is empty"),
         }
     }
 }
@@ -128,13 +125,9 @@ pub fn release_blockers(fork: Option<&ForkAttribution>) -> Vec<ReleaseBlocker> {
             urls.push((format!("fork.donations[{i}].url"), &d.url));
         }
     }
-    let mut out: Vec<ReleaseBlocker> = urls
+    urls
         .into_iter()
         .filter(|(_, u)| is_placeholder_url(u))
         .map(|(field, url)| ReleaseBlocker::PlaceholderUrl { field, url: url.to_owned() })
-        .collect();
-    if upstream::UPSTREAM_DONATION_LINKS.is_empty() {
-        out.push(ReleaseBlocker::NoUpstreamDonationLink);
-    }
-    out
+        .collect()
 }

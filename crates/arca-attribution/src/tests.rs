@@ -166,11 +166,13 @@ fn impersonating_upstream_is_rejected() {
     let src = format!("[fork]\nname = \"F\"\n[[fork.maintainers]]\nname = \"{author}\"\n");
     assert!(matches!(err(&src), ForkConfigError::ImpersonatesUpstream(_)));
     // Re-using the upstream donation URL as "the fork's" link is pointless and confusing.
-    let link = UPSTREAM_DONATION_LINKS[0].url;
-    let src = format!("{}[[fork.donations]]\nlabel = \"x\"\nurl = \"{link}\"\n", minimal(""));
-    assert!(
-        matches!(err(&src), ForkConfigError::Invalid { field, .. } if field == "fork.donations[0]")
-    );
+    if let Some(d) = UPSTREAM_DONATION_LINKS.first() {
+        let link = d.url;
+        let src = format!("{}[[fork.donations]]\nlabel = \"x\"\nurl = \"{link}\"\n", minimal(""));
+        assert!(
+            matches!(err(&src), ForkConfigError::Invalid { field, .. } if field == "fork.donations[0]")
+        );
+    }
 }
 
 #[test]
@@ -286,7 +288,7 @@ fn prominence_check_accepts_equal_cards() {
 fn prominence_check_rejects_hidden_or_demoted_upstream() {
     let up = rendered(CardRole::UpstreamCreators);
     let fk = rendered(CardRole::ForkMaintainers);
-    let cases = [
+    let mut cases = vec![
         (vec![fk], ProminenceViolation::UpstreamCardCount(0)),
         (vec![up, up, fk], ProminenceViolation::UpstreamCardCount(2)),
         (vec![RenderedCard { on_screen: false, ..up }, fk], ProminenceViolation::UpstreamOffScreen),
@@ -296,11 +298,14 @@ fn prominence_check_rejects_hidden_or_demoted_upstream() {
             ProminenceViolation::UpstreamTitleSmaller,
         ),
         (vec![RenderedCard { contrast: 300, ..up }, fk], ProminenceViolation::UpstreamLowContrast),
-        (
+    ];
+    // Hiding the support link only matters while the upstream notice has one.
+    if !UPSTREAM_DONATION_LINKS.is_empty() {
+        cases.push((
             vec![RenderedCard { support_tappable: false, ..up }, fk],
             ProminenceViolation::UpstreamSupportHidden,
-        ),
-    ];
+        ));
+    }
     for (cards, expected) in cases {
         assert_eq!(check_upstream_prominence(&cards), Err(expected));
         assert!(!expected.to_string().is_empty());

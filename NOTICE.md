@@ -13,18 +13,15 @@ constants in sync.
 
 ## Arca
 
-Copyright © 2026 Arca Core Team and contributors
+Copyright © 2026 Pharos and contributors
 
-- Homepage: <https://arca.invalid/>
-- Source: <https://arca.invalid/source>
+- Homepage: <https://github.com/Johnny-Wickky/arca>
+- Source: <https://github.com/Johnny-Wickky/arca>
 
 ### Creators of the original Arca core · Создатели оригинального ядра Arca
 
-- Arca Core Team — <https://arca.invalid/team>
+- Pharos
 
-### Support · Поддержать
-
-- Support Arca — <https://arca.invalid/donate>
 
 ## License
 

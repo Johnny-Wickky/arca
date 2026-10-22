@@ -4,8 +4,6 @@
 # (`authors_file_and_manifest_match_the_upstream_constants`) keeps this file and
 # the `authors` field of Cargo.toml in sync with it.
 #
-# The identity and URLs below are PLACEHOLDERS (".invalid" hosts never resolve).
-# The maintainers replace them before the first public release; a release build
-# (ARCA_RELEASE=1) refuses to compile while any placeholder remains.
+# The name below is the team name; add a URL here and in upstream.rs when the team has a page.
 
-Arca Core Team <https://arca.invalid/team>
+Pharos
