@@ -63,7 +63,7 @@ public final class ImageViewer {
                 return insets;
             }
         });
-        ViewGroup content = act.findViewById(android.R.id.content);
+        ViewGroup content = (ViewGroup) act.getWindow().getDecorView();
         content.addView(overlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         overlay.requestApplyInsets();
         current = overlay;
