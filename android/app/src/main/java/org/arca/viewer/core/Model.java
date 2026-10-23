@@ -451,6 +451,8 @@ public final class Model {
         public String media = "";
         public long bytes;
         public boolean external;
+        /** What to ask the engine for to see the picture, or -1. */
+        public int id = -1;
 
         @Override
         public String kind() {
@@ -553,6 +555,7 @@ public final class Model {
                     i.media = Json.str(m, "media");
                     i.bytes = Json.num(m, "bytes");
                     i.external = Json.bool(m, "ext");
+                    i.id = m.containsKey("id") ? Json.integer(m, "id") : -1;
                     out.add(i);
                     break;
                 }

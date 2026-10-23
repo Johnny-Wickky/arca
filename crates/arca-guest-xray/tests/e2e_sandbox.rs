@@ -467,3 +467,56 @@ fn preview_of_a_large_spreadsheet_stays_inside_the_budget() {
     let per_byte = out.stats.fuel_consumed / u64::try_from(doc.len()).unwrap();
     assert!(per_byte < sandbox.policy().fuel.per_input_byte / 2, "{per_byte} fuel per input byte");
 }
+
+#[test]
+fn guest_pictures_equal_native_pictures() {
+    let Some(m) = guest() else {
+        eprintln!("skipped: ARCA_GUEST_XRAY_WASM not set");
+        return;
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::default(), [m.pin()]);
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
+    let read = |p: &str| std::fs::read(format!("{fixtures}{p}")).unwrap();
+    let limits = arca_image::Limits::default();
+    // Picture files: PNG, JPEG (baseline and progressive).
+    for name in ["img-420.ref.png", "img-420.jpg", "img-java-prog.jpg", "img-cmyk.jpg"] {
+        let file = read(&format!("crates/arca-image/tests/fixtures/{name}"));
+        let out = run_op(&sandbox, &m, Op::Image, 0, &file, &RunOptions::new()).unwrap();
+        assert_eq!(out.status, arca_abi::status::OK, "{name}");
+        let got = arca_guest_xray::decode_image(out.kind, &out.payload).unwrap();
+        assert_eq!(got, arca_image::decode(&file, &limits).unwrap(), "{name}");
+    }
+    // A picture inside a presentation, found by the id the preview gave it.
+    let deck = read("tests/fixtures/deck-rich.pptx");
+    let out = run_op(&sandbox, &m, Op::Preview, 0, &deck, &RunOptions::new()).unwrap();
+    let preview = decode_preview(out.kind, &out.payload).unwrap();
+    let id = preview
+        .sections
+        .iter()
+        .flat_map(|s| s.blocks.iter())
+        .find_map(|b| match b {
+            arca_preview::model::Block::Image(i) if i.media == "png" => Some(i.id),
+            _ => None,
+        })
+        .expect("the deck holds a PNG");
+    let out = run_op(&sandbox, &m, Op::Image, id, &deck, &RunOptions::new()).unwrap();
+    assert_eq!(out.status, arca_abi::status::OK);
+    let got = arca_guest_xray::decode_image(out.kind, &out.payload).unwrap();
+    assert_eq!(
+        got,
+        arca_preview::picture(&deck, id, &arca_preview::PreviewPolicy::default()).unwrap()
+    );
+    // Anything that is not a picture, or not there, is a status and not a trap.
+    for (doc, flags) in [(deck.clone(), 9_999u32), (docx(&[]), 0), (b"plain text".to_vec(), 0)] {
+        let out = run_op(&sandbox, &m, Op::Image, flags, &doc, &RunOptions::new()).unwrap();
+        assert_ne!(out.status, arca_abi::status::OK);
+        assert!(arca_guest_xray::decode_image(out.kind, &out.payload).is_err());
+    }
+    // A pixel bomb is refused from its header: it neither runs out of memory nor of fuel.
+    let mut bomb = read("crates/arca-image/tests/fixtures/img-420.ref.png");
+    let ihdr = bomb.windows(4).position(|w| w == b"IHDR").unwrap() + 4;
+    bomb[ihdr..ihdr + 4].copy_from_slice(&40_000u32.to_be_bytes());
+    bomb[ihdr + 4..ihdr + 8].copy_from_slice(&40_000u32.to_be_bytes());
+    let out = run_op(&sandbox, &m, Op::Image, 0, &bomb, &RunOptions::new()).unwrap();
+    assert_eq!(out.status, arca_abi::status::DOCUMENT_REJECTED);
+}

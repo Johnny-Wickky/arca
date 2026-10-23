@@ -180,4 +180,16 @@
     <string name="threat_encrypted_document_text">The content is encrypted, so it cannot be examined. Encrypted attachments are often used to slip past scanners.</string>
     <string name="threat_encrypted_member_title">Encrypted part</string>
     <string name="threat_encrypted_member_text">A part inside the file is encrypted and could not be examined.</string>
+    <string name="threat_image_camera_identity_title">Camera, owner or serial number</string>
+    <string name="threat_image_camera_identity_text">The file names the camera or program, and sometimes its owner or serial number, which can identify who took the picture.</string>
+    <string name="threat_image_embedded_thumbnail_title">Embedded small copy</string>
+    <string name="threat_image_embedded_thumbnail_text">A small copy of the picture is stored inside it. Editing programs often leave the original, uncropped picture in it.</string>
+    <string name="threat_image_gps_location_title">Photo records where it was taken</string>
+    <string name="threat_image_gps_location_text">The file stores the GPS position of the place where the picture was taken. Anyone you send it to can see it.</string>
+    <string name="threat_image_hidden_frames_title">Frames that are never shown</string>
+    <string name="threat_image_hidden_frames_text">The picture has several frames (an animation). Only the first is shown; the others are not decoded.</string>
+    <string name="threat_image_hidden_metadata_title">Hidden metadata</string>
+    <string name="threat_image_hidden_metadata_text">The file carries extra metadata (a comment, an XMP packet, text chunks, a maker note or a colour profile). None of it is shown.</string>
+    <string name="threat_oversized_image_title">Picture too large to open safely</string>
+    <string name="threat_oversized_image_text">The picture declares a size so large that opening it could exhaust the memory of the device. It is not opened.</string>
 </resources>

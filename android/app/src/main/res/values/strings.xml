@@ -314,4 +314,27 @@
     <string name="pages_failed">This page could not be drawn.</string>
     <string name="pages_note_truncated">The page is very complex; part of it is not shown.</string>
     <string name="pages_note_approx">Gradients and patterns are shown as flat colours, pictures as grey boxes, fonts are replaced.</string>
+    <string name="image_show">Show picture</string>
+    <string name="image_hide">Hide picture</string>
+    <string name="image_loading">Decoding the picture in the sandbox…</string>
+    <string name="image_failed">The picture could not be shown.</string>
+    <string name="image_unsupported">This kind of picture is not shown (for example WebP, TIFF, SVG or EMF).</string>
+    <string name="image_title">Picture</string>
+    <string name="image_zoom_hint">Pinch to zoom, double-tap to fit</string>
+    <string name="image_info_original">Original: %1$d × %2$d</string>
+    <string name="image_info_reduced">Shown reduced to %1$d × %2$d</string>
+    <string name="image_info_upright">Turned upright by the orientation in the file</string>
+    <string name="image_info_animation">Animation of %1$d frames: only the first is shown</string>
+    <string name="image_info_damaged">The picture is damaged: what could be read is shown</string>
+    <string name="image_info_cmyk">CMYK colours are converted approximately</string>
+    <string name="image_info_hidden_title">Found in the file, not shown and not kept</string>
+    <string name="image_info_gps">Location: %1$s</string>
+    <string name="image_info_camera">Camera or owner: %1$s</string>
+    <string name="image_info_serial">A serial number is recorded</string>
+    <string name="image_info_thumbnail">An embedded small copy of the picture</string>
+    <string name="image_info_metadata">%1$s of metadata (comments, XMP, profiles)</string>
+    <string name="image_info_trailing">%1$s of data after the end of the picture</string>
+    <string name="image_description">Picture: %1$s</string>
+    <string name="settings_images">Show pictures at once</string>
+    <string name="settings_images_desc">Pictures inside documents are decoded in the sandbox only when you tap them. Turn on to show them as soon as a document opens.</string>
 </resources>

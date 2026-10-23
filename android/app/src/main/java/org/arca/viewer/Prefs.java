@@ -32,6 +32,7 @@ public final class Prefs {
     private static final String K_TEXT = "text_scale";
     private static final String K_ZOOM = "zoom_pct";
     private static final String K_REVEAL = "reveal_hidden";
+    private static final String K_IMAGES = "auto_images";
     private static final String K_SECURE = "secure_screen";
     private static final String K_PASSPORT = "passport";
 
@@ -81,6 +82,15 @@ public final class Prefs {
 
     public static void setZoom(Context c, float zoom) {
         sp(c).edit().putInt(K_ZOOM, org.arca.viewer.core.Zoom.percent(zoom)).apply();
+    }
+
+    /** Whether pictures inside documents are decoded as soon as they come into view (default no). */
+    public static boolean autoImages(Context c) {
+        return sp(c).getBoolean(K_IMAGES, false);
+    }
+
+    public static void setAutoImages(Context c, boolean v) {
+        sp(c).edit().putBoolean(K_IMAGES, v).apply();
     }
 
     /** Whether hidden content (hidden text, sheets, slides) is shown by default in the preview. */

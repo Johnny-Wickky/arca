@@ -31,6 +31,7 @@ mod bytes;
 mod exif;
 mod gif;
 mod jpeg;
+mod jpegdct;
 mod orient;
 mod png;
 mod scale;
@@ -357,3 +358,6 @@ mod testkit_img;
 
 #[cfg(test)]
 mod tests_gif_bmp;
+
+#[cfg(test)]
+mod tests_reduced;

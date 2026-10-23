@@ -11,6 +11,7 @@
 //! scans) keep their DCT coefficients, which is why they have a lower pixel limit.
 
 use crate::bytes::Cursor;
+use crate::jpegdct::idct_block;
 use crate::scale::Downscaler;
 use crate::{DecodeError, Facts, ImageFormat, Limits, Raw, exif, flag};
 
@@ -93,7 +94,9 @@ impl Huff {
     }
 
     fn decode(&self, bits: &mut Bits<'_>) -> Option<u8> {
-        bits.fill();
+        if bits.n < 16 {
+            bits.fill();
+        }
         let look = bits.peek(FAST_BITS);
         let entry = self.fast.get(look as usize).copied().unwrap_or(0);
         if entry != 0 {
@@ -184,7 +187,9 @@ impl<'a> Bits<'a> {
         if n == 0 {
             return 0;
         }
-        self.fill();
+        if self.n < n {
+            self.fill();
+        }
         let v = self.peek(n);
         self.consume(n);
         v
@@ -299,112 +304,15 @@ struct Decoder<'a> {
     scaler: Option<Downscaler>,
     eobrun: u32,
     damaged: bool,
+    /// The picture is decoded at 1/2^shift of its size.
+    shift: u32,
+    /// Samples per side of a decoded block: `8 >> shift`.
+    bs: usize,
+    ycc: YccTables,
 }
 
 fn clamp8(v: i32) -> u8 {
     u8::try_from(v.clamp(0, 255)).unwrap_or(0)
-}
-
-// ---- inverse DCT (the accurate integer algorithm of the IJG library, `jidctint`) ------------
-//
-// Computed in 64 bits: a hostile file can put any 16-bit value in a coefficient, and an overflow
-// in release builds with `overflow-checks` would end the guest. The first pass clamps what goes
-// in, so no product can leave the range of an `i64`.
-
-const CONST_BITS: i64 = 13;
-const PASS1_BITS: i64 = 2;
-const F_0_298: i64 = 2446;
-const F_0_390: i64 = 3196;
-const F_0_541: i64 = 4433;
-const F_0_765: i64 = 6270;
-const F_0_899: i64 = 7373;
-const F_1_175: i64 = 9633;
-const F_1_501: i64 = 12299;
-const F_1_847: i64 = 15137;
-const F_1_961: i64 = 16069;
-const F_2_053: i64 = 16819;
-const F_2_562: i64 = 20995;
-const F_3_072: i64 = 25172;
-
-fn descale(x: i64, n: i64) -> i64 {
-    (x + (1 << (n - 1))) >> n
-}
-
-/// One-dimensional inverse DCT of 8 values, scaled up by `2^CONST_BITS` (not yet descaled).
-fn idct1d(i: [i64; 8]) -> [i64; 8] {
-    let [i0, i1, i2, i3, i4, i5, i6, i7] = i;
-    let z1 = (i2 + i6) * F_0_541;
-    let t2 = z1 - i6 * F_1_847;
-    let t3 = z1 + i2 * F_0_765;
-    let t0 = (i0 + i4) << CONST_BITS;
-    let t1 = (i0 - i4) << CONST_BITS;
-    let (t10, t13, t11, t12) = (t0 + t3, t0 - t3, t1 + t2, t1 - t2);
-    let (mut o0, mut o1, mut o2, mut o3) = (i7, i5, i3, i1);
-    let (z1, z2, z3, z4) = (o0 + o3, o1 + o2, o0 + o2, o1 + o3);
-    let z5 = (z3 + z4) * F_1_175;
-    o0 *= F_0_298;
-    o1 *= F_2_053;
-    o2 *= F_3_072;
-    o3 *= F_1_501;
-    let (z1, z2) = (-z1 * F_0_899, -z2 * F_2_562);
-    let (z3, z4) = (-z3 * F_1_961 + z5, -z4 * F_0_390 + z5);
-    o0 += z1 + z3;
-    o1 += z2 + z4;
-    o2 += z2 + z3;
-    o3 += z1 + z4;
-    [t10 + o3, t11 + o2, t12 + o1, t13 + o0, t13 - o0, t12 - o1, t11 - o2, t10 - o3]
-}
-
-/// Dequantises `coefs` (natural order) and writes the 8×8 block of samples to `out`.
-#[allow(
-    clippy::indexing_slicing,
-    reason = "every index below is `row * 8 + col` with row and col bounded by 8, into arrays of 64"
-)]
-fn idct(coefs: &[i16], q: &[u16; 64], out: &mut [u8; 64]) {
-    let mut ws = [0i64; 64];
-    let c = |i: usize| {
-        (i64::from(coefs.get(i).copied().unwrap_or(0)) * i64::from(q[i])).clamp(-32_768, 32_767)
-    };
-    for col in 0..8 {
-        let g = [
-            c(col),
-            c(col + 8),
-            c(col + 16),
-            c(col + 24),
-            c(col + 32),
-            c(col + 40),
-            c(col + 48),
-            c(col + 56),
-        ];
-        if g[1..].iter().all(|&v| v == 0) {
-            let dc = g[0] << PASS1_BITS;
-            for row in 0..8 {
-                ws[row * 8 + col] = dc;
-            }
-            continue;
-        }
-        let o = idct1d(g);
-        for row in 0..8 {
-            ws[row * 8 + col] = descale(o[row], CONST_BITS - PASS1_BITS);
-        }
-    }
-    for row in 0..8 {
-        let r: [i64; 8] = [
-            ws[row * 8],
-            ws[row * 8 + 1],
-            ws[row * 8 + 2],
-            ws[row * 8 + 3],
-            ws[row * 8 + 4],
-            ws[row * 8 + 5],
-            ws[row * 8 + 6],
-            ws[row * 8 + 7],
-        ];
-        let o = idct1d(r);
-        for col in 0..8 {
-            let v = descale(o[col], CONST_BITS + PASS1_BITS + 3) + 128;
-            out[row * 8 + col] = u8::try_from(v.clamp(0, 255)).unwrap_or(0);
-        }
-    }
 }
 
 // ---- decoding of blocks ------------------------------------------------------------------
@@ -416,8 +324,10 @@ fn decode_block_seq(
     ac: &Huff,
     pred: &mut i32,
     out: &mut [i16],
+    dc_only: &mut bool,
 ) -> bool {
     out.iter_mut().for_each(|c| *c = 0);
+    *dc_only = false;
     let Some(t) = dc.decode(bits) else { return false };
     if t > 16 {
         return false;
@@ -435,6 +345,7 @@ fn decode_block_seq(
                 k += 16;
                 continue;
             }
+            *dc_only = k == 1;
             break;
         }
         k += r;
@@ -595,6 +506,9 @@ impl<'a> Decoder<'a> {
             scaler: None,
             eobrun: 0,
             damaged: false,
+            shift: 0,
+            bs: 8,
+            ycc: YccTables::new(),
         }
     }
 
@@ -787,9 +701,22 @@ impl<'a> Decoder<'a> {
         Ok(scan)
     }
 
-    /// Allocates what the mode needs.
+    /// Allocates what the mode needs, and decides how much the picture can be reduced while it is
+    /// decoded: a picture that will be shown at a fraction of its size is decoded at that
+    /// fraction (1/2, 1/4 or 1/8 of each block), which skips most of the work.
     fn prepare(&mut self, mode: Mode) -> Result<(), DecodeError> {
         let limits = *self.limits;
+        let (width, height) =
+            self.frame.as_ref().map(|f| (f.width, f.height)).ok_or_else(|| bad("no frame"))?;
+        let longest = width.max(height);
+        let k = longest.div_ceil(usize::try_from(limits.max_out_side.max(1)).unwrap_or(usize::MAX));
+        let mut shift = 0u32;
+        while shift < 3 && (2usize << shift) <= k {
+            shift += 1;
+        }
+        self.shift = shift;
+        self.bs = 8usize >> shift;
+        let bs = self.bs;
         let frame = self.frame.as_mut().ok_or_else(|| bad("no frame"))?;
         let pixels = u64::try_from(frame.width * frame.height).unwrap_or(u64::MAX);
         let cap = if mode == Mode::Buffered {
@@ -818,13 +745,14 @@ impl<'a> Decoder<'a> {
                 comp.coefs.try_reserve_exact(n).map_err(|_| oom())?;
                 comp.coefs.resize(n, 0);
             }
-            let n = comp.bw * 8 * comp.v * 8;
+            let n = comp.bw * bs * comp.v * bs;
             comp.plane.try_reserve_exact(n).map_err(|_| oom())?;
             comp.plane.resize(n, 0);
         }
+        let (rw, rh) = (frame.width.div_ceil(1 << shift), frame.height.div_ceil(1 << shift));
         self.scaler = Some(Downscaler::new(
-            u32::try_from(frame.width).unwrap_or(u32::MAX),
-            u32::try_from(frame.height).unwrap_or(u32::MAX),
+            u32::try_from(rw).unwrap_or(u32::MAX),
+            u32::try_from(rh).unwrap_or(u32::MAX),
             limits.max_out_side,
         )?);
         self.mode = mode;
@@ -834,59 +762,75 @@ impl<'a> Decoder<'a> {
     /// Converts the samples of MCU row `my` (already in the component planes) to RGBA rows.
     fn emit_row(&mut self, my: usize) {
         let adobe = self.adobe;
+        let (bs, shift) = (self.bs, self.shift);
         let (Some(frame), Some(scaler)) = (self.frame.as_ref(), self.scaler.as_mut()) else {
             return;
         };
-        let rows_here = (frame.vmax * 8).min(frame.height.saturating_sub(my * frame.vmax * 8));
+        let tabs = &self.ycc;
+        let (rw, rh) = (frame.width.div_ceil(1 << shift), frame.height.div_ceil(1 << shift));
+        let mcu_rows = frame.vmax * bs;
+        let rows_here = mcu_rows.min(rh.saturating_sub(my * mcu_rows));
         let n = frame.comps.len();
-        let ids: Vec<u8> = frame.comps.iter().map(|c| c.id).collect();
         let ycc = match n {
             3 => match adobe {
                 Some(0) => false,
                 Some(_) => true,
-                None => ids != *b"RGB",
+                None => !frame.comps.iter().map(|c| c.id).eq(*b"RGB"),
             },
             4 => adobe == Some(2),
             _ => false,
         };
-        let xmaps: Vec<Vec<usize>> = frame
-            .comps
-            .iter()
-            .map(|c| (0..frame.width).map(|x| x * c.h / frame.hmax).collect())
-            .collect();
-        let mut row = vec![0u8; frame.width * 4];
+        // One full-width row of samples per component, spread out as often as it is subsampled.
+        let mut rows: Vec<Vec<u8>> = vec![vec![0u8; rw]; n];
+        let mut out = vec![0u8; rw * 4];
         for y in 0..rows_here {
-            let mut lines: Vec<&[u8]> = Vec::with_capacity(n);
-            for c in &frame.comps {
-                let stride = c.bw * 8;
+            for (c, dst) in frame.comps.iter().zip(rows.iter_mut()) {
+                let stride = c.bw * bs;
                 let cy = y * c.v / frame.vmax;
-                lines.push(c.plane.get(cy * stride..(cy + 1) * stride).unwrap_or(&[]));
+                let src = c.plane.get(cy * stride..(cy + 1) * stride).unwrap_or(&[]);
+                spread(src, c.h, frame.hmax, dst);
             }
-            for (x, px) in row.chunks_exact_mut(4).enumerate() {
-                let s = |i: usize| -> i32 {
-                    let xm = xmaps.get(i).and_then(|m| m.get(x)).copied().unwrap_or(0);
-                    i32::from(lines.get(i).and_then(|l| l.get(xm)).copied().unwrap_or(0))
-                };
-                let rgb = match n {
-                    1 => {
-                        let g = clamp8(s(0));
-                        [g, g, g]
+            let line = |i: usize| rows.get(i).map_or(&[][..], Vec::as_slice);
+            match n {
+                1 => {
+                    for (px, &g) in out.chunks_exact_mut(4).zip(line(0)) {
+                        px.copy_from_slice(&[g, g, g, 255]);
                     }
-                    3 => {
-                        if ycc {
-                            ycc_to_rgb(s(0), s(1), s(2))
-                        } else {
-                            [clamp8(s(0)), clamp8(s(1)), clamp8(s(2))]
-                        }
+                }
+                3 if ycc => {
+                    for (((px, &yy), &cb), &cr) in
+                        out.chunks_exact_mut(4).zip(line(0)).zip(line(1)).zip(line(2))
+                    {
+                        let yy = i32::from(yy);
+                        let r = yy + tabs.get(&tabs.cr_r, cr);
+                        let g = yy + ((tabs.get(&tabs.cb_g, cb) + tabs.get(&tabs.cr_g, cr)) >> 16);
+                        let b = yy + tabs.get(&tabs.cb_b, cb);
+                        px.copy_from_slice(&[clamp8(r), clamp8(g), clamp8(b), 255]);
                     }
-                    _ => {
+                }
+                3 => {
+                    for (((px, &r), &g), &b) in
+                        out.chunks_exact_mut(4).zip(line(0)).zip(line(1)).zip(line(2))
+                    {
+                        px.copy_from_slice(&[r, g, b, 255]);
+                    }
+                }
+                _ => {
+                    for ((((px, &s0), &s1), &s2), &s3) in
+                        out.chunks_exact_mut(4).zip(line(0)).zip(line(1)).zip(line(2)).zip(line(3))
+                    {
                         let (c, m, yy, k) = if ycc {
-                            let [r, g, b] = ycc_to_rgb(s(0), s(1), s(2));
-                            (255 - i32::from(r), 255 - i32::from(g), 255 - i32::from(b), s(3))
+                            let [r, g, b] = ycc_to_rgb(i32::from(s0), i32::from(s1), i32::from(s2));
+                            (
+                                255 - i32::from(r),
+                                255 - i32::from(g),
+                                255 - i32::from(b),
+                                i32::from(s3),
+                            )
                         } else {
-                            (s(0), s(1), s(2), s(3))
+                            (i32::from(s0), i32::from(s1), i32::from(s2), i32::from(s3))
                         };
-                        if adobe.is_some() {
+                        let rgb = if adobe.is_some() {
                             // Adobe stores CMYK inverted: 255 means "no ink".
                             [clamp8(c * k / 255), clamp8(m * k / 255), clamp8(yy * k / 255)]
                         } else {
@@ -895,14 +839,12 @@ impl<'a> Decoder<'a> {
                                 clamp8((255 - m) * (255 - k) / 255),
                                 clamp8((255 - yy) * (255 - k) / 255),
                             ]
-                        }
+                        };
+                        px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
                     }
-                };
-                if let [r, g, b, a] = px {
-                    (*r, *g, *b, *a) = (rgb[0], rgb[1], rgb[2], 255);
                 }
             }
-            scaler.push(&row);
+            scaler.push(&out);
         }
     }
 
@@ -924,8 +866,10 @@ impl<'a> Decoder<'a> {
         let mut unit = 0usize;
         // The quantisation tables only matter when blocks are turned into samples.
         let qts = self.qt;
+        let (shift, bs) = (self.shift, self.bs);
         let mut tmp = [0i16; 64];
         let mut samples = [0u8; 64];
+        let mut dc_only = false;
         let mut ok = true;
 
         // Decodes one block of component `ci` at block position (bx, by).
@@ -943,7 +887,7 @@ impl<'a> Decoder<'a> {
                         self.frame.as_ref().and_then(|f| f.comps.get(ci)).map_or(0, |c| c.pred);
                     let good = match (self.dc.get(td), self.ac.get(ta)) {
                         (Some(Some(dc)), Some(Some(ac))) => {
-                            decode_block_seq(&mut bits, dc, ac, &mut pred, &mut tmp)
+                            decode_block_seq(&mut bits, dc, ac, &mut pred, &mut tmp, &mut dc_only)
                         }
                         _ => false,
                     };
@@ -953,14 +897,14 @@ impl<'a> Decoder<'a> {
                     if let Some(c) = self.frame.as_mut().and_then(|f| f.comps.get_mut(ci)) {
                         c.pred = pred;
                         if good {
-                            let q = qts.get(c.tq).copied().unwrap_or([1; 64]);
-                            idct(&tmp, &q, &mut samples);
-                            let stride = c.bw * 8;
+                            let q = qts.get(c.tq).unwrap_or(&ONES);
+                            idct_block(shift, &tmp, q, dc_only, &mut samples);
+                            let stride = c.bw * bs;
                             // The block's row inside the MCU row.
-                            let row0 = (by % c.v) * 8;
-                            for (r, line) in samples.chunks_exact(8).enumerate() {
-                                let at = (row0 + r) * stride + bx * 8;
-                                if let Some(dst) = c.plane.get_mut(at..at + 8) {
+                            let row0 = (by % c.v) * bs;
+                            for (r, line) in samples.chunks_exact(bs).take(bs).enumerate() {
+                                let at = (row0 + r) * stride + bx * bs;
+                                if let Some(dst) = c.plane.get_mut(at..at + bs) {
                                     dst.copy_from_slice(line);
                                 }
                             }
@@ -980,7 +924,7 @@ impl<'a> Decoder<'a> {
                         self.frame.as_ref().and_then(|f| f.comps.get(ci)).map_or(0, |c| c.pred);
                     let good = match (self.dc.get(td), self.ac.get(ta)) {
                         (Some(Some(dc)), Some(Some(ac))) => {
-                            decode_block_seq(&mut bits, dc, ac, &mut pred, &mut tmp)
+                            decode_block_seq(&mut bits, dc, ac, &mut pred, &mut tmp, &mut dc_only)
                         }
                         _ => false,
                     };
@@ -1067,22 +1011,23 @@ impl<'a> Decoder<'a> {
     /// After the last scan: converts every MCU row from the stored coefficients.
     fn finish_buffered(&mut self) {
         let qts = self.qt;
+        let (shift, bs) = (self.shift, self.bs);
         let mut samples = [0u8; 64];
         let mcus_y = self.frame.as_ref().map_or(0, |f| f.mcus_y);
         for my in 0..mcus_y {
             if let Some(frame) = self.frame.as_mut() {
                 for c in &mut frame.comps {
-                    let q = qts.get(c.tq).copied().unwrap_or([1; 64]);
-                    let stride = c.bw * 8;
+                    let q = qts.get(c.tq).unwrap_or(&ONES);
+                    let stride = c.bw * bs;
                     for vy in 0..c.v {
                         let by = my * c.v + vy;
                         for bx in 0..c.bw {
                             let at = (by * c.bw + bx) * 64;
                             let Some(block) = c.coefs.get(at..at + 64) else { continue };
-                            idct(block, &q, &mut samples);
-                            for (r, line) in samples.chunks_exact(8).enumerate() {
-                                let o = (vy * 8 + r) * stride + bx * 8;
-                                if let Some(dst) = c.plane.get_mut(o..o + 8) {
+                            idct_block(shift, block, q, false, &mut samples);
+                            for (r, line) in samples.chunks_exact(bs).take(bs).enumerate() {
+                                let o = (vy * bs + r) * stride + bx * bs;
+                                if let Some(dst) = c.plane.get_mut(o..o + bs) {
                                     dst.copy_from_slice(line);
                                 }
                             }
@@ -1093,6 +1038,52 @@ impl<'a> Decoder<'a> {
             self.emit_row(my);
         }
         self.mode = Mode::Done;
+    }
+}
+
+/// Tables for the YCbCr to RGB conversion in 16.16 fixed point.
+struct YccTables {
+    cr_r: Vec<i32>,
+    cb_b: Vec<i32>,
+    cr_g: Vec<i32>,
+    cb_g: Vec<i32>,
+}
+
+impl YccTables {
+    fn new() -> Self {
+        let each = |f: &dyn Fn(i32) -> i32| (0..256).map(|i| f(i - 128)).collect::<Vec<i32>>();
+        Self {
+            cr_r: each(&|v| (91_881 * v + 32_768) >> 16),
+            cb_b: each(&|v| (116_130 * v + 32_768) >> 16),
+            cr_g: each(&|v| -46_802 * v),
+            cb_g: each(&|v| -22_554 * v + 32_768),
+        }
+    }
+
+    fn get(&self, table: &[i32], i: u8) -> i32 {
+        table.get(usize::from(i)).copied().unwrap_or(0)
+    }
+}
+
+/// Dequantisation table that leaves values alone (for a component whose table is missing).
+const ONES: [u16; 64] = [1; 64];
+
+/// Fills `dst` (a full-width row) from `src`, a row of a component that has `h` of `hmax`
+/// samples per MCU across: every sample is repeated `hmax / h` times.
+fn spread(src: &[u8], h: usize, hmax: usize, dst: &mut [u8]) {
+    if h == hmax {
+        let n = dst.len().min(src.len());
+        if let (Some(d), Some(s)) = (dst.get_mut(..n), src.get(..n)) {
+            d.copy_from_slice(s);
+        }
+    } else if h > 0 && hmax.is_multiple_of(h) {
+        for (chunk, &s) in dst.chunks_mut(hmax / h).zip(src) {
+            chunk.fill(s);
+        }
+    } else {
+        for (x, d) in dst.iter_mut().enumerate() {
+            *d = src.get(x * h / hmax.max(1)).copied().unwrap_or(0);
+        }
     }
 }
 

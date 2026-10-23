@@ -163,4 +163,8 @@
     <string name="notice_best_effort">The text was recovered from an old binary format as well as possible; layout and some content may be missing.</string>
     <string name="notice_deleted_records">Records deleted from the database are still stored in the file and are not shown (compacting the database removes them): %1$d.</string>
     <string name="notice_hidden_omitted">Hidden content is not shown (turn on Show hidden content to see it): %1$d.</string>
+    <string name="format_bmp">Bitmap picture (BMP)</string>
+    <string name="format_gif">GIF picture</string>
+    <string name="format_jpeg">JPEG picture</string>
+    <string name="format_png">PNG picture</string>
 </resources>

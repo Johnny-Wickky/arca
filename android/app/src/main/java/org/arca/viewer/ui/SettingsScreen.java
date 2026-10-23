@@ -87,6 +87,13 @@ public final class SettingsScreen extends Screen {
                     Prefs.setRevealHidden(act, on);
                 }
             }));
+        privacy.addView(toggle(R.string.settings_images, R.string.settings_images_desc, Prefs.autoImages(act),
+            new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton b, boolean on) {
+                    Prefs.setAutoImages(act, on);
+                }
+            }));
         col.addView(privacy, ui.fillWidth());
         col.addView(ui.space(12));
 

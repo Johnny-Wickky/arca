@@ -48,6 +48,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import org.arca.viewer.MainActivity;
+import org.arca.viewer.Native;
 import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
 import org.arca.viewer.Session;
@@ -1109,7 +1110,68 @@ public final class PreviewScreen extends Screen {
         return f;
     }
 
-    private View imageRow(Model.ImageItem img) {
+    /** Picture formats: a document that is itself a picture is shown without a further tap. */
+    private static boolean isPictureFormat(String format) {
+        return "Png".equals(format) || "Jpeg".equals(format) || "Gif".equals(format) || "Bmp".equals(format);
+    }
+
+    /** Pictures the reader folded away, so that "show pictures at once" does not bring them back. */
+    private static final java.util.Set<Integer> FOLDED = new java.util.HashSet<>();
+
+    private View imageRow(final Model.ImageItem img) {
+        final FrameLayout holder = new FrameLayout(act);
+        holder.setLayoutParams(new AbsListView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        fillImageRow(holder, img);
+        return holder;
+    }
+
+    /**
+     * A picture of the document in the text: nothing is decoded until the reader asks for it (or
+     * has asked for pictures at once, or opened a picture file). The pixels come from the sandbox.
+     */
+    private void fillImageRow(final FrameLayout holder, final Model.ImageItem img) {
+        final Session s = Session.get();
+        Model.PreviewMeta meta = s.preview().meta;
+        boolean file = meta != null && isPictureFormat(meta.format);
+        boolean can = img.id >= 0 && !img.external;
+        boolean folded = FOLDED.contains(img.id);
+        Session.ImageResult have = can ? s.cachedImage(img.id) : null;
+        holder.removeAllViews();
+        if (have != null && have.bitmap != null && !folded) {
+            holder.addView(pictureView(holder, img, have), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            return;
+        }
+        boolean auto = can && !folded && (file || Prefs.autoImages(act));
+        if (can && (s.imageLoading(img.id) || auto)) {
+            startImage(holder, img);
+            return;
+        }
+        holder.addView(imageCard(holder, img, can ? 0 : -1, 0), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    /** Asks the sandbox for the picture and shows the result in {@code holder} when it arrives. */
+    private void startImage(final FrameLayout holder, final Model.ImageItem img) {
+        FOLDED.remove(img.id);
+        holder.removeAllViews();
+        holder.addView(imageCard(holder, img, 1, 0), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        Session.get().loadImage(img.id, new Session.ImageCallback() {
+            @Override
+            public void onImage(int id, Session.ImageResult r) {
+                holder.removeAllViews();
+                if (r.bitmap != null) {
+                    holder.addView(pictureView(holder, img, r), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                } else {
+                    holder.addView(imageCard(holder, img, 2, r.failure == null ? 0 : r.failure.status), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                }
+            }
+        });
+    }
+
+    /**
+     * The card that stands for a picture. {@code state}: -1 the picture cannot be opened, 0 it can
+     * (a button asks for it), 1 it is being decoded, 2 it could not be shown (with {@code status}).
+     */
+    private View imageCard(final FrameLayout holder, final Model.ImageItem img, int state, int status) {
         LinearLayout card = ui.card();
         card.setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10));
         LinearLayout row = ui.hbox();
@@ -1117,7 +1179,7 @@ public final class PreviewScreen extends Screen {
         row.addView(ui.hspace(10));
         LinearLayout text = ui.vbox();
         String kind = img.media.isEmpty() ? "" : " (" + Fmt.clip(Fmt.safe(img.media), 16) + (img.bytes > 0 ? ", " + Fmt.size(img.bytes) : "") + ")";
-        text.addView(ui.text(ui.str(R.string.image_placeholder) + kind, Ui.SMALL));
+        text.addView(ui.text(ui.str(state == -1 ? R.string.image_placeholder : R.string.image_title) + kind, Ui.SMALL));
         if (!img.alt.isEmpty()) {
             text.addView(ui.text(Fmt.clip(Fmt.safe(img.alt), 200), Ui.BODY));
         }
@@ -1125,15 +1187,66 @@ public final class PreviewScreen extends Screen {
             text.addView(ui.space(4));
             text.addView(ui.pill(ui.str(R.string.image_remote), R.color.arca_warn, R.color.arca_warn_container));
         }
+        if (state == 1) {
+            text.addView(ui.space(4));
+            text.addView(ui.text(R.string.image_loading, Ui.SMALL));
+        } else if (state == 2) {
+            text.addView(ui.space(4));
+            text.addView(ui.text(status == Native.UNSUPPORTED ? ui.str(R.string.image_unsupported) : ui.str(Errors.text(status)), Ui.SMALL));
+        }
         row.addView(text, ui.weight(1f));
         card.addView(row, ui.fillWidth());
+        if (state == 0 || state == 2) {
+            card.addView(ui.space(6));
+            LinearLayout.LayoutParams blp = ui.wrapLp();
+            card.addView(ui.button(R.string.image_show, Ui.TONAL, 0, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    startImage(holder, img);
+                }
+            }), blp);
+        }
         FrameLayout f = new FrameLayout(act);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = ui.dp(6);
         lp.bottomMargin = ui.dp(6);
         f.addView(card, lp);
-        f.setLayoutParams(new AbsListView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return f;
+    }
+
+    /** The picture itself in the text; a tap opens it full screen, the second button folds it away. */
+    private View pictureView(final FrameLayout holder, final Model.ImageItem img, Session.ImageResult r) {
+        LinearLayout col = ui.vbox();
+        col.setPadding(0, ui.dp(6), 0, ui.dp(6));
+        ImageView iv = new ImageView(act);
+        iv.setImageBitmap(r.bitmap);
+        iv.setAdjustViewBounds(true);
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iv.setMaxHeight(ui.dp(460));
+        iv.setContentDescription(ui.str(R.string.image_description, img.alt.isEmpty() ? "" : Fmt.clip(Fmt.safe(img.alt), 80)));
+        iv.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                ImageViewer.show(act, img.id, img.alt);
+            }
+        });
+        col.addView(iv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout bar = ui.hbox();
+        List<String> lines = ImageViewer.processing(ui, r.facts);
+        TextView caption = ui.text(Fmt.clip(android.text.TextUtils.join(" · ", lines), 200), Ui.CAPTION);
+        bar.addView(caption, ui.weight(1f));
+        bar.addView(ui.button(R.string.image_hide, Ui.TEXT_ONLY, 0, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                FOLDED.add(img.id);
+                fillImageRow(holder, img);
+            }
+        }), ui.wrapLp());
+        col.addView(bar, ui.fillWidth());
+        if (r.facts.hasHiddenParts()) {
+            col.addView(ui.pill(ui.str(R.string.image_info_hidden_title), R.color.arca_warn, R.color.arca_warn_container));
+        }
+        return col;
     }
 
     // ---- paragraphs -------------------------------------------------------------------------

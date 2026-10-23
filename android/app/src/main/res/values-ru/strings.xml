@@ -310,4 +310,27 @@
     <string name="pages_failed">Эту страницу нарисовать не вышло.</string>
     <string name="pages_note_truncated">Страница очень сложная, часть её не показана.</string>
     <string name="pages_note_approx">Градиенты и узоры показаны плоским цветом, картинки — серыми прямоугольниками, шрифты заменены.</string>
+    <string name="image_show">Показать картинку</string>
+    <string name="image_hide">Скрыть картинку</string>
+    <string name="image_loading">Картинка раскодируется в песочнице…</string>
+    <string name="image_failed">Картинку не удалось показать.</string>
+    <string name="image_unsupported">Такие картинки не показываются (например WebP, TIFF, SVG или EMF).</string>
+    <string name="image_title">Картинка</string>
+    <string name="image_zoom_hint">Щипок — масштаб, двойной тап — по размеру</string>
+    <string name="image_info_original">Оригинал: %1$d × %2$d</string>
+    <string name="image_info_reduced">Показана уменьшенной до %1$d × %2$d</string>
+    <string name="image_info_upright">Повёрнута по ориентации из файла</string>
+    <string name="image_info_animation">Анимация из %1$d кадров: показан только первый</string>
+    <string name="image_info_damaged">Картинка повреждена: показано то, что удалось прочитать</string>
+    <string name="image_info_cmyk">Цвета CMYK пересчитаны приближённо</string>
+    <string name="image_info_hidden_title">Найдено в файле, не показано и не сохранено</string>
+    <string name="image_info_gps">Место съёмки: %1$s</string>
+    <string name="image_info_camera">Камера или владелец: %1$s</string>
+    <string name="image_info_serial">Записан серийный номер</string>
+    <string name="image_info_thumbnail">Встроенная уменьшенная копия картинки</string>
+    <string name="image_info_metadata">%1$s метаданных (комментарии, XMP, профили)</string>
+    <string name="image_info_trailing">%1$s данных после конца картинки</string>
+    <string name="image_description">Картинка: %1$s</string>
+    <string name="settings_images">Показывать картинки сразу</string>
+    <string name="settings_images_desc">Картинки внутри документов раскодируются в песочнице только по нажатию. Включите, чтобы они показывались сразу при открытии документа.</string>
 </resources>

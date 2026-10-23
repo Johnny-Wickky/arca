@@ -14,6 +14,7 @@ import org.arca.viewer.core.Capabilities;
 import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
+import org.arca.viewer.core.ImageFacts;
 import org.arca.viewer.core.Json;
 import org.arca.viewer.core.Model;
 import org.arca.viewer.core.Names;
@@ -1000,9 +1001,50 @@ public final class CoreTest {
 
     // ---------------------------------------------------------------------------------------
 
+    // ---- pictures -------------------------------------------------------------------------------
+
+    static void images() {
+        String json = "{\"format\":\"Jpeg\",\"width\":2048,\"height\":1536,\"srcWidth\":4000,\"srcHeight\":3000,"
+            + "\"bits\":8,\"flags\":" + (ImageFacts.DOWNSCALED | ImageFacts.ORIENTED | ImageFacts.INTERLACED)
+            + ",\"frames\":1,\"trailing\":19,\"metadataBytes\":1234,"
+            + "\"exif\":{\"make\":\"Acme\",\"model\":\"Shot 9000\",\"software\":\"\",\"datetime\":\"2026:10:23 12:00:00\","
+            + "\"artist\":\"Ann\",\"copyright\":\"\",\"owner\":\"\",\"orientation\":6,\"serial\":true,\"makerNote\":false,"
+            + "\"thumbnail\":true,\"gps\":true,\"position\":\"55.75833, 37.60000\"}}";
+        ImageFacts f = ImageFacts.parse(json.getBytes(StandardCharsets.UTF_8));
+        eq("Jpeg", f.format, "format");
+        eq(2048, f.width, "width");
+        eq(4000, f.srcWidth, "source width");
+        check(f.has(ImageFacts.DOWNSCALED) && f.has(ImageFacts.ORIENTED) && f.has(ImageFacts.INTERLACED), "flags");
+        check(!f.has(ImageFacts.DAMAGED) && !f.has(ImageFacts.ANIMATED), "flags that are not set");
+        eq(19L, f.trailing, "trailing");
+        check(f.hasHiddenParts(), "hidden parts");
+        check(f.exif != null && f.exif.gps && f.exif.serial && f.exif.thumbnail && !f.exif.makerNote, "exif flags");
+        eq("55.75833, 37.60000", f.exif.position, "position");
+        eq("Acme Shot 9000 · Ann", f.exif.camera(), "camera line");
+        eq(6, f.exif.orientation, "orientation");
+        check(f.exif.isPrivate(), "private");
+
+        // A plain picture carries nothing.
+        ImageFacts plain = ImageFacts.parse(("{\"format\":\"Png\",\"width\":4,\"height\":3,\"srcWidth\":4,\"srcHeight\":3,"
+            + "\"bits\":8,\"flags\":0,\"frames\":1,\"trailing\":0,\"metadataBytes\":0,\"exif\":null}").getBytes(StandardCharsets.UTF_8));
+        check(plain.exif == null && !plain.hasHiddenParts(), "plain picture");
+        // Out-of-range values are clamped, missing ones default.
+        ImageFacts odd = ImageFacts.parse(("{\"frames\":0,\"exif\":{\"orientation\":99}}").getBytes(StandardCharsets.UTF_8));
+        eq(1, odd.frames, "frames at least one");
+        eq(8, odd.exif.orientation, "orientation clamped");
+        throwsJson("{\"format\":", "a cut-off document");
+
+        // The id of a picture in the preview items.
+        List<Model.Item> items = Model.parseItems(("[{\"k\":\"i\",\"alt\":\"a\",\"media\":\"png\",\"bytes\":9,\"ext\":false,\"id\":5},"
+            + "{\"k\":\"i\",\"alt\":\"b\",\"media\":\"emf\",\"bytes\":9,\"ext\":true}]").getBytes(StandardCharsets.UTF_8));
+        eq(5, ((Model.ImageItem) items.get(0)).id, "id of the first picture");
+        eq(-1, ((Model.ImageItem) items.get(1)).id, "no id when the engine gives none");
+        check(((Model.ImageItem) items.get(1)).external, "external");
+    }
+
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "pageDrawing"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "pageDrawing", "images"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -1023,6 +1065,7 @@ public final class CoreTest {
                     case "needsPassword": needsPassword(); break;
                     case "posture": posture(); break;
                     case "pageDrawing": pageDrawing(); break;
+                    case "images": images(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

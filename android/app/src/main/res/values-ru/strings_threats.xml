@@ -180,4 +180,16 @@
     <string name="threat_encrypted_document_text">Содержимое зашифровано, поэтому его нельзя исследовать. Зашифрованные вложения часто используют, чтобы обойти сканеры.</string>
     <string name="threat_encrypted_member_title">Зашифрованная часть</string>
     <string name="threat_encrypted_member_text">Часть внутри файла зашифрована, и её не удалось исследовать.</string>
+    <string name="threat_image_camera_identity_title">Камера, владелец или серийный номер</string>
+    <string name="threat_image_camera_identity_text">Файл называет камеру или программу, а иногда владельца и серийный номер, по которым можно узнать автора снимка.</string>
+    <string name="threat_image_embedded_thumbnail_title">Встроенная миниатюра</string>
+    <string name="threat_image_embedded_thumbnail_text">Внутри картинки лежит её уменьшенная копия. Редакторы часто оставляют в ней исходный, необрезанный снимок.</string>
+    <string name="threat_image_gps_location_title">Фото хранит место съёмки</string>
+    <string name="threat_image_gps_location_text">В файле записаны GPS-координаты места, где сделан снимок. Их увидит каждый, кому вы отправите файл.</string>
+    <string name="threat_image_hidden_frames_title">Кадры, которые не показываются</string>
+    <string name="threat_image_hidden_frames_text">В картинке несколько кадров (анимация). Показывается только первый, остальные не раскодируются.</string>
+    <string name="threat_image_hidden_metadata_title">Скрытые метаданные</string>
+    <string name="threat_image_hidden_metadata_text">В файле есть дополнительные метаданные (комментарий, XMP, текстовые блоки, заметка производителя или цветовой профиль). Ничего из этого не показывается.</string>
+    <string name="threat_oversized_image_title">Слишком большая картинка</string>
+    <string name="threat_oversized_image_text">Картинка заявляет такие размеры, что её раскодирование могло бы исчерпать память устройства. Она не открывается.</string>
 </resources>
