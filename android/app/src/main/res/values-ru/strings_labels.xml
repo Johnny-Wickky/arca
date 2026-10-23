@@ -153,7 +153,7 @@
     <string name="notice_unsupported">Просмотр не поддерживает: %2$s.</string>
     <string name="notice_skipped">Пропущено (не удалось прочитать или устарело): %2$s.</string>
     <string name="notice_invisible_removed">Невидимые символы и символы, меняющие направление текста, помечены: %1$d.</string>
-    <string name="notice_images_not_shown">Рисунки никогда не расшифровываются и показаны заглушками: %1$d.</string>
+    <string name="notice_images_not_shown">Картинки, которые нельзя показать (удалённые или такого вида, который не раскодируется), остались заглушками: %1$d.</string>
     <string name="notice_hidden_shown">Скрытое содержимое показано и помечено как скрытое: %1$d.</string>
     <string name="notice_tracked_changes">В документе есть исправления: удалённое зачёркнуто, вставленное подчёркнуто: %1$d.</string>
     <string name="notice_formulas_not_evaluated">Формулы не пересчитываются; показан результат, сохранённый в файле, а если его нет — сама формула: %1$d.</string>

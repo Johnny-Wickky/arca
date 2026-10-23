@@ -262,6 +262,9 @@ public final class MainActivity extends Activity implements Session.Listener, En
 
     /** One step back; at the root the activity finishes. */
     public void back() {
+        if (org.arca.viewer.ui.ImageViewer.dismiss()) {
+            return;
+        }
         if (top != null && top.onBack()) {
             return;
         }
@@ -283,7 +286,7 @@ public final class MainActivity extends Activity implements Session.Listener, En
     @Override
     public void onBackPressed() {
         // Android 12 and older, and 13+ when no predictive-back callback is registered.
-        if (ROUTES.size() <= 1 && !(top != null && top.onBack())) {
+        if (ROUTES.size() <= 1 && !org.arca.viewer.ui.ImageViewer.dismiss() && !(top != null && top.onBack())) {
             super.onBackPressed();
             return;
         }

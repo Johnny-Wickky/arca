@@ -3,20 +3,17 @@
 
 package org.arca.viewer.ui;
 
-import android.app.Dialog;
-import android.graphics.drawable.ColorDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.Window;
-import android.view.WindowManager;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
 import org.arca.viewer.MainActivity;
-import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
 import org.arca.viewer.Session;
 import org.arca.viewer.core.Fmt;
@@ -28,60 +25,80 @@ import java.util.List;
 /**
  * A picture of the document on the whole screen, with pinch zoom, and what is known about it.
  *
- * <p>The pixels are the ones the sandbox built ({@link Session#loadImage}); this dialog only
- * paints them. Like the main window it keeps the screen out of screenshots unless the reader
- * turned that protection off.
+ * <p>The pixels are the ones the sandbox built ({@link Session#loadImage}); this view only paints
+ * them. It is a layer on the activity's own window, so the protection of the screen against
+ * screenshots (the setting) applies to it without anything extra.
  */
-final class ImageViewer {
+public final class ImageViewer {
     private ImageViewer() {}
+
+    /** The overlay on the screen, or {@code null}. */
+    private static FrameLayout current;
+
+    /** Closes the viewer if it is open; {@code true} if it was (the back gesture is then used up). */
+    public static boolean dismiss() {
+        FrameLayout c = current;
+        current = null;
+        if (c == null) {
+            return false;
+        }
+        if (c.getParent() instanceof ViewGroup) {
+            ((ViewGroup) c.getParent()).removeView(c);
+        }
+        return true;
+    }
 
     /** Opens picture {@code id}, loading it first if it is not at hand. */
     static void show(final MainActivity act, final int id, final String title) {
+        dismiss();
         final Ui ui = new Ui(act);
-        final Dialog dialog = new Dialog(act);
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        Window w = dialog.getWindow();
-        if (w != null) {
-            w.setBackgroundDrawable(new ColorDrawable(0xFF121212));
-            w.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-            if (Prefs.secureScreen(act)) {
-                w.addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        final FrameLayout overlay = new FrameLayout(act);
+        overlay.setBackgroundColor(0xFF121212);
+        overlay.setClickable(true);
+        overlay.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                int[] i = org.arca.viewer.ui.Compat.insets(insets);
+                v.setPadding(i[0], i[1], i[2], i[3]);
+                return insets;
             }
-        }
-        final FrameLayout root = new FrameLayout(act);
-        dialog.setContentView(root);
-        dialog.setCanceledOnTouchOutside(false);
+        });
+        ViewGroup content = act.findViewById(android.R.id.content);
+        content.addView(overlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        overlay.requestApplyInsets();
+        current = overlay;
         final Session s = Session.get();
         final Session.ImageCallback cb = new Session.ImageCallback() {
             @Override
             public void onImage(int loaded, Session.ImageResult r) {
-                if (dialog.isShowing()) {
-                    fill(act, ui, root, dialog, title, r);
+                if (current == overlay) {
+                    fill(act, ui, overlay, title, r);
                 }
             }
         };
         Session.ImageResult have = s.cachedImage(id);
         if (have != null) {
-            fill(act, ui, root, dialog, title, have);
+            fill(act, ui, overlay, title, have);
         } else {
-            fill(act, ui, root, dialog, title, null);
+            fill(act, ui, overlay, title, null);
             s.loadImage(id, cb);
         }
-        dialog.show();
     }
 
-    private static void fill(final MainActivity act, final Ui ui, FrameLayout root, final Dialog dialog,
+    private static void fill(final MainActivity act, final Ui ui, FrameLayout root,
                              String title, Session.ImageResult r) {
         root.removeAllViews();
         LinearLayout col = ui.vbox();
         LinearLayout bar = ui.hbox();
         bar.setPadding(ui.dp(4), ui.dp(4), ui.dp(12), ui.dp(4));
-        bar.addView(ui.iconButton(R.drawable.ic_back, R.string.back, new View.OnClickListener() {
+        ImageButton close = ui.iconButton(R.drawable.ic_back, R.string.back, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                dialog.dismiss();
+                dismiss();
             }
-        }));
+        });
+        close.setColorFilter(0xFFFFFFFF);
+        bar.addView(close);
         TextView head = ui.text(title == null || title.isEmpty() ? ui.str(R.string.image_title) : Fmt.clip(Fmt.safe(title), 80), Ui.TITLE);
         head.setTextColor(0xFFFFFFFF);
         head.setSingleLine(true);
@@ -106,7 +123,7 @@ final class ImageViewer {
         } else {
             ZoomImageView zoom = new ZoomImageView(act, r.bitmap);
             zoom.setContentDescription(ui.str(R.string.image_description, title == null ? "" : Fmt.clip(Fmt.safe(title), 80)));
-            col.addView(zoom, ui.weight(1f));
+            col.addView(zoom, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             TextView hint = ui.text(R.string.image_zoom_hint, Ui.CAPTION);
             hint.setTextColor(0xFFB0B0B0);
             hint.setGravity(Gravity.CENTER);

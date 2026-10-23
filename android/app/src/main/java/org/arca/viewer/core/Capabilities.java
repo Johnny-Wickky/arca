@@ -37,6 +37,8 @@ public final class Capabilities {
         "Vsd",
         // Access: the tables, as grids; queries, forms, reports, macros and modules are only listed
         "AccessJet3", "AccessJet4", "AccessAce",
+        // Pictures: decoded in the sandbox, reduced, without their metadata
+        "Png", "Jpeg", "Gif", "Bmp",
         // Text
         "Rtf", "PlainText", "Csv", "Tsv", "Markdown");
 

@@ -1529,7 +1529,11 @@ mod docx_tests {
             Some(("Company logo", "png", 7, false))
         );
         assert_eq!(images.get(1).map(|i| (i.alt.as_str(), i.external)), Some(("Tracker", true)));
-        assert!(p.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown && n.count == 2));
+        // The picture that is part of the package can be opened (it has an id); the remote one
+        // cannot, and only that one is counted as not shown.
+        assert_ne!(images.first().map(|i| i.id), Some(crate::model::IMAGE_NONE));
+        assert_eq!(images.get(1).map(|i| i.id), Some(crate::model::IMAGE_NONE));
+        assert!(p.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown && n.count == 1));
     }
 
     #[test]

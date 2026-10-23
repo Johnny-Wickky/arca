@@ -1230,7 +1230,8 @@ public final class PreviewScreen extends Screen {
                 ImageViewer.show(act, img.id, img.alt);
             }
         });
-        col.addView(iv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // At its own size when it is small, reduced to the width of the text when it is large.
+        col.addView(iv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout bar = ui.hbox();
         List<String> lines = ImageViewer.processing(ui, r.facts);
         TextView caption = ui.text(Fmt.clip(android.text.TextUtils.join(" · ", lines), 200), Ui.CAPTION);

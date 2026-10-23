@@ -404,9 +404,11 @@ impl<'p> Sink<'p> {
         self.push(id, Block::Para(p))
     }
 
-    /// Convenience: pushes a picture placeholder and counts it.
+    /// Convenience: pushes a picture placeholder; a picture that cannot be opened is counted.
     pub(crate) fn image(&mut self, id: SectionId, info: ImageInfo) -> bool {
-        self.count(NoticeKind::ImagesNotShown, "", 1);
+        if info.id == crate::model::IMAGE_NONE {
+            self.count(NoticeKind::ImagesNotShown, "", 1);
+        }
         self.push(id, Block::Image(info))
     }
 
