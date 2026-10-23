@@ -44,6 +44,12 @@ const MAX_TREE_NODES: usize = 400_000;
 /// Annotations read per page.
 const MAX_ANNOTS: usize = 500;
 
+mod picture;
+pub(crate) use picture::{Found, picture};
+
+#[cfg(test)]
+mod picture_tests;
+
 /// Extracts the text of `data`.
 pub(crate) fn extract(data: &[u8], sink: &mut Sink<'_>) -> Result<(), PreviewError> {
     let policy = sink.policy;
@@ -744,7 +750,9 @@ mod tests {
         let comments: Vec<String> =
             paras.iter().filter(|p| p.style == ParaStyle::Comment).map(|p| p.text()).collect();
         assert_eq!(comments, ["Review", "name: Alice"]);
-        assert!(p.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown));
+        // The picture can be opened (its id is its object number), so it is not counted as left out.
+        assert!(matches!(sec.blocks.first(), Some(Block::Image(i)) if i.id == 6));
+        assert!(!p.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown));
     }
 
     #[test]
@@ -965,7 +973,7 @@ mod tests {
         b.add_stream(6, "/Type /XObject /Subtype /Image /Width 640 /Height 480 /ColorSpace /DeviceRGB /BitsPerComponent 8", &[0u8; 8]);
         let m = drawn(&b);
         let img = m.prims.iter().find_map(|p| match p {
-            Prim::Image { m, label } => Some((*m, label.clone())),
+            Prim::Image { m, label, .. } => Some((*m, label.clone())),
             _ => None,
         });
         let (matrix, label) = img.expect("an image");

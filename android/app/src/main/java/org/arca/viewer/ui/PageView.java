@@ -8,8 +8,10 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Typeface;
+import android.view.MotionEvent;
 import android.view.View;
 
+import org.arca.viewer.MainActivity;
 import org.arca.viewer.core.PageDrawing;
 
 /**
@@ -31,6 +33,50 @@ final class PageView extends View {
         this.placeholderText = placeholderText;
         sheet.setColor(0xFFFFFFFF);
         setContentDescription(null);
+        setClickable(true);
+    }
+
+    /**
+     * A tap on a picture of the page opens it (the sandbox decodes it then); a tap anywhere else is
+     * left to the page scroller.
+     */
+    @Override
+    public boolean onTouchEvent(MotionEvent e) {
+        if (e.getActionMasked() == MotionEvent.ACTION_UP && e.getEventTime() - e.getDownTime() < 400
+            && getContext() instanceof MainActivity) {
+            PageDrawing.Prim hit = pictureAt(e.getX() / scale, e.getY() / scale);
+            if (hit != null) {
+                performClick();
+                ImageViewer.show((MainActivity) getContext(), hit.id, hit.label);
+                return true;
+            }
+        }
+        return super.onTouchEvent(e);
+    }
+
+    @Override
+    public boolean performClick() {
+        return super.performClick();
+    }
+
+    /** The last openable picture that covers the page point (x, y), or {@code null}. */
+    private PageDrawing.Prim pictureAt(float x, float y) {
+        PageDrawing.Prim found = null;
+        for (PageDrawing.Prim p : page.prims) {
+            if (p.kind != PageDrawing.IMAGE || p.id < 0 || p.m == null) {
+                continue;
+            }
+            android.graphics.Matrix inverse = new android.graphics.Matrix();
+            if (!matrix(p.m).invert(inverse)) {
+                continue;
+            }
+            float[] pt = {x, y};
+            inverse.mapPoints(pt);
+            if (pt[0] >= 0f && pt[0] <= 1f && pt[1] >= 0f && pt[1] <= 1f) {
+                found = p;
+            }
+        }
+        return found;
     }
 
     @Override
@@ -148,7 +194,7 @@ final class PageView extends View {
         paint.setTextScaleX(1f);
     }
 
-    /** A picture is not decoded: a grey box with the kind of picture says where it is. */
+    /** A picture is drawn as a grey box with its size; tapping it decodes it in the sandbox. */
     private void drawImage(Canvas c, PageDrawing.Prim p) {
         float[] m = p.m;
         c.save();

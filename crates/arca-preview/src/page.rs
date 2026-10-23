@@ -83,6 +83,8 @@ pub enum Prim {
         m: [f32; 6],
         /// A short description (its size in pixels).
         label: String,
+        /// What to ask the sandbox for to see it ([`crate::model::IMAGE_NONE`] if it cannot be opened).
+        id: u32,
     },
     /// Remember the clip.
     Save,
@@ -147,12 +149,13 @@ impl Wire for Prim {
                 w.u32(*color);
                 w.str(text);
             }
-            Self::Image { m, label } => {
+            Self::Image { m, label, id } => {
                 w.u8(T_IMAGE);
                 for v in m {
                     w.put(v);
                 }
                 w.str(label);
+                w.u32(*id);
             }
             Self::Save => w.u8(T_SAVE),
             Self::Restore => w.u8(T_RESTORE),
@@ -189,7 +192,7 @@ impl Wire for Prim {
                 for v in &mut m {
                     *v = r.get()?;
                 }
-                Self::Image { m, label: r.str()? }
+                Self::Image { m, label: r.str()?, id: r.u32()? }
             }
             T_SAVE => Self::Save,
             T_RESTORE => Self::Restore,
@@ -326,7 +329,7 @@ pub fn to_svg(page: &PageModel) -> String {
                     esc(text)
                 );
             }
-            Prim::Image { m, label } => {
+            Prim::Image { m, label, .. } => {
                 let pt = |u: f32, v: f32| (m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]);
                 let pts: Vec<String> = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
                     .iter()
@@ -399,7 +402,11 @@ mod tests {
                     color: 0xFF00_0000,
                     text: "Привет, мир".into(),
                 },
-                Prim::Image { m: [100.0, 0.0, 0.0, -50.0, 10.0, 200.0], label: "640×480".into() },
+                Prim::Image {
+                    m: [100.0, 0.0, 0.0, -50.0, 10.0, 200.0],
+                    label: "640×480".into(),
+                    id: 7,
+                },
                 Prim::Restore,
             ],
             truncated: false,

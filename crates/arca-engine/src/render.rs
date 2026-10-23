@@ -262,12 +262,13 @@ pub fn page_json(page: &PageModel) -> Vec<u8> {
                 w.u64(u64::from(*color));
                 w.string(text);
             }
-            Prim::Image { m, label } => {
+            Prim::Image { m, label, id } => {
                 w.string("I");
                 for v in m {
                     w.f32(*v);
                 }
                 w.string(label);
+                w.u64(u64::from(*id));
             }
             Prim::Save => w.string("S"),
             Prim::Restore => w.string("R"),

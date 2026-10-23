@@ -45,7 +45,7 @@ fn from_decode(e: DecodeError) -> PictureError {
     }
 }
 
-fn from_preview(e: PreviewError) -> PictureError {
+pub(crate) fn from_preview(e: PreviewError) -> PictureError {
     match e {
         PreviewError::Unsupported(f) => {
             PictureError::Unsupported(format!("no pictures of {f:?} are shown"))
@@ -101,6 +101,18 @@ pub fn picture(data: &[u8], id: u32, policy: &PreviewPolicy) -> Result<Image, Pi
     let bytes: Cow<'_, [u8]> = match detect::open(data, policy).map_err(from_preview)? {
         Doc::Picture { data, .. } if id == 0 => Cow::Borrowed(data),
         Doc::Picture { .. } => return Err(PictureError::Missing),
+        Doc::Rtf(file) => Cow::Owned(
+            crate::rtf::picture_bytes(file, usize::try_from(id).unwrap_or(usize::MAX))
+                .ok_or(PictureError::Missing)?,
+        ),
+        Doc::Pdf(file) => {
+            return match crate::pdf::picture(file, id, policy)? {
+                crate::pdf::Found::Jpeg(jpeg) => {
+                    arca_image::decode(&jpeg, &limits).map_err(from_decode)
+                }
+                crate::pdf::Found::Samples(image) => Ok(image),
+            };
+        }
         Doc::Opc { mut pkg, .. } | Doc::Odf { mut pkg, .. } => {
             let (_, bytes) =
                 pkg.read_by_id(id).map_err(from_preview)?.ok_or(PictureError::Missing)?;

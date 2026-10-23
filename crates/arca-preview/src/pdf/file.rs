@@ -647,6 +647,31 @@ impl<'a> PdfFile<'a> {
         filter::apply(&raw, &specs, max, &mut self.budget)
     }
 
+    /// Decodes a stream up to a trailing image codec (`DCTDecode`, `JPXDecode`, `JBIG2Decode`,
+    /// `CCITTFaxDecode`), which is left alone and named in the answer: the bytes are then those of
+    /// a picture file for the picture decoder.
+    pub(super) fn image_stream(
+        &mut self,
+        s: &Stream,
+        max: usize,
+    ) -> Result<(Decoded, Option<String>), FilterError> {
+        let mut specs = self.filter_specs(&s.dict);
+        let codec = match specs.last() {
+            Some(l)
+                if matches!(
+                    l.name.as_str(),
+                    "DCTDecode" | "JPXDecode" | "JBIG2Decode" | "CCITTFaxDecode"
+                ) =>
+            {
+                specs.pop().map(|l| l.name)
+            }
+            _ => None,
+        };
+        let data = self.data;
+        let raw = self.raw_in(data, s);
+        filter::apply(&raw, &specs, max, &mut self.budget).map(|d| (d, codec))
+    }
+
     /// The raw (still encoded) bytes of a stream, exactly as they lie in the file.
     pub(super) fn raw(&self, s: &Stream) -> Cow<'a, [u8]> {
         self.raw_in(self.data, s)

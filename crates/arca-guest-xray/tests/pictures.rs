@@ -135,3 +135,76 @@ fn hostile_picture_payloads_are_refused_by_the_host_decoder() {
         let _ = decode_image(kind, &payload[..i]);
     }
 }
+
+/// A one-page PDF (no cross-reference table: the reader rebuilds it) that draws object 5, a
+/// 2 × 1 RGB picture (red, green).
+fn pdf_with_a_picture() -> Vec<u8> {
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    pdf.extend_from_slice(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>\nendobj\n");
+    pdf.extend_from_slice(
+        b"4 0 obj\n<< /Length 28 >>\nstream\nq 80 0 0 40 10 10 cm /Im1 Do Q\nendstream\nendobj\n",
+    );
+    pdf.extend_from_slice(b"5 0 obj\n<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 6 >>\nstream\n");
+    pdf.extend_from_slice(&[255, 0, 0, 0, 255, 0]);
+    pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<< /Root 1 0 R /Size 6 >>\n%%EOF\n");
+    pdf
+}
+
+#[test]
+fn the_pictures_of_a_pdf_are_found_by_their_object_numbers() {
+    let pdf = pdf_with_a_picture();
+    let images = images_of(&pdf);
+    assert_eq!(images.len(), 1, "{images:?}");
+    assert_eq!(images[0].id, 5);
+    let (code, env) = ask(Op::Image, 5, &pdf);
+    assert_eq!(code, status::OK);
+    let (kind, payload) = envelope::open(&env).unwrap();
+    let img = decode_image(kind, payload).unwrap();
+    assert_eq!((img.width, img.height), (2, 1));
+    assert_eq!(&img.rgba, &[255, 0, 0, 255, 0, 255, 0, 255]);
+    // The page drawing carries the same id, so that a tap on the picture can ask for it.
+    let (code, env) = ask(Op::Render, 0, &pdf);
+    assert_eq!(code, status::OK);
+    let (kind, payload) = envelope::open(&env).unwrap();
+    let page = arca_guest_xray::decode_page(kind, payload).unwrap();
+    assert!(page.prims.iter().any(|p| matches!(p, arca_preview::page::Prim::Image { id: 5, .. })));
+    // An object that is not a picture is refused.
+    for n in [1u32, 4, 99] {
+        let (code, _) = ask(Op::Image, n, &pdf);
+        assert_ne!(code, status::OK, "object {n}");
+    }
+}
+
+#[test]
+fn the_pictures_of_an_rtf_document_are_hex_or_binary() {
+    let png = picture_file("img-420.ref.png");
+    let jpeg = picture_file("img-444.jpg");
+    let digits: Vec<String> = png.iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = digits.chunks(40).map(|c| c.concat()).collect::<Vec<_>>().join("\r\n");
+    let mut rtf = Vec::new();
+    rtf.extend_from_slice(b"{\\rtf1\\ansi before {\\pict\\pngblip\\picw61\\pich37 {\\*\\blipuid 0123456789abcdef0123456789abcdef}");
+    rtf.extend_from_slice(hex.as_bytes());
+    rtf.extend_from_slice(b"} middle {\\pict\\jpegblip\\bin");
+    rtf.extend_from_slice(format!("{} ", jpeg.len()).as_bytes());
+    rtf.extend_from_slice(&jpeg);
+    rtf.extend_from_slice(b"} text {\\pict\\emfblip 0102030405060708} after}");
+    let images = images_of(&rtf);
+    assert_eq!(images.len(), 3, "{images:?}");
+    assert!(images.iter().all(|i| i.id != IMAGE_NONE));
+    for (info, wanted) in images.iter().zip([Some(61u32), Some(61), None]) {
+        let (code, env) = ask(Op::Image, info.id, &rtf);
+        let (kind, payload) = envelope::open(&env).unwrap();
+        match wanted {
+            Some(w) => {
+                assert_eq!(code, status::OK, "{info:?}");
+                assert_eq!(decode_image(kind, payload).unwrap().width, w);
+            }
+            None => assert_eq!(code, status::UNSUPPORTED_FORMAT, "an EMF is named, not shown"),
+        }
+    }
+    // An offset that is not a picture group is refused.
+    let (code, _) = ask(Op::Image, 3, &rtf);
+    assert_ne!(code, status::OK);
+}

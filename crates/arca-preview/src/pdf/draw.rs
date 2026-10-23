@@ -213,7 +213,7 @@ impl Rec {
                         text,
                     }
                 }
-                Prim::Image { m, label } => {
+                Prim::Image { m, label, id } => {
                     let img = Mat {
                         a: f64::from(m[0]),
                         b: f64::from(m[1]),
@@ -226,6 +226,7 @@ impl Rec {
                     Prim::Image {
                         m: [f(img.a), f(img.b), f(img.c), f(img.d), f(img.e), f(img.f)],
                         label,
+                        id,
                     }
                 }
                 Prim::Clip { x, y, w, h } => {

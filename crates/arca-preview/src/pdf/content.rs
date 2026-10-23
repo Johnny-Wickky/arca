@@ -1034,6 +1034,7 @@ impl Interp<'_, '_> {
         let prim = Prim::Image {
             m: [m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32],
             label: info.alt.clone(),
+            id: info.id,
         };
         self.record(prim);
     }
@@ -1062,7 +1063,7 @@ impl Interp<'_, '_> {
                     media: media_of(last.as_deref()).to_owned(),
                     bytes: u64::try_from(self.pdf.raw_len(&stream)).unwrap_or(0),
                     external: false,
-                    ..ImageInfo::default()
+                    id: num.unwrap_or(crate::model::IMAGE_NONE),
                 };
                 self.record_image(&info);
                 self.push_image(info);

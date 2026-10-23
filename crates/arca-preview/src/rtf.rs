@@ -385,7 +385,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                     media: std::mem::take(&mut self.pict_media),
                     bytes,
                     external: false,
-                    ..ImageInfo::default()
+                    id: u32::try_from(g.start).unwrap_or(crate::model::IMAGE_NONE),
                 };
                 self.pict_bin = 0;
                 self.pending_blocks.push(Block::Image(info));
@@ -1079,6 +1079,93 @@ fn parse_hyperlink(inst: &str) -> Option<String> {
         return None;
     }
     target
+}
+
+/// Most bytes of one RTF picture.
+const MAX_PICTURE: usize = 64 << 20;
+
+/// The bytes of the picture of the `\pict` group that starts at `start` (an offset the preview
+/// gave as the picture's id): the hexadecimal digits are decoded, or the bytes after `\binN` are
+/// taken as they are. Nested groups (`\blipuid` and the like) are not picture data. The caller
+/// finds out what kind of picture it is by looking at the bytes.
+pub(crate) fn picture_bytes(data: &[u8], start: usize) -> Option<Vec<u8>> {
+    if !data.get(start..)?.starts_with(b"\\pict") {
+        return None;
+    }
+    let mut out: Vec<u8> = Vec::new();
+    let mut i = start;
+    let mut depth = 0usize;
+    let mut half: Option<u8> = None;
+    let mut binary = false;
+    while let Some(&b) = data.get(i) {
+        if out.len() > MAX_PICTURE {
+            return None;
+        }
+        match b {
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+                i += 1;
+            }
+            b'\\' => {
+                i += 1;
+                let word_start = i;
+                while data.get(i).is_some_and(u8::is_ascii_alphabetic) {
+                    i += 1;
+                }
+                let word = data.get(word_start..i).unwrap_or(&[]);
+                if word.is_empty() {
+                    // `\'hh`, `\*`, `\\` ...: one more character (two more for the hex escape).
+                    i += if data.get(i) == Some(&b'\'') { 3 } else { 1 };
+                    continue;
+                }
+                let num_start = i;
+                if data.get(i) == Some(&b'-') {
+                    i += 1;
+                }
+                while data.get(i).is_some_and(u8::is_ascii_digit) {
+                    i += 1;
+                }
+                let param = std::str::from_utf8(data.get(num_start..i).unwrap_or(&[]))
+                    .ok()
+                    .and_then(|n| n.parse::<usize>().ok());
+                if data.get(i) == Some(&b' ') {
+                    i += 1;
+                }
+                if word == b"bin" && depth == 0 {
+                    let n = param.unwrap_or(0).min(MAX_PICTURE);
+                    let end = i.saturating_add(n).min(data.len());
+                    out.extend_from_slice(data.get(i..end).unwrap_or(&[]));
+                    binary = true;
+                    i = end;
+                }
+            }
+            _ => {
+                if depth == 0 && !binary {
+                    let nibble = match b {
+                        b'0'..=b'9' => Some(b - b'0'),
+                        b'a'..=b'f' => Some(b - b'a' + 10),
+                        b'A'..=b'F' => Some(b - b'A' + 10),
+                        _ => None,
+                    };
+                    if let Some(n) = nibble {
+                        match half.take() {
+                            Some(h) => out.push(h << 4 | n),
+                            None => half = Some(n),
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Extracts an RTF document.

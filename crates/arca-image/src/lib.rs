@@ -34,9 +34,11 @@ mod jpeg;
 mod jpegdct;
 mod orient;
 mod png;
+mod raw;
 mod scale;
 
 pub use exif::ExifFacts;
+pub use raw::RowReducer;
 
 /// A raster format this crate reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,8 +51,10 @@ pub enum ImageFormat {
     Gif,
     /// Windows bitmap.
     Bmp,
+    /// Plain samples that a document stores without a picture format (see [`RowReducer`]).
+    Raw,
 }
-wire_enum!(ImageFormat { Png = 0, Jpeg = 1, Gif = 2, Bmp = 3 });
+wire_enum!(ImageFormat { Png = 0, Jpeg = 1, Gif = 2, Bmp = 3, Raw = 4 });
 
 impl ImageFormat {
     /// Short lower-case name (`png`, `jpeg`, …).
@@ -61,6 +65,7 @@ impl ImageFormat {
             Self::Jpeg => "jpeg",
             Self::Gif => "gif",
             Self::Bmp => "bmp",
+            Self::Raw => "raw",
         }
     }
 }
@@ -310,6 +315,9 @@ fn run(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, DecodeError> {
         ImageFormat::Jpeg => jpeg::decode(data, limits, pixels),
         ImageFormat::Gif => gif::decode(data, limits, pixels),
         ImageFormat::Bmp => bmp::decode(data, limits, pixels),
+        ImageFormat::Raw => {
+            Err(DecodeError::Unsupported("raw samples are not a file format".into()))
+        }
     }
 }
 

@@ -52,6 +52,8 @@ public final class PageDrawing {
         /** Image: matrix {@code a b c d e f} of the unit square; clip: {@code x y w h}. */
         public float[] m;
         public String label = "";
+        /** Image: what to ask the engine for to see it, or -1. */
+        public int id = -1;
         /** Cached platform object (an {@code android.graphics.Path}); the view's business. */
         public Object cache;
     }
@@ -142,6 +144,10 @@ public final class PageDrawing {
                         p.m[i] = f(a.get(1 + i));
                     }
                     p.label = Json.str(a.get(7), "");
+                    if (a.size() > 8) {
+                        long id = (long) f(a.get(8));
+                        p.id = id >= 0 && id < Integer.MAX_VALUE ? (int) id : -1;
+                    }
                     break;
                 }
                 case "S":

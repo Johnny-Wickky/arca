@@ -967,7 +967,7 @@ public final class CoreTest {
         String json = "{\"w\":595.5,\"h\":842,\"index\":1,\"pages\":3,\"truncated\":false,\"approx\":true,\"p\":["
             + "[\"P\",4294901760,0,1.5,0,[0,10,10,1,50,10,2,1,2,3,4,5,6,3]],"
             + "[\"T\",72,100,12,0.5,40.5,9,4278190080,\"Привет \\\"мир\\\"\"],"
-            + "[\"I\",100,0,0,50,10,20,\"JPEG\"],[\"S\"],[\"C\",0,0,100,100],[\"R\"],[\"?\",1],[]]}";
+            + "[\"I\",100,0,0,50,10,20,\"JPEG\",7],[\"S\"],[\"C\",0,0,100,100],[\"R\"],[\"?\",1],[]]}";
         PageDrawing d = PageDrawing.parse(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         eq(595.5f, d.width, "page width");
         eq(842f, d.height, "page height");
@@ -985,6 +985,9 @@ public final class CoreTest {
         eq(PageDrawing.SERIF | PageDrawing.BOLD, text.style, "style bits");
         eq(1, d.textRuns(), "text runs");
         eq("JPEG", d.prims.get(2).label, "the placeholder label");
+        eq(7, d.prims.get(2).id, "the id of an openable picture");
+        PageDrawing none = PageDrawing.parse("{\"w\":10,\"h\":10,\"p\":[[\"I\",1,0,0,1,0,0,\"x\",4294967295]]}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        eq(-1, none.prims.get(0).id, "a picture that cannot be opened has no id");
         eq(PageDrawing.CLIP, d.prims.get(4).kind, "a clip");
         for (String bad : new String[] {"{}", "{\"w\":0,\"h\":10,\"p\":[]}", "{\"w\":1e9,\"h\":10,\"p\":[]}",
             "[1]"}) {

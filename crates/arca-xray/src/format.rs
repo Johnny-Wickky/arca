@@ -318,6 +318,8 @@ pub fn sniff(data: &[u8]) -> Magic {
             arca_image::ImageFormat::Jpeg => FileFormat::Jpeg,
             arca_image::ImageFormat::Gif => FileFormat::Gif,
             arca_image::ImageFormat::Bmp => FileFormat::Bmp,
+            // Never the answer of `sniff` (samples have no signature).
+            arca_image::ImageFormat::Raw => FileFormat::Unknown,
         });
     }
     if looks_like_text(data) {

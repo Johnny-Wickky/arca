@@ -1781,8 +1781,8 @@ mod tests {
         );
         assert!(imgs[1].external && imgs[1].bytes == 0);
         // The picture inside the package can be opened; only the remote one is counted.
-        assert_ne!(imgs[0].id, crate::model::IMAGE_NONE);
-        assert_eq!(imgs[1].id, crate::model::IMAGE_NONE);
+        assert_ne!(imgs[0].id, IMAGE_NONE);
+        assert_eq!(imgs[1].id, IMAGE_NONE);
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::ImagesNotShown && n.count == 1));
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Unsupported));
     }
