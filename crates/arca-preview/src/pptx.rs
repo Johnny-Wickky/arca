@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use crate::PreviewError;
 use crate::model::{
-    Align, Block, Cell, ImageInfo, NoticeKind, ParaStyle, Row, SectionKind, Table, style,
+    Align, Block, Cell, IMAGE_NONE, ImageInfo, NoticeKind, ParaStyle, Row, SectionKind, Table,
+    style,
 };
 use crate::opc::Package;
 use crate::sink::{ParaBuilder, Sink};
@@ -21,6 +22,8 @@ struct RelInfo {
     external: bool,
     bytes: u64,
     ext: String,
+    /// The member's number in the package, for a picture that is part of it.
+    id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +264,7 @@ impl Handler for SlideHandler {
                         embed.as_deref().or(link.as_deref()).and_then(|id| self.rels.get(id))
                     {
                         p.bytes = r.bytes;
+                        p.id = r.id.unwrap_or(IMAGE_NONE);
                         p.media = r.ext.clone();
                         p.external = r.external || (embed.is_none() && link.is_some());
                     } else {
@@ -464,13 +468,14 @@ fn rel_map(pkg: &mut Package<'_>, part: &str) -> Result<BTreeMap<String, RelInfo
             crate::opc::resolve(part, &r.target).unwrap_or_else(|| r.target.clone())
         };
         let bytes = if r.external { 0 } else { pkg.size_of(&target).unwrap_or(0) };
+        let id = if r.external { None } else { pkg.entry_id(&target) };
         let ext = target.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         let ext = if ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
             ext
         } else {
             String::new()
         };
-        map.insert(r.id.clone(), RelInfo { target, external: r.external, bytes, ext });
+        map.insert(r.id.clone(), RelInfo { target, external: r.external, bytes, ext, id });
     }
     Ok(map)
 }

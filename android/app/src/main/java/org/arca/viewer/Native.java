@@ -47,6 +47,8 @@ public final class Native {
     public static final int OP_PREVIEW = 3;
     /** The drawing of one page; the flags hold the page number (from 0). */
     public static final int OP_RENDER = 4;
+    /** One picture of the document, decoded in the sandbox; the flags hold the picture's id. */
+    public static final int OP_IMAGE = 5;
     public static final int SANITIZE_ACCEPT_REVISIONS = 1;
     public static final int SANITIZE_REMOVE_COMMENTS = 2;
     public static final int SANITIZE_STRIP_METADATA = 4;
@@ -129,6 +131,12 @@ public final class Native {
 
     /** The drawing of a page (JSON) from an {@link #OP_RENDER} run. */
     public static native byte[] page(long outcome);
+
+    /** Facts about a picture (JSON) from an {@link #OP_IMAGE} run. */
+    public static native byte[] imageInfo(long outcome);
+
+    /** The pixels of a picture from an {@link #OP_IMAGE} run: 4 bytes per pixel (R, G, B, A; premultiplied). */
+    public static native byte[] imagePixels(long outcome);
 
     public static native byte[] previewItems(long outcome, int section, long from, int count);
 

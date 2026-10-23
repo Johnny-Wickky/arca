@@ -15,6 +15,7 @@ use arca_container::cfb::writer::CfbBuilder;
 use arca_container::zip::writer::{Compression, ZipWriter};
 
 use super::fixtures::*;
+use super::images::{ascii, exif_segment, gif, jpeg, png_header, rationals, tiff};
 use crate::report::{Severity, ThreatKind as K, Verdict};
 use crate::scan_default;
 
@@ -245,6 +246,37 @@ fn pe() -> Vec<u8> {
 #[allow(clippy::too_many_lines, reason = "a flat table is the clearest form of a corpus")]
 pub(crate) fn samples() -> Vec<Sample> {
     vec![
+        // ---- pictures ----------------------------------------------------------
+        sample!("jpeg-gps-position", [ImageGpsLocation], || {
+            let gps = vec![
+                ascii(1, "N"),
+                rationals(2, &[(55, 1), (45, 1), (30, 1)]),
+                ascii(3, "E"),
+                rationals(4, &[(37, 1), (37, 1), (0, 1)]),
+            ];
+            jpeg(&[exif_segment(tiff(vec![ascii(0x010F, "Acme")], vec![], gps, false))])
+        }),
+        sample!("jpeg-camera-owner-and-serial", [ImageCameraIdentity], || {
+            let exif = vec![ascii(0xA431, "SN-0001"), ascii(0xA430, "A. Owner")];
+            let ifd0 =
+                vec![ascii(0x010F, "Acme"), ascii(0x0110, "Shot 9000"), ascii(0x013B, "Ann")];
+            jpeg(&[exif_segment(tiff(ifd0, exif, vec![], false))])
+        }),
+        sample!("jpeg-embedded-thumbnail", [ImageEmbeddedThumbnail], || {
+            jpeg(&[exif_segment(tiff(vec![ascii(0x010F, "Acme")], vec![], vec![], true))])
+        }),
+        sample!("jpeg-comment-and-xmp", [ImageHiddenMetadata], || {
+            let mut xmp = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+            xmp.extend_from_slice(b"<x:xmpmeta/>");
+            jpeg(&[(0xFE, b"made with a secret tool".to_vec()), (0xE1, xmp)])
+        }),
+        sample!("gif-animation-frames", [ImageHiddenFrames], || gif(3)),
+        sample!("png-pixel-bomb-header", [OversizedImage], || png_header(40_000, 40_000)),
+        sample!("jpeg-with-zip-appended", [PolyglotFile], || {
+            let mut j = jpeg(&[]);
+            j.extend_from_slice(b"PK\x03\x04appended archive");
+            j
+        }),
         // ---- active content ------------------------------------------------
         sample!("docm-vba-autoexec", [VbaMacros, MacroAutoExec, MacroEnabledContentType], || {
             docm_with_macro().build()

@@ -944,6 +944,7 @@ fn shape_blocks(
                     media: String::new(),
                     bytes: 0,
                     external: false,
+                    ..ImageInfo::default()
                 }),
             ));
         }

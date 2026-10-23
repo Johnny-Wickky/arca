@@ -29,6 +29,8 @@ pub enum PayloadKind {
     Preview,
     /// A wire-encoded drawing of one page.
     Page,
+    /// A wire-encoded picture: reduced RGBA pixels and the facts about the original.
+    Image,
     /// A wire-encoded error description (`String`).
     Error,
 }
@@ -40,6 +42,7 @@ impl PayloadKind {
             Self::SanitizedDocument => 2,
             Self::Preview => 3,
             Self::Page => 4,
+            Self::Image => 5,
             Self::Error => 0xFFFF,
         }
     }
@@ -50,6 +53,7 @@ impl PayloadKind {
             2 => Some(Self::SanitizedDocument),
             3 => Some(Self::Preview),
             4 => Some(Self::Page),
+            5 => Some(Self::Image),
             0xFFFF => Some(Self::Error),
             _ => None,
         }

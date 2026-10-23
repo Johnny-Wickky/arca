@@ -55,11 +55,11 @@ fn main() -> ExitCode {
         let t = Instant::now();
         let native = arca_xray::scan_default(&data);
         let native_ms = t.elapsed().as_millis();
-        for op in [Op::Scan, Op::Preview, Op::Sanitize, Op::Render] {
+        for op in [Op::Scan, Op::Preview, Op::Sanitize, Op::Render, Op::Image] {
             let op_flags = match op {
                 Op::Preview => flags::REVEAL_HIDDEN,
                 Op::Sanitize => flags::SANITIZE_ALL,
-                Op::Scan | Op::Render => 0,
+                Op::Scan | Op::Render | Op::Image => 0,
             };
             let password = std::env::var("ARCA_PASSWORD").unwrap_or_default();
             let Some(head) = prefix(op, op_flags, password.as_bytes()) else { continue };

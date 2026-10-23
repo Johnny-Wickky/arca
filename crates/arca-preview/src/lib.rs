@@ -46,6 +46,7 @@ mod odf;
 mod opc;
 pub mod page;
 mod pdf;
+mod picture;
 mod plain;
 mod ppt;
 mod pptx;
@@ -67,6 +68,7 @@ use arca_container::zip::ZipLimits;
 pub use decrypt::{DecryptError, Decrypted, decrypt, is_encrypted_package};
 pub use export::{LegacyOptions, sanitize_legacy};
 pub use model::{FileFormat, Preview};
+pub use picture::{PictureError, picture};
 
 /// Resource limits for one preview.
 ///

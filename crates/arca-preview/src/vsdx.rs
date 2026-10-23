@@ -366,7 +366,7 @@ fn emit(shapes: &[Shape], sec: SectionId, sink: &mut Sink<'_>, depth: usize) -> 
         }
         if let Some(kind) = &s.image {
             let alt = if text.is_empty() { s.name.clone() } else { label_of(s) };
-            let info = ImageInfo { alt, media: kind.clone(), bytes: 0, external: false };
+            let info = ImageInfo { alt, media: kind.clone(), ..ImageInfo::default() };
             if !sink.image(sec, info) {
                 return false;
             }

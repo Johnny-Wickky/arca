@@ -456,6 +456,7 @@ fn emit(
                 media: String::new(),
                 bytes: 0,
                 external: false,
+                ..ImageInfo::default()
             };
             if !sink.image(sec, info) {
                 return false;

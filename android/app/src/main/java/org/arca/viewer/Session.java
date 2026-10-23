@@ -14,6 +14,7 @@ import android.os.SystemClock;
 import android.provider.OpenableColumns;
 
 import org.arca.viewer.core.Fmt;
+import org.arca.viewer.core.ImageFacts;
 import org.arca.viewer.core.Model;
 
 import java.io.FileNotFoundException;
@@ -656,6 +657,7 @@ public final class Session {
         report = null;
         resetPreview();
         resetSanitize();
+        resetImages();
         if (d != 0 || j != 0 || po != 0 || so != 0) {
             // After whatever the worker is running right now.
             worker.execute(new Runnable() {
@@ -887,6 +889,175 @@ public final class Session {
                 }
             });
         }
+    }
+
+    // ---- pictures ---------------------------------------------------------------------------
+
+    /** A picture that was loaded, or the reason it was not. */
+    public static final class ImageResult {
+        /** The picture (reduced and upright), or {@code null} if it could not be loaded. */
+        public final android.graphics.Bitmap bitmap;
+        public final ImageFacts facts;
+        public final Failure failure;
+
+        ImageResult(android.graphics.Bitmap bitmap, ImageFacts facts, Failure failure) {
+            this.bitmap = bitmap;
+            this.facts = facts;
+            this.failure = failure;
+        }
+    }
+
+    /** Told on the main thread when a requested picture has been loaded, or has failed. */
+    public interface ImageCallback {
+        void onImage(int id, ImageResult result);
+    }
+
+    /** Most pictures kept (each can be 16 MB). */
+    private static final int IMAGE_CACHE = 3;
+    /** Largest side of a picture the app accepts from the engine. */
+    private static final int MAX_IMAGE_SIDE = 4096;
+
+    private final ExecutorService imager = Executors.newSingleThreadExecutor(named("arca-images"));
+    private final java.util.LinkedHashMap<Integer, ImageResult> images =
+        new java.util.LinkedHashMap<>(8, 0.75f, true);
+    private final java.util.Map<Integer, List<ImageCallback>> imageWaiting = new java.util.HashMap<>();
+    private final java.util.Set<Long> imageJobs = new java.util.HashSet<>();
+
+    /** A picture that is already loaded, or {@code null} (main thread). */
+    public ImageResult cachedImage(int id) {
+        return images.get(id);
+    }
+
+    /** Whether picture {@code id} is being loaded right now (main thread). */
+    public boolean imageLoading(int id) {
+        return imageWaiting.containsKey(id);
+    }
+
+    /**
+     * Decodes picture {@code id} of the open document in the sandbox and reports back on the main
+     * thread. Nothing of the picture is decoded before this is asked for, and the app's own image
+     * decoders never see the document's bytes: what comes back is a buffer of pixels that was
+     * built inside the sandbox and is checked here before it becomes a {@code Bitmap}.
+     */
+    public void loadImage(final int id, ImageCallback callback) {
+        ImageResult have = images.get(id);
+        if (have != null) {
+            callback.onImage(id, have);
+            return;
+        }
+        List<ImageCallback> waiting = imageWaiting.get(id);
+        if (waiting != null) {
+            waiting.add(callback);
+            return;
+        }
+        if (phase != Phase.READY) {
+            return;
+        }
+        waiting = new ArrayList<>();
+        waiting.add(callback);
+        imageWaiting.put(id, waiting);
+        final int ep = epoch;
+        final long d = docHandle();
+        imager.execute(new Runnable() {
+            @Override
+            public void run() {
+                long j = Native.jobNew();
+                synchronized (lock) {
+                    if (ep == epoch) {
+                        imageJobs.add(j);
+                    }
+                }
+                long outcome = Native.run(j, d, Native.OP_IMAGE, id);
+                synchronized (lock) {
+                    imageJobs.remove(j);
+                }
+                Native.jobFree(j);
+                Failure f = null;
+                android.graphics.Bitmap bitmap = null;
+                ImageFacts facts = null;
+                if (outcome <= 0) {
+                    f = new Failure((int) -outcome, "run");
+                } else {
+                    int status = Native.outcomeStatus(outcome);
+                    if (status != Native.OK) {
+                        f = new Failure(status, describe(outcome));
+                    } else {
+                        try {
+                            byte[] info = Native.imageInfo(outcome);
+                            byte[] pixels = Native.imagePixels(outcome);
+                            if (info == null || pixels == null) {
+                                throw new IllegalStateException("no picture");
+                            }
+                            facts = ImageFacts.parse(info);
+                            bitmap = toBitmap(facts, pixels);
+                        } catch (RuntimeException | OutOfMemoryError e) {
+                            f = new Failure(F_PARSE, e.toString());
+                        }
+                    }
+                    Native.outcomeFree(outcome);
+                }
+                final ImageResult result = new ImageResult(bitmap, facts, f);
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!current(ep)) {
+                            return;
+                        }
+                        List<ImageCallback> callbacks = imageWaiting.remove(id);
+                        boolean cancelled = result.failure != null && result.failure.status == Native.CANCELLED;
+                        if (result.bitmap != null) {
+                            images.put(id, result);
+                            while (images.size() > IMAGE_CACHE) {
+                                java.util.Iterator<Integer> it = images.keySet().iterator();
+                                it.next();
+                                it.remove();
+                            }
+                        }
+                        if (callbacks != null && !cancelled) {
+                            for (ImageCallback cb : callbacks) {
+                                cb.onImage(id, result);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /**
+     * Builds the bitmap from the pixels the engine sent. The engine is not trusted: the size must
+     * be sane and the buffer must have exactly that many pixels.
+     */
+    private static android.graphics.Bitmap toBitmap(ImageFacts facts, byte[] pixels) {
+        int w = facts.width;
+        int h = facts.height;
+        if (w < 1 || h < 1 || w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE || (long) w * h * 4 != pixels.length) {
+            throw new IllegalStateException("the picture does not match its size");
+        }
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+        bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(pixels));
+        return bitmap;
+    }
+
+    /** Stops the pictures that are being loaded. */
+    public void cancelImages() {
+        long[] running;
+        synchronized (lock) {
+            running = new long[imageJobs.size()];
+            int i = 0;
+            for (long j : imageJobs) {
+                running[i++] = j;
+            }
+        }
+        for (long j : running) {
+            Native.jobCancel(j);
+        }
+    }
+
+    private void resetImages() {
+        cancelImages();
+        images.clear();
+        imageWaiting.clear();
     }
 
     // ---- sanitize ---------------------------------------------------------------------------

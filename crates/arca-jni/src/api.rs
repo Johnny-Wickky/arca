@@ -217,6 +217,18 @@ pub fn page(outcome: i64) -> Option<Vec<u8>> {
     bytes(host().and_then(|h| h.page_json(handle(outcome)?)))
 }
 
+/// Facts about a picture (from an image run) as JSON.
+#[must_use]
+pub fn image_info(outcome: i64) -> Option<Vec<u8>> {
+    bytes(host().and_then(|h| h.image_info_json(handle(outcome)?)))
+}
+
+/// The pixels of a picture: four bytes (red, green, blue, alpha; premultiplied) per pixel.
+#[must_use]
+pub fn image_pixels(outcome: i64) -> Option<Vec<u8>> {
+    bytes(host().and_then(|h| h.image_pixels(handle(outcome)?)))
+}
+
 /// A page of preview items as a JSON array.
 #[must_use]
 pub fn preview_items(outcome: i64, section: i32, from: i64, count: i32) -> Option<Vec<u8>> {

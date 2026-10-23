@@ -899,7 +899,12 @@ mod tests {
         assert!(sink.push(sec, grid));
         assert!(sink.image(
             sec,
-            ImageInfo { alt: "a\u{1}".into(), media: "png".into(), bytes: 1, external: false }
+            ImageInfo {
+                alt: "a\u{1}".into(),
+                media: "png".into(),
+                bytes: 1,
+                ..ImageInfo::default()
+            }
         ));
         let out = sink.finish(FileFormat::Docx);
         let Some(section) = out.sections.first() else { panic!("no section") };

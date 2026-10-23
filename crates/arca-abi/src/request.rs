@@ -39,6 +39,9 @@ pub enum Op {
     /// The drawing of one page; the result is a `PageModel`. The flags hold the page number
     /// (from 0).
     Render,
+    /// One picture of the document, decoded and reduced; the result is an `Image`. The flags hold
+    /// the picture's id, which the guest itself gave it in the preview or the page drawing.
+    Image,
 }
 
 impl Op {
@@ -50,6 +53,7 @@ impl Op {
             Self::Sanitize => 2,
             Self::Preview => 3,
             Self::Render => 4,
+            Self::Image => 5,
         }
     }
 
@@ -61,6 +65,7 @@ impl Op {
             2 => Some(Self::Sanitize),
             3 => Some(Self::Preview),
             4 => Some(Self::Render),
+            5 => Some(Self::Image),
             _ => None,
         }
     }
@@ -73,6 +78,7 @@ impl Op {
             Self::Sanitize => flags::SANITIZE_ALL,
             Self::Preview => flags::PREVIEW_ALL,
             Self::Render => flags::PAGE_MASK,
+            Self::Image => u32::MAX,
         }
     }
 }

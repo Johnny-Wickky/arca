@@ -385,6 +385,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                     media: std::mem::take(&mut self.pict_media),
                     bytes,
                     external: false,
+                    ..ImageInfo::default()
                 };
                 self.pict_bin = 0;
                 self.pending_blocks.push(Block::Image(info));

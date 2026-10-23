@@ -4,6 +4,7 @@
 
 mod corpus;
 pub(crate) mod fixtures;
+mod images;
 mod mutation;
 mod references;
 mod verdict;

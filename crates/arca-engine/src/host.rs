@@ -232,12 +232,18 @@ impl Engine {
             max_memory_bytes: c.max_memory_bytes,
             max_wall_time: Some(match op {
                 Op::Scan | Op::Sanitize => c.scan_timeout,
-                Op::Preview | Op::Render => c.preview_timeout,
+                Op::Preview | Op::Render | Op::Image => c.preview_timeout,
             }),
             // A sterile copy is about as large as the original.
             max_output_bytes: (64usize << 20).saturating_add(len),
             ..SandboxPolicy::default()
         };
+        if op == Op::Image {
+            // A picture costs by its pixels, not by the bytes of its file: a flat 60-megapixel PNG is
+            // a few hundred kilobytes. The wall-clock limit still bounds the time.
+            policy.memory_base_bytes = 256 << 20;
+            policy.fuel.base = policy.fuel.base.max(IMAGE_FUEL_BASE);
+        }
         if matches!(op, Op::Preview | Op::Sanitize | Op::Render) {
             // Extraction and rebuilding keep the decompressed parts next to the result.
             policy.memory_base_bytes = 192 << 20;
@@ -317,6 +323,7 @@ impl Engine {
             Op::Sanitize => PayloadKind::SanitizedDocument,
             Op::Preview => PayloadKind::Preview,
             Op::Render => PayloadKind::Page,
+            Op::Image => PayloadKind::Image,
         };
         if out.kind != expected {
             return RunOutput {
@@ -410,6 +417,11 @@ enum Body {
     },
     /// The drawing of a page, as JSON.
     Page(Vec<u8>),
+    /// A picture: facts as JSON, and the pixels (premultiplied RGBA, wiped on release).
+    Image {
+        info: Vec<u8>,
+        pixels: Zeroizing<Vec<u8>>,
+    },
 }
 
 #[derive(Debug)]
@@ -445,6 +457,8 @@ const MEMORY_PER_INFLATED_PREVIEW: usize = 2;
 const MEMORY_PER_INFLATED_SANITIZE: usize = 4;
 /// The scan's figure is used up to this much (the engine's own ceilings apply on top).
 const MAX_INFLATED_HINT: u64 = 1 << 30;
+/// Fuel a picture may use before the size of its file adds to it.
+const IMAGE_FUEL_BASE: u64 = 20_000_000_000;
 
 impl Host {
     /// A host around `engine`.
@@ -618,6 +632,10 @@ impl Host {
                 Body::Sanitized { info, bytes }
             }
             Some(Output::Page(p)) => Body::Page(render::page_json(&p)),
+            Some(Output::Image(i)) => {
+                let info = render::image_json(&i);
+                Body::Image { info, pixels: Zeroizing::new(render::premultiplied(i.rgba)) }
+            }
             None => Body::None,
         };
         Ok(self.outcomes.insert(Outcome {
@@ -676,6 +694,29 @@ impl Host {
     pub fn page_json(&self, outcome: Handle) -> Result<Vec<u8>, Status> {
         match &self.outcome(outcome)?.body {
             Body::Page(json) => Ok(json.clone()),
+            _ => Err(Status::BadArgument),
+        }
+    }
+
+    /// Facts about a picture (from an [`op::IMAGE`] run) as JSON; see [`render::image_json`].
+    ///
+    /// # Errors
+    /// [`Status::BadHandle`], or [`Status::BadArgument`] when the outcome holds no picture.
+    pub fn image_info_json(&self, outcome: Handle) -> Result<Vec<u8>, Status> {
+        match &self.outcome(outcome)?.body {
+            Body::Image { info, .. } => Ok(info.clone()),
+            _ => Err(Status::BadArgument),
+        }
+    }
+
+    /// The pixels of a picture: `width × height` pixels of four bytes (red, green, blue, alpha;
+    /// colours multiplied by the alpha, as Android keeps them).
+    ///
+    /// # Errors
+    /// As [`Host::image_info_json`].
+    pub fn image_pixels(&self, outcome: Handle) -> Result<Vec<u8>, Status> {
+        match &self.outcome(outcome)?.body {
+            Body::Image { pixels, .. } => Ok(pixels.to_vec()),
             _ => Err(Status::BadArgument),
         }
     }
@@ -815,4 +856,6 @@ pub mod op {
     pub const PREVIEW: u16 = 3;
     /// The drawing of one page; the page number (from 0) goes in the flags.
     pub const RENDER: u16 = 4;
+    /// One picture of the document; its id goes in the flags.
+    pub const IMAGE: u16 = 5;
 }

@@ -395,6 +395,24 @@ pub extern "system" fn Java_org_arca_viewer_Native_page(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_imageInfo(
+    env: Env,
+    _class: JObject,
+    outcome: JLong,
+) -> JObject {
+    bytes_result(env, || api::image_info(outcome))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_imagePixels(
+    env: Env,
+    _class: JObject,
+    outcome: JLong,
+) -> JObject {
+    bytes_result(env, || api::image_pixels(outcome))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_arca_viewer_Native_previewItems(
     env: Env,
     _class: JObject,

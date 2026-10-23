@@ -13,6 +13,7 @@ publish.workspace = true
 [dependencies]
 arca-abi.workspace = true
 arca-container.workspace = true
+arca-image.workspace = true
 arca-xray.workspace = true
 
 [dev-dependencies]

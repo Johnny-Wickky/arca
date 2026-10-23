@@ -249,8 +249,12 @@ pub struct Grid {
 }
 wire_struct!(Grid { cols, rows, truncated });
 
-/// Placeholder for a picture. Pixels are never decoded.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The id of a picture that cannot be opened (a remote link, a format that is not read).
+pub const IMAGE_NONE: u32 = u32::MAX;
+
+/// A picture in the document. The preview holds only this description; the pixels are decoded
+/// in a separate sandbox run, and only when the reader asks for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageInfo {
     /// Alternative text or the picture's name.
     pub alt: String,
@@ -260,8 +264,17 @@ pub struct ImageInfo {
     pub bytes: u64,
     /// The picture is a link to a remote resource (and was not fetched).
     pub external: bool,
+    /// What to ask the sandbox for to see the picture ([`IMAGE_NONE`] if it cannot be shown).
+    /// The meaning belongs to the document format and is only ever interpreted by the guest.
+    pub id: u32,
 }
-wire_struct!(ImageInfo { alt, media, bytes, external });
+wire_struct!(ImageInfo { alt, media, bytes, external, id });
+
+impl Default for ImageInfo {
+    fn default() -> Self {
+        Self { alt: String::new(), media: String::new(), bytes: 0, external: false, id: IMAGE_NONE }
+    }
+}
 
 /// A block-level element.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,6 +489,7 @@ mod tests {
                         media: "png".into(),
                         bytes: 12,
                         external: true,
+                        id: 7,
                     }),
                     Block::Rule,
                 ],

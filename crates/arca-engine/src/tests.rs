@@ -119,6 +119,7 @@ fn sample_preview() -> Preview {
                         media: "png".into(),
                         bytes: 99,
                         external: true,
+                        id: 3,
                     }),
                     Block::Para(para("end")),
                 ],

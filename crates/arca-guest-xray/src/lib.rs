@@ -3,7 +3,7 @@
 
 //! # arca-guest-xray
 //!
-//! The parser guest implementing [`arca_abi`] version 4: Threat X-Ray
+//! The parser guest implementing [`arca_abi`] version 5: Threat X-Ray
 //! (`Scan`), one-tap sterilisation (`Sanitize`) and the read-only content
 //! preview (`Preview`) in one module. Built for `wasm32-unknown-unknown` it is
 //! a module with **zero imports**: it can compute, and nothing else.
@@ -30,8 +30,9 @@ use arca_abi::envelope::{self, PayloadKind};
 use arca_abi::request::{self, Op, flags};
 use arca_abi::wire::{self, DecodeLimits, WireError};
 use arca_abi::{ABI_VERSION, status};
+use arca_image::Image;
 use arca_preview::page::PageModel;
-use arca_preview::{Preview, PreviewError, PreviewPolicy};
+use arca_preview::{PictureError, Preview, PreviewError, PreviewPolicy};
 use arca_xray::sanitize::{SanitizeError, SanitizeOptions, SanitizedDocument};
 use arca_xray::{FileFormat, ScanPolicy, XRayReport};
 
@@ -86,6 +87,7 @@ pub fn process(input: &[u8]) -> (i32, Vec<u8>) {
         Op::Sanitize => sanitize(&document, req.flags),
         Op::Preview => preview(&document, req.flags),
         Op::Render => render(&document, req.flags),
+        Op::Image => image(&document, req.flags),
     };
     if code == status::OK { (success, envelope) } else { (code, envelope) }
 }
@@ -238,6 +240,18 @@ fn render(document: &[u8], request_flags: u32) -> (i32, Vec<u8>) {
     }
 }
 
+/// One picture of the document: decoded, reduced and upright. `id` is what the preview or the page
+/// drawing gave the picture.
+fn image(document: &[u8], id: u32) -> (i32, Vec<u8>) {
+    match arca_preview::picture(document, id, &PreviewPolicy::default()) {
+        Ok(img) => seal(PayloadKind::Image, &img, "could not encode the picture"),
+        Err(e @ PictureError::Unsupported(_)) => {
+            (status::UNSUPPORTED_FORMAT, error_envelope(&e.to_string()))
+        }
+        Err(e) => (status::DOCUMENT_REJECTED, error_envelope(&e.to_string())),
+    }
+}
+
 fn preview(document: &[u8], request_flags: u32) -> (i32, Vec<u8>) {
     let policy = PreviewPolicy {
         reveal_hidden: request_flags & flags::REVEAL_HIDDEN != 0,
@@ -370,6 +384,9 @@ impl core::fmt::Display for DecodeError {
 
 impl core::error::Error for DecodeError {}
 
+/// Longest side of a picture the host accepts from the guest.
+const MAX_PICTURE_SIDE: u32 = 4096;
+
 /// Decoding limits for each kind of result. The payload is untrusted: a
 /// compromised guest could have written anything.
 const fn limits_for(kind: PayloadKind) -> DecodeLimits {
@@ -382,6 +399,9 @@ const fn limits_for(kind: PayloadKind) -> DecodeLimits {
         }
         PayloadKind::Page => {
             DecodeLimits { max_string_bytes: 8 << 20, max_items: 1 << 20, max_depth: 8 }
+        }
+        PayloadKind::Image => {
+            DecodeLimits { max_string_bytes: 32 << 20, max_items: 1 << 16, max_depth: 8 }
         }
         PayloadKind::XRayReport | PayloadKind::Error => {
             DecodeLimits { max_string_bytes: 8 << 20, max_items: 1 << 20, max_depth: 8 }
@@ -400,6 +420,8 @@ pub enum Output {
     Preview(Box<Preview>),
     /// Result of [`Op::Render`].
     Page(Box<PageModel>),
+    /// Result of [`Op::Image`].
+    Image(Box<Image>),
 }
 
 /// Decodes the payload returned by the sandbox.
@@ -421,6 +443,14 @@ pub fn decode(kind: PayloadKind, payload: &[u8]) -> Result<Output, DecodeError> 
         PayloadKind::Page => wire::from_bytes(payload, limits)
             .map(|r| Output::Page(Box::new(r)))
             .map_err(DecodeError::Wire),
+        PayloadKind::Image => {
+            let image: Image = wire::from_bytes(payload, limits).map_err(DecodeError::Wire)?;
+            // The sandbox reduces pictures to 2048 pixels; a guest that sends more is not trusted.
+            if image.width > MAX_PICTURE_SIDE || image.height > MAX_PICTURE_SIDE {
+                return Err(DecodeError::Wire(WireError::LengthLimit));
+            }
+            Ok(Output::Image(Box::new(image)))
+        }
         PayloadKind::Error => Err(DecodeError::Guest(
             wire::from_bytes::<String>(payload, limits).map_err(DecodeError::Wire)?,
         )),
@@ -438,6 +468,7 @@ pub fn decode_report(kind: PayloadKind, payload: &[u8]) -> Result<XRayReport, De
         Output::Sanitized(_) => Err(DecodeError::UnexpectedKind(PayloadKind::SanitizedDocument)),
         Output::Preview(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Preview)),
         Output::Page(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Page)),
+        Output::Image(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Image)),
     }
 }
 
@@ -451,6 +482,7 @@ pub fn decode_preview(kind: PayloadKind, payload: &[u8]) -> Result<Preview, Deco
         Output::Report(_) => Err(DecodeError::UnexpectedKind(PayloadKind::XRayReport)),
         Output::Sanitized(_) => Err(DecodeError::UnexpectedKind(PayloadKind::SanitizedDocument)),
         Output::Page(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Page)),
+        Output::Image(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Image)),
     }
 }
 
@@ -467,6 +499,21 @@ pub fn decode_sanitized(
         Output::Report(_) => Err(DecodeError::UnexpectedKind(PayloadKind::XRayReport)),
         Output::Preview(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Preview)),
         Output::Page(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Page)),
+        Output::Image(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Image)),
+    }
+}
+
+/// Decodes the payload returned by the sandbox into a picture.
+///
+/// # Errors
+/// See [`DecodeError`].
+pub fn decode_image(kind: PayloadKind, payload: &[u8]) -> Result<Image, DecodeError> {
+    match decode(kind, payload)? {
+        Output::Image(i) => Ok(*i),
+        Output::Report(_) => Err(DecodeError::UnexpectedKind(PayloadKind::XRayReport)),
+        Output::Sanitized(_) => Err(DecodeError::UnexpectedKind(PayloadKind::SanitizedDocument)),
+        Output::Preview(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Preview)),
+        Output::Page(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Page)),
     }
 }
 
@@ -480,6 +527,7 @@ pub fn decode_page(kind: PayloadKind, payload: &[u8]) -> Result<PageModel, Decod
         Output::Report(_) => Err(DecodeError::UnexpectedKind(PayloadKind::XRayReport)),
         Output::Sanitized(_) => Err(DecodeError::UnexpectedKind(PayloadKind::SanitizedDocument)),
         Output::Preview(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Preview)),
+        Output::Image(_) => Err(DecodeError::UnexpectedKind(PayloadKind::Image)),
     }
 }
 
@@ -812,7 +860,7 @@ mod tests {
         assert!(decode_preview(PayloadKind::Preview, &[0xFF; 64]).is_err());
         assert!(decode_preview(PayloadKind::Preview, &[]).is_err());
         assert!(decode(PayloadKind::Error, &[0xFF; 8]).is_err());
-        assert_eq!(abi_version(), 4);
+        assert_eq!(abi_version(), 5);
     }
 
     #[test]

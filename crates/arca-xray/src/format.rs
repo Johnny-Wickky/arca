@@ -112,6 +112,15 @@ pub enum FileFormat {
     Zip,
     /// Native executable, script or shortcut.
     Executable,
+    // ---- pictures ---------------------------------------------------------
+    /// PNG picture.
+    Png,
+    /// JPEG picture.
+    Jpeg,
+    /// GIF picture.
+    Gif,
+    /// Windows bitmap.
+    Bmp,
 }
 
 wire_enum!(FileFormat {
@@ -123,6 +132,7 @@ wire_enum!(FileFormat {
     Doc = 50, Xls = 51, Ppt = 52, Vsd = 53, Msg = 54, EncryptedOoxml = 55, Msi = 56, OleOther = 57,
     Rtf = 60, Pdf = 61, AccessJet3 = 62, AccessJet4 = 63, AccessAce = 64, PlainText = 65, Csv = 66,
     Tsv = 67, Markdown = 68, Html = 69, FlatXml = 70, Zip = 71, Executable = 72,
+    Png = 80, Jpeg = 81, Gif = 82, Bmp = 83,
 });
 
 /// High-level document family (drives which viewer the UI opens).
@@ -140,6 +150,8 @@ pub enum Family {
     Database,
     /// Fixed layout (PDF, XPS).
     FixedLayout,
+    /// A picture file.
+    Image,
     /// Not a viewable document.
     None,
 }
@@ -176,6 +188,7 @@ impl FileFormat {
             F::Vsdx | F::Vsdm | F::VisioTemplateOrStencil | F::Vsd | F::Odg => Family::Diagram,
             F::AccessJet3 | F::AccessJet4 | F::AccessAce => Family::Database,
             F::Pdf | F::Xps => Family::FixedLayout,
+            F::Png | F::Jpeg | F::Gif | F::Bmp => Family::Image,
             F::Empty
             | F::Unknown
             | F::OpcOther
@@ -256,6 +269,8 @@ pub enum Magic {
     Jet(FileFormat),
     /// Native executable, script or shortcut (description).
     Executable(&'static str),
+    /// A picture (the format is known).
+    Image(FileFormat),
     /// Looks like UTF-8 / UTF-16 text.
     Text,
     /// Anything else.
@@ -296,6 +311,14 @@ pub fn sniff(data: &[u8]) -> Magic {
         if sig == b"Standard ACE DB" {
             return Magic::Jet(FileFormat::AccessAce);
         }
+    }
+    if let Some(kind) = arca_image::sniff(data) {
+        return Magic::Image(match kind {
+            arca_image::ImageFormat::Png => FileFormat::Png,
+            arca_image::ImageFormat::Jpeg => FileFormat::Jpeg,
+            arca_image::ImageFormat::Gif => FileFormat::Gif,
+            arca_image::ImageFormat::Bmp => FileFormat::Bmp,
+        });
     }
     if looks_like_text(data) {
         return Magic::Text;

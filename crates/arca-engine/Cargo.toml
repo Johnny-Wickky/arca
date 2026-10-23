@@ -14,6 +14,7 @@ arca-attribution.workspace = true
 arca-container.workspace = true
 arca-digest.workspace = true
 arca-guest-xray.workspace = true
+arca-image.workspace = true
 arca-preview.workspace = true
 arca-sandbox.workspace = true
 arca-xray.workspace = true

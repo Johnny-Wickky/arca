@@ -154,6 +154,7 @@ threat_kinds! {
     StaleThumbnail = 212 => (Concealment, Info),
     BidiOverride = 213 => (Concealment, Medium),
     ObfuscatedName = 214 => (Concealment, Medium),
+    ImageHiddenFrames = 215 => (Concealment, Low),
     // ---- privacy ----------------------------------------------------------
     AuthorMetadata = 300 => (PrivacyLeak, Info),
     LocalPathLeak = 301 => (PrivacyLeak, Low),
@@ -163,6 +164,10 @@ threat_kinds! {
     PersonalIdentifier = 305 => (PrivacyLeak, Low),
     EditingSessionIds = 306 => (PrivacyLeak, Info),
     CustomProperties = 307 => (PrivacyLeak, Info),
+    ImageGpsLocation = 308 => (PrivacyLeak, High),
+    ImageCameraIdentity = 309 => (PrivacyLeak, Low),
+    ImageEmbeddedThumbnail = 310 => (PrivacyLeak, Low),
+    ImageHiddenMetadata = 311 => (PrivacyLeak, Info),
     // ---- structural -------------------------------------------------------
     MalformedContainer = 400 => (Structural, Medium),
     UnusualCompression = 401 => (Structural, Low),
@@ -176,6 +181,7 @@ threat_kinds! {
     PathTraversal = 409 => (Structural, Critical),
     ParserDifferential = 410 => (Structural, High),
     XmlEntityAttack = 411 => (Structural, Critical),
+    OversizedImage = 412 => (Structural, High),
     // ---- encryption -------------------------------------------------------
     EncryptedDocument = 500 => (Encryption, Medium),
     EncryptedMember = 501 => (Encryption, Medium),

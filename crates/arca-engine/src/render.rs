@@ -51,7 +51,7 @@ use std::collections::HashMap;
 use arca_attribution::passport::PatronPassport;
 use arca_attribution::screen::{CardRole, CreatorCard, Lang, PatronageScreen};
 use arca_preview::model::{
-    Align, Block, CellKind, Grid, ImageInfo, Paragraph, Preview, Row, Run, Section,
+    Align, Block, CellKind, Grid, IMAGE_NONE, ImageInfo, Paragraph, Preview, Row, Run, Section,
 };
 use arca_preview::page::{PageModel, Prim};
 use arca_xray::sanitize::SanitizedDocument;
@@ -573,6 +573,9 @@ fn image(w: &mut JsonWriter, i: &ImageInfo) {
     w.field_str("media", &i.media);
     w.field_u64("bytes", i.bytes);
     w.field_bool("ext", i.external);
+    if i.id != IMAGE_NONE {
+        w.field_u64("id", u64::from(i.id));
+    }
     w.end_object();
 }
 
@@ -782,6 +785,86 @@ pub fn release_blockers_json() -> Vec<u8> {
                 w.string(&b.to_string());
             }
             w.end_array();
+        }
+    }
+    w.end_object();
+    w.finish()
+}
+
+// ---------------------------------------------------------------------------
+// Pictures
+// ---------------------------------------------------------------------------
+
+/// Colours multiplied by the alpha, as Android's `Bitmap` keeps them.
+#[must_use]
+pub fn premultiplied(mut rgba: Vec<u8>) -> Vec<u8> {
+    for px in rgba.chunks_exact_mut(4) {
+        if let [r, g, b, a] = px
+            && *a != 255
+        {
+            let a = u32::from(*a);
+            for c in [r, g, b] {
+                *c = u8::try_from((u32::from(*c) * a + 127) / 255).unwrap_or(255);
+            }
+        }
+    }
+    rgba
+}
+
+/// Facts about a picture as JSON (the pixels travel separately):
+///
+/// ```text
+/// {"format":"Jpeg","width":2048,"height":1536,"srcWidth":4000,"srcHeight":3000,"bits":8,
+///  "flags":260,"frames":1,"trailing":0,"metadataBytes":1234,
+///  "exif":{"make":"Acme","model":"…","software":"","datetime":"…","artist":"","copyright":"",
+///          "owner":"","orientation":1,"serial":false,"makerNote":false,"thumbnail":true,
+///          "gps":true,"position":"55.75833, 37.61730"}}
+/// ```
+///
+/// `flags` are the bits of `arca_image::flag`. Everything textual came from the document and is
+/// shown by the app as untrusted text.
+#[must_use]
+pub fn image_json(img: &arca_image::Image) -> Vec<u8> {
+    let f = &img.facts;
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.field_name("format", &f.format);
+    w.field_u64("width", u64::from(img.width));
+    w.field_u64("height", u64::from(img.height));
+    w.field_u64("srcWidth", u64::from(f.width));
+    w.field_u64("srcHeight", u64::from(f.height));
+    w.field_u64("bits", u64::from(f.bits));
+    w.field_u64("flags", u64::from(f.flags));
+    w.field_u64("frames", u64::from(f.frames));
+    w.field_u64("trailing", f.trailing);
+    w.field_u64("metadataBytes", f.metadata_bytes);
+    w.key("exif");
+    match &f.exif {
+        None => w.null(),
+        Some(e) => {
+            w.begin_object();
+            w.field_str("make", &e.make);
+            w.field_str("model", &e.model);
+            w.field_str("software", &e.software);
+            w.field_str("datetime", &e.datetime);
+            w.field_str("artist", &e.artist);
+            w.field_str("copyright", &e.copyright);
+            w.field_str("owner", &e.owner);
+            w.field_u64("orientation", u64::from(e.orientation));
+            w.field_bool("serial", e.serial);
+            w.field_bool("makerNote", e.maker_note);
+            w.field_bool("thumbnail", e.thumbnail);
+            w.field_bool("gps", e.gps);
+            if e.has_position {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "millionths of a degree: well within f64"
+                )]
+                let position =
+                    format!("{:.5}, {:.5}", e.lat_micro as f64 / 1e6, e.lon_micro as f64 / 1e6);
+                w.field_str("position", &position);
+            }
+            w.end_object();
         }
     }
     w.end_object();

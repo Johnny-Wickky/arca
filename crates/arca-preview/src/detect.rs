@@ -30,6 +30,8 @@ pub(crate) enum Doc<'a> {
     Rtf(&'a [u8]),
     /// PDF bytes.
     Pdf(&'a [u8]),
+    /// A picture file.
+    Picture { data: &'a [u8], format: FileFormat },
     /// Access database bytes.
     Access { data: &'a [u8], format: FileFormat },
     /// Decoded text; `legacy` is the code page assumed for old 8-bit text.
@@ -46,6 +48,7 @@ pub(crate) fn open<'a>(data: &'a [u8], policy: &PreviewPolicy) -> Result<Doc<'a>
         Magic::Zip => open_zip(data, policy),
         Magic::Ole2 => open_cfb(data, policy),
         Magic::Pdf => Ok(Doc::Pdf(data)),
+        Magic::Image(format) => Ok(Doc::Picture { data, format }),
         Magic::Rtf => Ok(Doc::Rtf(data)),
         Magic::Text => {
             let plain::Decoded { text, legacy } = plain::decode(data).ok_or_else(|| {
@@ -163,6 +166,10 @@ pub(crate) fn extract(doc: Doc<'_>, sink: &mut Sink<'_>) -> Result<FileFormat, P
             crate::pdf::extract(data, sink)?;
             Ok(FileFormat::Pdf)
         }
+        Doc::Picture { data, format } => {
+            crate::picture::extract_file(data, format, sink)?;
+            Ok(format)
+        }
         Doc::Access { data, format } => {
             crate::access::extract(data, format, sink)?;
             Ok(format)
@@ -176,7 +183,9 @@ pub(crate) fn format_of(data: &[u8], policy: &PreviewPolicy) -> FileFormat {
         Ok(Doc::Opc { format, .. } | Doc::Odf { format, .. } | Doc::Cfb { format, .. }) => format,
         Ok(Doc::Rtf(_)) => FileFormat::Rtf,
         Ok(Doc::Pdf(_)) => FileFormat::Pdf,
-        Ok(Doc::Access { format, .. } | Doc::Text { format, .. }) => format,
+        Ok(Doc::Access { format, .. } | Doc::Text { format, .. } | Doc::Picture { format, .. }) => {
+            format
+        }
         Err(PreviewError::Unsupported(f)) => f,
         Err(_) => FileFormat::Unknown,
     }

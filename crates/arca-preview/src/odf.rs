@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::PreviewError;
 use crate::listfmt;
 use crate::model::{
-    Align, Block, Cell, CellKind, ImageInfo, NoticeKind, ParaStyle, Paragraph, Row, SectionKind,
-    Table, style,
+    Align, Block, Cell, CellKind, IMAGE_NONE, ImageInfo, NoticeKind, ParaStyle, Paragraph, Row,
+    SectionKind, Table, style,
 };
 use crate::opc::Package;
 use crate::sink::{GridBuilder, ParaBuilder, Sink};
@@ -1084,7 +1084,8 @@ impl<'a, 'p> Odf<'a, 'p> {
         } else {
             String::new()
         };
-        ImageInfo { alt: String::new(), media, bytes, external }
+        let id = if external { IMAGE_NONE } else { self.pkg.entry_id(path).unwrap_or(IMAGE_NONE) };
+        ImageInfo { alt: String::new(), media, bytes, external, id }
     }
 }
 

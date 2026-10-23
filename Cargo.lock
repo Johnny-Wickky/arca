@@ -41,6 +41,7 @@ dependencies = [
  "arca-container",
  "arca-digest",
  "arca-guest-xray",
+ "arca-image",
  "arca-preview",
  "arca-sandbox",
  "arca-xray",
@@ -54,6 +55,7 @@ dependencies = [
  "arca-abi",
  "arca-container",
  "arca-digest",
+ "arca-image",
  "arca-preview",
  "arca-sandbox",
  "arca-xray",
@@ -83,6 +85,7 @@ version = "0.1.2"
 dependencies = [
  "arca-abi",
  "arca-container",
+ "arca-image",
  "arca-xray",
  "miniz_oxide",
  "quick-xml",
@@ -106,6 +109,7 @@ dependencies = [
  "arca-abi",
  "arca-container",
  "arca-digest",
+ "arca-image",
  "miniz_oxide",
  "quick-xml",
 ]

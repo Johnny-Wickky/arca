@@ -93,6 +93,27 @@ impl<'a> Package<'a> {
         }
     }
 
+    /// A stable number for a member: its position in the central directory. It is what a picture
+    /// is later asked for by (see [`Package::read_by_id`]).
+    pub(crate) fn entry_id(&self, name: &str) -> Option<u32> {
+        let entry = self.zip.entry(name)?;
+        let at = self.zip.entries().iter().position(|e| std::ptr::eq(e, entry))?;
+        u32::try_from(at).ok()
+    }
+
+    /// The member with the number `id` (see [`Package::entry_id`]): its name and bytes.
+    pub(crate) fn read_by_id(
+        &mut self,
+        id: u32,
+    ) -> Result<Option<(String, Vec<u8>)>, PreviewError> {
+        let Some(entry) = usize::try_from(id).ok().and_then(|i| self.zip.entries().get(i)).cloned()
+        else {
+            return Ok(None);
+        };
+        let name = entry.name().to_owned();
+        Ok(self.read(&name)?.map(|bytes| (name, bytes)))
+    }
+
     /// Size of a member without reading it.
     pub(crate) fn size_of(&self, name: &str) -> Option<u64> {
         self.zip.entry(name).map(arca_container::zip::ZipEntry::uncompressed_size)

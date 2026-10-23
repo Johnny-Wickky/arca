@@ -1062,6 +1062,7 @@ impl Interp<'_, '_> {
                     media: media_of(last.as_deref()).to_owned(),
                     bytes: u64::try_from(self.pdf.raw_len(&stream)).unwrap_or(0),
                     external: false,
+                    ..ImageInfo::default()
                 };
                 self.record_image(&info);
                 self.push_image(info);
@@ -1226,6 +1227,7 @@ impl Interp<'_, '_> {
             media: media.to_owned(),
             bytes: u64::try_from(end.saturating_sub(start)).unwrap_or(0),
             external: false,
+            ..ImageInfo::default()
         };
         self.record_image(&info);
         self.push_image(info);

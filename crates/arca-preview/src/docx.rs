@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use crate::PreviewError;
-use crate::model::{Align, Block, Cell, ImageInfo, ParaStyle, Row, SectionKind, Table, style};
+use crate::model::{
+    Align, Block, Cell, IMAGE_NONE, ImageInfo, ParaStyle, Row, SectionKind, Table, style,
+};
 use crate::opc::Package;
 use crate::sink::{ParaBuilder, SectionId, Sink};
 use crate::xml::{self, Flow, Handler, Tag, XmlError, unescape};
@@ -450,6 +452,8 @@ struct RelInfo {
     external: bool,
     bytes: u64,
     ext: String,
+    /// The member's number in the package, for a picture that is part of it.
+    id: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -899,14 +903,21 @@ impl Handler for Walker<'_, '_> {
             "blip" | "imagedata" if self.drawing > 0 => {
                 let embed = tag.attr("embed").or_else(|| tag.attr("id"));
                 let link = tag.attr("link");
-                let (bytes, ext, external) = if let Some(id) = embed.as_deref().or(link.as_deref())
+                let (bytes, ext, external, pic_id) = if let Some(id) =
+                    embed.as_deref().or(link.as_deref())
                     && let Some(r) = self.rel(id)
                 {
-                    (r.bytes, r.ext.clone(), r.external || (embed.is_none() && link.is_some()))
+                    (
+                        r.bytes,
+                        r.ext.clone(),
+                        r.external || (embed.is_none() && link.is_some()),
+                        r.id.unwrap_or(IMAGE_NONE),
+                    )
                 } else {
-                    (0, String::new(), link.is_some())
+                    (0, String::new(), link.is_some(), IMAGE_NONE)
                 };
-                let info = ImageInfo { alt: self.alt.clone(), media: ext, bytes, external };
+                let info =
+                    ImageInfo { alt: self.alt.clone(), media: ext, bytes, external, id: pic_id };
                 if self.para.is_none() {
                     self.begin_para();
                 }
@@ -921,6 +932,7 @@ impl Handler for Walker<'_, '_> {
                     media: "ole".to_owned(),
                     bytes: 0,
                     external: tag.attr("Type").is_some_and(|t| t == "Link"),
+                    ..ImageInfo::default()
                 };
                 if self.para.is_none() {
                     self.begin_para();
@@ -1046,6 +1058,7 @@ fn rel_map(pkg: &mut Package<'_>, part: &str) -> Result<BTreeMap<String, RelInfo
         } else {
             crate::opc::resolve(part, &r.target).unwrap_or_else(|| r.target.clone())
         };
+        let id = if r.external { None } else { pkg.entry_id(&target) };
         let (bytes, ext) = if r.external {
             (0, r.target.rsplit('.').next().unwrap_or("").to_ascii_lowercase())
         } else {
@@ -1059,7 +1072,7 @@ fn rel_map(pkg: &mut Package<'_>, part: &str) -> Result<BTreeMap<String, RelInfo
         } else {
             String::new()
         };
-        map.insert(r.id.clone(), RelInfo { target, external: r.external, bytes, ext });
+        map.insert(r.id.clone(), RelInfo { target, external: r.external, bytes, ext, id });
     }
     Ok(map)
 }

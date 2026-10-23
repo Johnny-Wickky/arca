@@ -33,6 +33,7 @@
 mod fields;
 pub mod format;
 mod formulas;
+mod image;
 mod macro_analysis;
 mod odf;
 mod ole;
@@ -375,6 +376,7 @@ pub(crate) fn dispatch(
         Magic::Zip => scan_zip(ctx, data, location),
         Magic::Ole2 => ole::scan(ctx, data, location),
         Magic::Pdf => pdf::scan(ctx, data, location),
+        Magic::Image(format) => image::scan(ctx, data, location, format),
         Magic::Rtf => rtf::scan(ctx, data, location),
         Magic::Jet(fmt) => {
             ole::scan_access(ctx, data, location);
