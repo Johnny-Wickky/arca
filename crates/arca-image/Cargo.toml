@@ -1,0 +1,20 @@
+[package]
+name = "arca-image"
+description = "Safe decoders for PNG, JPEG, GIF and BMP images: bounded, I/O-free, designed to run inside the arca-sandbox Wasm guest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Like arca-container this crate performs no I/O, spawns no threads and reads no clocks, so the
+# same code runs inside the `wasm32-unknown-unknown` guest. Pixels leave it only as a bounded,
+# downscaled RGBA buffer; nothing of the file's own metadata does.
+[dependencies]
+arca-abi.workspace = true
+arca-digest.workspace = true
+miniz_oxide.workspace = true
+
+[lints]
+workspace = true

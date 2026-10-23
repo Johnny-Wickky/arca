@@ -3,3 +3,5 @@
 *.wasm binary
 # Fixtures are compared byte for byte (dumps, text, RTF): never convert their line endings.
 tests/fixtures/** -text
+
+crates/arca-image/tests/fixtures/** binary

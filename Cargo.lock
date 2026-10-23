@@ -60,6 +60,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arca-image"
+version = "0.1.2"
+dependencies = [
+ "arca-abi",
+ "arca-digest",
+ "miniz_oxide",
+]
+
+[[package]]
 name = "arca-jni"
 version = "0.1.2"
 dependencies = [
