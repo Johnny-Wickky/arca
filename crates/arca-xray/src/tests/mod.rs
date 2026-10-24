@@ -8,6 +8,7 @@ mod images;
 mod mutation;
 mod references;
 mod verdict;
+mod adversarial;
 
 use arca_abi::wire::{self, DecodeLimits};
 use arca_container::cfb::writer::CfbBuilder;
