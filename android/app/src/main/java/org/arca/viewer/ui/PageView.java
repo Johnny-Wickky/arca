@@ -24,7 +24,12 @@ final class PageView extends View {
     private final Paint sheet = new Paint();
     private final int placeholder;
     private final int placeholderText;
+    /** Largest zoom of the page, and tallest view it may make (a bitmap-backed canvas must stay sane). */
+    private static final float MAX_SCALE = 8f;
+    private static final int MAX_HEIGHT_PX = 32768;
+
     private float scale = 1f;
+    private boolean tooLarge;
 
     PageView(Context context, PageDrawing page, int placeholder, int placeholderText) {
         super(context);
@@ -42,7 +47,7 @@ final class PageView extends View {
      */
     @Override
     public boolean onTouchEvent(MotionEvent e) {
-        if (e.getActionMasked() == MotionEvent.ACTION_UP && e.getEventTime() - e.getDownTime() < 400
+        if (!tooLarge && e.getActionMasked() == MotionEvent.ACTION_UP && e.getEventTime() - e.getDownTime() < 400
             && getContext() instanceof MainActivity) {
             PageDrawing.Prim hit = pictureAt(e.getX() / scale, e.getY() / scale);
             if (hit != null) {
@@ -82,14 +87,27 @@ final class PageView extends View {
     @Override
     protected void onMeasure(int widthSpec, int heightSpec) {
         int w = MeasureSpec.getSize(widthSpec);
-        scale = w / page.width;
-        int h = Math.max(1, Math.round(page.height * scale));
-        setMeasuredDimension(w, h);
+        scale = Math.min(w / page.width, MAX_SCALE);
+        float wanted = page.height * scale;
+        tooLarge = !(wanted <= MAX_HEIGHT_PX);
+        if (tooLarge) {
+            setMeasuredDimension(w, Math.round(getResources().getDisplayMetrics().density * 120f));
+            return;
+        }
+        setMeasuredDimension(w, Math.max(1, Math.round(wanted)));
     }
 
     @Override
     protected void onDraw(Canvas c) {
         c.drawRect(0, 0, getWidth(), getHeight(), sheet);
+        if (tooLarge) {
+            Paint note = new Paint(Paint.ANTI_ALIAS_FLAG);
+            note.setColor(placeholderText);
+            note.setTextAlign(Paint.Align.CENTER);
+            note.setTextSize(getResources().getDisplayMetrics().scaledDensity * 14f);
+            c.drawText(getContext().getString(org.arca.viewer.R.string.pages_too_large), getWidth() / 2f, getHeight() / 2f, note);
+            return;
+        }
         c.save();
         c.scale(scale, scale);
         int depth = 0;

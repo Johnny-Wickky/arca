@@ -21,7 +21,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APP="$ROOT/android/app/src/main"
-JARS="${ARCA_ANDROID_JARS:-/tmp/claude-0/work/androidjar}"
+JARS="${ARCA_ANDROID_JARS:-}"
 MIN_JAR="${ANDROID_JAR_MIN:-}"
 TARGET_JAR="${ANDROID_JAR_TARGET:-}"
 for d in "$JARS/android-platforms/android-26" "$JARS/android-26"; do

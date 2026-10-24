@@ -2,9 +2,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only
      Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
 
-     Deliberately absent: INTERNET and every other permission. The app opens a document that the
-     system hands it (a content:// address or a file picked by the person) and nothing else, so
-     there is nothing to ask for and no network channel for a malicious document to use. -->
+     Deliberately absent: INTERNET and every permission except the one notification permission below
+     (tools/android/check_resources.py and build-apk.sh enforce that list). The app opens a document
+     that the system hands it (a content:// address or a file picked by the person) and nothing
+     else, so there is no network channel for a malicious document to use. The VIEW filters are
+     not BROWSABLE (a web page cannot start the app) and accept content:// only. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.arca.viewer"
     android:versionCode="2000"
@@ -68,9 +70,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
-                <data android:scheme="file" />
                 <data android:mimeType="application/msword" />
                 <data android:mimeType="application/vnd.ms-word" />
                 <data android:mimeType="application/vnd.ms-word.document.macroEnabled.12" />
@@ -109,9 +109,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
-                <data android:scheme="file" />
                 <data android:host="*" />
                 <data android:mimeType="application/octet-stream" />
                 <data android:mimeType="application/zip" />
@@ -153,9 +151,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
-                <data android:scheme="file" />
                 <data android:host="*" />
                 <data android:pathPattern=".*\\.[dD][oO][cC][xX]" />
                 <data android:pathPattern=".*\\.[dD][oO][cC][mM]" />

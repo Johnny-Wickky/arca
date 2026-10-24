@@ -88,6 +88,71 @@ public final class Compat {
         }
     }
 
+    /**
+     * Gives a dialog the protection the activity's own window has. Dialogs are separate windows:
+     * FLAG_SECURE, the autofill opt-out and the content-capture opt-out set on the activity do not
+     * cover them, and they show document text (links, contents) and the password field.
+     */
+    public static void hardenDialog(Activity owner, android.app.Dialog dialog) {
+        Window w = dialog.getWindow();
+        if (w == null) {
+            return;
+        }
+        int flags = owner.getWindow().getAttributes().flags;
+        if ((flags & android.view.WindowManager.LayoutParams.FLAG_SECURE) != 0) {
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        }
+        w.getDecorView().setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        if (Build.VERSION.SDK_INT >= 29) {
+            Api29.noContentCapture(w);
+        }
+    }
+
+    /** Keeps the system text classifier (smart selection, link actions) away from untrusted text. */
+    public static void noTextClassifier(android.widget.TextView t) {
+        // TextClassifier exists since API 26, the minimum, so no guard is needed.
+        t.setTextClassifier(android.view.textclassifier.TextClassifier.NO_OP);
+    }
+
+    /**
+     * Puts text on the clipboard flagged as sensitive (so Android 13+ hides it in the preview) and
+     * clears it again after {@code clearAfterMs} if it is still ours (API 28+).
+     */
+    public static void copySensitive(final android.content.Context c, String label, String text, long clearAfterMs) {
+        final android.content.ClipboardManager cm =
+            (android.content.ClipboardManager) c.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+        if (cm == null) {
+            return;
+        }
+        final android.content.ClipData clip = android.content.ClipData.newPlainText(label, text);
+        if (Build.VERSION.SDK_INT >= 33) {
+            Api33.markSensitive(clip);
+        }
+        cm.setPrimaryClip(clip);
+        if (Build.VERSION.SDK_INT >= 28) {
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    Api28.clearClipIfOurs(cm, clip);
+                }
+            }, clearAfterMs);
+        }
+    }
+
+    /** The Intent extra for a parcelable, with the Class-typed overload where the platform has it. */
+    public static <T extends android.os.Parcelable> T parcelableExtra(android.content.Intent i, String key, Class<T> type) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            return Api33.parcelableExtra(i, key, type);
+        }
+        return legacyParcelableExtra(i, key, type);
+    }
+
+    @SuppressWarnings({"deprecation", "unchecked"})
+    private static <T extends android.os.Parcelable> T legacyParcelableExtra(android.content.Intent i, String key, Class<T> type) {
+        android.os.Parcelable p = i.getParcelableExtra(key);
+        return type.isInstance(p) ? (T) p : null;
+    }
+
     public static boolean hasNotificationPermission(android.content.Context c) {
         if (Build.VERSION.SDK_INT >= 33) {
             return Api33.hasNotificationPermission(c);
@@ -164,6 +229,16 @@ public final class Compat {
 
     /** API 28+ calls, isolated so that older devices never load them. */
     private static final class Api28 {
+        static void clearClipIfOurs(android.content.ClipboardManager cm, android.content.ClipData ours) {
+            // Only clear what we put there: the reader may have copied something else since.
+            // A clip that cannot be read (background app on API 29+) is cleared too: best effort.
+            android.content.ClipData now = cm.getPrimaryClip();
+            if (now == null || (now.getItemCount() > 0 && ours.getItemCount() > 0
+                && String.valueOf(now.getItemAt(0).getText()).equals(String.valueOf(ours.getItemAt(0).getText())))) {
+                cm.clearPrimaryClip();
+            }
+        }
+
         static void markHeading(View v) {
             v.setAccessibilityHeading(true);
         }
@@ -254,6 +329,16 @@ public final class Compat {
 
     /** API 33+ calls. */
     private static final class Api33 {
+        static void markSensitive(android.content.ClipData clip) {
+            android.os.PersistableBundle extras = new android.os.PersistableBundle();
+            extras.putBoolean("android.content.extra.IS_SENSITIVE", true);
+            clip.getDescription().setExtras(extras);
+        }
+
+        static <T extends android.os.Parcelable> T parcelableExtra(android.content.Intent i, String key, Class<T> type) {
+            return i.getParcelableExtra(key, type);
+        }
+
         static void recentsScreenshot(Activity a, boolean enabled) {
             a.setRecentsScreenshotEnabled(enabled);
         }

@@ -137,6 +137,7 @@
     <string name="links_note">Addresses the document refers to. Arca never follows them. Tap one to read it in full.</string>
     <string name="ref_auto">Loads by itself</string>
     <string name="link_dialog_title">Address in the document</string>
+    <string name="link_nonascii_warning">This address contains non-ASCII characters and may imitate another site. The host in ASCII (punycode) form:</string>
     <string name="meta_note">Details about who made the document and how. Documents often carry names, paths and machine names that you may not want to share.</string>
     <string name="embedded_note">Files and objects stored inside the document. They are listed, never opened.</string>
     <string name="emb_file">Name</string>
@@ -281,6 +282,9 @@
     <string name="settings_secure_desc">Hides the app in the recent-apps list and stops screenshots and screen recording. Turn off if you need to capture the screen.</string>
     <string name="settings_reveal">Show hidden content by default</string>
     <string name="settings_reveal_desc">Hidden text, sheets and slides appear in the preview marked as hidden. They can always be toggled there.</string>
+    <string name="settings_usage_reset">Reset local usage counters</string>
+    <string name="settings_usage_reset_desc">Clears the counters kept on this device only: documents checked, threats found and the Patron Passport. Nothing is sent anywhere.</string>
+    <string name="usage_reset_done">Counters cleared</string>
 
     <!-- Diagnostics -->
     <string name="diag_engine">Engine</string>
@@ -317,6 +321,7 @@
     <string name="pages_position">Page %1$d of %2$d</string>
     <string name="pages_loading">Drawing the page in the sandbox…</string>
     <string name="pages_failed">This page could not be drawn.</string>
+    <string name="pages_too_large">Page too large to show</string>
     <string name="pages_note_truncated">The page is very complex; part of it is not shown.</string>
     <string name="pages_note_approx">Gradients and patterns are shown as flat colours, pictures as grey boxes (tap one to open it), fonts are replaced.</string>
     <string name="image_show">Show picture</string>
@@ -346,6 +351,7 @@
     <!-- Local Support Reminders (Zero-Network, Local Only) -->
     <string name="notif_channel_reminders">Reminders</string>
     <string name="notif_channel_reminders_desc">Periodic reminders to support Arca</string>
+    <string name="notif_public_text">A reminder from Arca</string>
     <string name="settings_reminders_title">Reminders</string>
     <string name="settings_reminders">Support reminders</string>
     <string name="settings_reminders_desc">A gentle reminder once a week to support student developers. Never disturbs at night.</string>

@@ -152,6 +152,32 @@ public final class Session {
         };
     }
 
+    /** What to do when a background task dies with anything at all (OutOfMemoryError included). */
+    private interface Recovery {
+        void recover(Throwable t);
+    }
+
+    /**
+     * Wraps a background task so that nothing it throws can leave the session stuck in a running
+     * state: the recovery posts the failure to the main thread like any other failed run.
+     */
+    private static Runnable guarded(final Runnable body, final Recovery recovery) {
+        return new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    body.run();
+                } catch (Throwable t) {
+                    try {
+                        recovery.recover(t);
+                    } catch (Throwable ignored) {
+                        // nothing more can be done
+                    }
+                }
+            }
+        };
+    }
+
     // ---- observation ------------------------------------------------------------------------
 
     public void addListener(Listener l) {
@@ -276,7 +302,12 @@ public final class Session {
         worker.execute(new Runnable() {
             @Override
             public void run() {
-                load(app, source, ep);
+                try {
+                    load(app, source, ep);
+                } catch (Throwable t) {
+                    // OutOfMemoryError included: the phase must never stay stuck on READING/SCANNING.
+                    fail(ep, F_PARSE, t.toString());
+                }
             }
         });
     }
@@ -347,6 +378,17 @@ public final class Session {
         }
         if (pfd == null) {
             fail(ep, F_OPEN, "the provider returned no descriptor");
+            return;
+        }
+        // A pipe or socket (some content:// providers hand those out) has no size and may never
+        // deliver an end: the read would block with no timeout. Only regular files are read.
+        if (pfd.getStatSize() < 0) {
+            try {
+                pfd.close();
+            } catch (java.io.IOException ignored) {
+                // nothing to do
+            }
+            fail(ep, F_OPEN, "not a regular file");
             return;
         }
 
@@ -424,7 +466,7 @@ public final class Session {
                 return;
             }
             parsed = Model.parseReport(json);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | OutOfMemoryError e) {
             fail(ep, F_PARSE, e.toString());
             return;
         } finally {
@@ -462,11 +504,15 @@ public final class Session {
         unlocking = true;
         wrongPassword = false;
         changed();
-        worker.execute(new Runnable() {
+        worker.execute(guarded(new Runnable() {
             @Override
             public void run() {
-                int st = Native.docSetPassword(d, bytes, 0, bytes.length);
-                java.util.Arrays.fill(bytes, (byte) 0);
+                int st;
+                try {
+                    st = Native.docSetPassword(d, bytes, 0, bytes.length);
+                } finally {
+                    java.util.Arrays.fill(bytes, (byte) 0);
+                }
                 if (st != Native.OK) {
                     fail(ep, st, "docSetPassword");
                     return;
@@ -511,7 +557,7 @@ public final class Session {
                         return;
                     }
                     parsed = Model.parseReport(json);
-                } catch (RuntimeException e) {
+                } catch (RuntimeException | OutOfMemoryError e) {
                     fail(ep, F_PARSE, e.toString());
                     return;
                 } finally {
@@ -549,14 +595,19 @@ public final class Session {
                     }
                 });
             }
-        });
+        }, new Recovery() {
+            @Override
+            public void recover(Throwable t) {
+                fail(ep, F_PARSE, t.toString());
+            }
+        }));
     }
 
     private static int unlockOf(long outcome) {
         try {
             byte[] json = Native.outcomeInfo(outcome);
             return json == null ? 0 : Model.parseRunInfo(json).unlock;
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | OutOfMemoryError e) {
             return 0;
         }
     }
@@ -584,7 +635,7 @@ public final class Session {
         try {
             byte[] json = Native.outcomeInfo(outcome);
             return json == null ? "" : Model.parseRunInfo(json).message;
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | OutOfMemoryError e) {
             return "";
         }
     }
@@ -724,7 +775,7 @@ public final class Session {
         preview.running = true;
         preview.reveal = reveal;
         changed();
-        worker.execute(new Runnable() {
+        worker.execute(guarded(new Runnable() {
             @Override
             public void run() {
                 if (oldOutcome > 0) {
@@ -753,7 +804,7 @@ public final class Session {
                                 throw new IllegalStateException("no preview");
                             }
                             meta = Model.parsePreviewMeta(json);
-                        } catch (RuntimeException e) {
+                        } catch (RuntimeException | OutOfMemoryError e) {
                             f = new Failure(F_PARSE, e.toString());
                             Native.outcomeFree(outcome);
                             outcome = 0;
@@ -787,7 +838,21 @@ public final class Session {
                     }
                 });
             }
-        });
+        }, new Recovery() {
+            @Override
+            public void recover(final Throwable t) {
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (current(ep) && pep == previewEpoch) {
+                            preview.running = false;
+                            preview.failure = new Failure(F_PARSE, t.toString());
+                            changed();
+                        }
+                    }
+                });
+            }
+        }));
     }
 
     private void resetPage() {
@@ -817,7 +882,7 @@ public final class Session {
         page.running = true;
         page.index = index;
         changed();
-        worker.execute(new Runnable() {
+        worker.execute(guarded(new Runnable() {
             @Override
             public void run() {
                 long j = Native.jobNew();
@@ -840,7 +905,7 @@ public final class Session {
                                 throw new IllegalStateException("no page");
                             }
                             drawing = org.arca.viewer.core.PageDrawing.parse(json);
-                        } catch (RuntimeException e) {
+                        } catch (RuntimeException | OutOfMemoryError e) {
                             f = new Failure(F_PARSE, e.toString());
                         }
                     }
@@ -862,16 +927,35 @@ public final class Session {
                     }
                 });
             }
-        });
+        }, new Recovery() {
+            @Override
+            public void recover(final Throwable t) {
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (current(ep) && pep == previewEpoch) {
+                            page.running = false;
+                            page.failure = new Failure(F_PARSE, t.toString());
+                            changed();
+                        }
+                    }
+                });
+            }
+        }));
     }
 
     /** Loads one page of preview items (called on the page executor, blocking). */
     public List<Model.Item> loadItems(long outcome, int section, long from, int count) {
-        byte[] json = Native.previewItems(outcome, section, from, count);
-        if (json == null) {
-            throw new IllegalStateException("page not available");
+        try {
+            byte[] json = Native.previewItems(outcome, section, from, count);
+            if (json == null) {
+                throw new IllegalStateException("page not available");
+            }
+            return Model.parseItems(json);
+        } catch (OutOfMemoryError e) {
+            // An Error would skip the callers' Exception handlers and leave the page "loading".
+            throw new IllegalStateException("out of memory", e);
         }
-        return Model.parseItems(json);
     }
 
     /** The native outcome handle of the current preview (for page loading), or 0. */
@@ -917,8 +1001,9 @@ public final class Session {
         void onImage(int id, ImageResult result);
     }
 
-    /** Most pictures kept (each can be 16 MB). */
+    /** Most pictures kept, and the most bytes of pixels they may hold together (a 4096 x 4096 one is 64 MiB). */
     private static final int IMAGE_CACHE = 3;
+    private static final long IMAGE_CACHE_BYTES = 48L << 20;
     /** Largest side of a picture the app accepts from the engine. */
     private static final int MAX_IMAGE_SIDE = 4096;
 
@@ -927,6 +1012,17 @@ public final class Session {
         new java.util.LinkedHashMap<>(8, 0.75f, true);
     private final java.util.Map<Integer, List<ImageCallback>> imageWaiting = new java.util.HashMap<>();
     private final java.util.Set<Long> imageJobs = new java.util.HashSet<>();
+
+    /** Bytes of pixels held by the cached pictures (main thread). */
+    private long imageBytes() {
+        long total = 0;
+        for (ImageResult r : images.values()) {
+            if (r.bitmap != null) {
+                total += r.bitmap.getByteCount();
+            }
+        }
+        return total;
+    }
 
     /** A picture that is already loaded, or {@code null} (main thread). */
     public ImageResult cachedImage(int id) {
@@ -963,7 +1059,7 @@ public final class Session {
         imageWaiting.put(id, waiting);
         final int ep = epoch;
         final long d = docHandle();
-        imager.execute(new Runnable() {
+        imager.execute(guarded(new Runnable() {
             @Override
             public void run() {
                 long j = Native.jobNew();
@@ -1012,7 +1108,8 @@ public final class Session {
                         boolean cancelled = result.failure != null && result.failure.status == Native.CANCELLED;
                         if (result.bitmap != null) {
                             images.put(id, result);
-                            while (images.size() > IMAGE_CACHE) {
+                            // Least recently used go first; a picture over the byte budget on its own is shown but not kept.
+                            while (!images.isEmpty() && (images.size() > IMAGE_CACHE || imageBytes() > IMAGE_CACHE_BYTES)) {
                                 java.util.Iterator<Integer> it = images.keySet().iterator();
                                 it.next();
                                 it.remove();
@@ -1026,7 +1123,26 @@ public final class Session {
                     }
                 });
             }
-        });
+        }, new Recovery() {
+            @Override
+            public void recover(Throwable t) {
+                final ImageResult result = new ImageResult(null, null, new Failure(F_PARSE, t.toString()));
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!current(ep)) {
+                            return;
+                        }
+                        List<ImageCallback> callbacks = imageWaiting.remove(id);
+                        if (callbacks != null) {
+                            for (ImageCallback cb : callbacks) {
+                                cb.onImage(id, result);
+                            }
+                        }
+                    }
+                });
+            }
+        }));
     }
 
     /**
@@ -1080,7 +1196,7 @@ public final class Session {
         sanitize.running = true;
         sanitize.flags = flags;
         changed();
-        worker.execute(new Runnable() {
+        worker.execute(guarded(new Runnable() {
             @Override
             public void run() {
                 if (oldOutcome > 0) {
@@ -1109,7 +1225,7 @@ public final class Session {
                                 throw new IllegalStateException("no description");
                             }
                             info = Model.parseSanitized(json);
-                        } catch (RuntimeException e) {
+                        } catch (RuntimeException | OutOfMemoryError e) {
                             f = new Failure(F_PARSE, e.toString());
                             Native.outcomeFree(outcome);
                             outcome = 0;
@@ -1142,7 +1258,21 @@ public final class Session {
                     }
                 });
             }
-        });
+        }, new Recovery() {
+            @Override
+            public void recover(final Throwable t) {
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (current(ep) && sep == sanitizeEpoch) {
+                            sanitize.running = false;
+                            sanitize.failure = new Failure(F_PARSE, t.toString());
+                            changed();
+                        }
+                    }
+                });
+            }
+        }));
     }
 
     /** Writes the sterile copy to {@code dest} (a document the user chose with the system picker). */
@@ -1158,7 +1288,7 @@ public final class Session {
         sanitize.saved = false;
         sanitize.saveFailure = null;
         changed();
-        worker.execute(new Runnable() {
+        worker.execute(guarded(new Runnable() {
             @Override
             public void run() {
                 long written = -Native.IO;
@@ -1195,7 +1325,21 @@ public final class Session {
                     }
                 });
             }
-        });
+        }, new Recovery() {
+            @Override
+            public void recover(final Throwable t) {
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (current(ep) && sep == sanitizeEpoch) {
+                            sanitize.saving = false;
+                            sanitize.saveFailure = new Failure(Native.IO, t.toString());
+                            changed();
+                        }
+                    }
+                });
+            }
+        }));
     }
 
     /** Forgets the sterile copy (when its screen is left). */

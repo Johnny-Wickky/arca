@@ -741,6 +741,7 @@ public final class PreviewScreen extends Screen {
             .setView(sv)
             .setNegativeButton(R.string.close, null)
             .create();
+        Ui.harden(act, contentsDialog);
         contentsDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
             @Override
             public void onDismiss(DialogInterface d) {
@@ -1261,6 +1262,7 @@ public final class PreviewScreen extends Screen {
             t.setTag("para");
             t.setLayoutParams(new AbsListView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             t.setMovementMethod(LinkMovementMethod.getInstance());
+            Compat.noTextClassifier(t);
         }
         styleParagraph(t, p);
         return t;
@@ -1308,7 +1310,7 @@ public final class PreviewScreen extends Screen {
         t.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
-                ui.copy("text", p.plain());
+                ui.copy("text", Fmt.safe(p.plain()));
                 return true;
             }
         });
@@ -1372,7 +1374,7 @@ public final class PreviewScreen extends Screen {
                     @Override
                     public void onClick(View widget) {
                         // The link is never opened from here: the person decides, outside the sandbox.
-                        ui.showText(act, ui.str(R.string.link_dialog_title), Fmt.safe(href), "link");
+                        ui.showAddress(act, ui.str(R.string.link_dialog_title), href);
                     }
 
                     @Override
@@ -1403,6 +1405,7 @@ public final class PreviewScreen extends Screen {
             for (Model.Para p : cell.paras) {
                 TextView t = new TextView(act);
                 t.setMovementMethod(LinkMovementMethod.getInstance());
+                Compat.noTextClassifier(t);
                 styleParagraph(t, p);
                 t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14 * scale);
                 t.setPadding(0, ui.dp(2), 0, ui.dp(2));
@@ -1530,7 +1533,7 @@ public final class PreviewScreen extends Screen {
                 c.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        ui.showText(act, ui.str(R.string.link_dialog_title), Fmt.safe(href), "link");
+                        ui.showAddress(act, ui.str(R.string.link_dialog_title), href);
                     }
                 });
             }

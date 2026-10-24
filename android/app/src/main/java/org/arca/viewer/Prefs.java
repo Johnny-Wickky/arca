@@ -224,6 +224,11 @@ public final class Prefs {
         }
     }
 
+    /** Forgets the local usage counters and the Patron Passport; nothing leaves the device either way. */
+    public static void resetUsage(Context c) {
+        sp(c).edit().remove(K_DOC_COUNT).remove(K_THREAT_COUNT).remove(K_PASSPORT).apply();
+    }
+
     private static int clamp(int v, int lo, int hi) {
         return Math.max(lo, Math.min(hi, v));
     }

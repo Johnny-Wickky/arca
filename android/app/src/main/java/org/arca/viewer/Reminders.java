@@ -102,8 +102,20 @@ public final class Reminders {
             return;
         }
         ensureChannel(context);
-        if (Prefs.reminders(context) && Prefs.nextReminder(context) <= 0) {
+        if (!Prefs.reminders(context)) {
+            return;
+        }
+        // Alarms do not survive a reboot (and no boot receiver is registered on purpose: that would
+        // need one more permission), so every start of the app puts the pending one back, or plans a
+        // new one when none was ever planned or its time has passed without it firing.
+        long next = Prefs.nextReminder(context);
+        if (next <= 0 || next < System.currentTimeMillis()) {
             schedule(context);
+        } else {
+            AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (am != null) {
+                am.set(AlarmManager.RTC, next, getAlarmIntent(context));
+            }
         }
     }
 
@@ -125,6 +137,7 @@ public final class Reminders {
                 ch.setSound(null, null);
                 ch.enableLights(false);
                 ch.setShowBadge(false);
+                ch.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
                 nm.createNotificationChannel(ch);
             }
         }
@@ -252,7 +265,17 @@ public final class Reminders {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
+        // The text above carries local counters: it is never shown on a locked screen. The public
+        // version has no counters, in case a launcher or wearable shows it anyway.
+        Notification publicVersion = new Notification.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_heart)
+            .setContentTitle(context.getString(R.string.app_name))
+            .setContentText(context.getString(R.string.notif_public_text))
+            .build();
+
         Notification.Builder b = new Notification.Builder(context, CHANNEL_ID)
+            .setVisibility(Notification.VISIBILITY_SECRET)
+            .setPublicVersion(publicVersion)
             .setSmallIcon(R.drawable.ic_heart)
             .setContentTitle(title)
             .setContentText(body)

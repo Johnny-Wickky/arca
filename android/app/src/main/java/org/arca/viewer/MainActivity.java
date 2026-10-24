@@ -375,7 +375,6 @@ public final class MainActivity extends Activity implements Session.Listener, En
         }
     }
 
-    @SuppressWarnings("deprecation")
     private void handleIntent(Intent intent) {
         if (intent == null) {
             return;
@@ -392,15 +391,21 @@ public final class MainActivity extends Activity implements Session.Listener, En
             return;
         }
         Uri uri = null;
-        if (Intent.ACTION_VIEW.equals(action)) {
-            uri = intent.getData();
-        } else if (Intent.ACTION_SEND.equals(action)) {
-            Object extra = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            if (extra instanceof Uri) {
-                uri = (Uri) extra;
-            } else {
-                Toast.makeText(this, R.string.share_without_file, Toast.LENGTH_LONG).show();
+        try {
+            if (Intent.ACTION_VIEW.equals(action)) {
+                uri = intent.getData();
+            } else if (Intent.ACTION_SEND.equals(action)) {
+                // Any app can send this activity an intent: a hostile extra must not crash it. The
+                // Class-typed overload (API 33+) refuses to unparcel anything but a Uri.
+                uri = Compat.parcelableExtra(intent, Intent.EXTRA_STREAM, Uri.class);
+                if (uri == null) {
+                    Toast.makeText(this, R.string.share_without_file, Toast.LENGTH_LONG).show();
+                }
             }
+        } catch (RuntimeException e) {
+            // BadParcelableException, ClassCastException, ...: treated as "nothing usable was sent".
+            uri = null;
+            Toast.makeText(this, R.string.unsupported_source, Toast.LENGTH_LONG).show();
         }
         if (uri == null) {
             return;
@@ -410,8 +415,41 @@ public final class MainActivity extends Activity implements Session.Listener, En
             Toast.makeText(this, R.string.unsupported_source, Toast.LENGTH_LONG).show();
             return;
         }
+        if ("file".equals(scheme) && !isReadableDocumentFile(uri)) {
+            Toast.makeText(this, R.string.unsupported_source, Toast.LENGTH_LONG).show();
+            return;
+        }
         // The intent must not start the same scan again after a configuration-driven re-creation.
         setIntent(new Intent());
         openDocument(uri, intent.getType());
+    }
+
+    /**
+     * A file: address is accepted only for a regular file outside the app's own storage and the
+     * kernel's pseudo file systems. The manifest does not even advertise file:, but this activity
+     * is exported, so any app can send it one; the canonical path defeats ../ and symlink tricks.
+     */
+    private boolean isReadableDocumentFile(Uri uri) {
+        String path = uri.getPath();
+        if (path == null || path.isEmpty()) {
+            return false;
+        }
+        try {
+            java.io.File file = new java.io.File(path).getCanonicalFile();
+            String canonical = file.getPath();
+            String[] blocked = {
+                getDataDir().getCanonicalPath(),
+                createDeviceProtectedStorageContext().getDataDir().getCanonicalPath(),
+                "/proc", "/sys", "/dev"
+            };
+            for (String b : blocked) {
+                if (canonical.equals(b) || canonical.startsWith(b + "/")) {
+                    return false;
+                }
+            }
+            return file.isFile();
+        } catch (java.io.IOException | RuntimeException e) {
+            return false;
+        }
     }
 }

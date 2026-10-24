@@ -94,6 +94,15 @@ public final class SettingsScreen extends Screen {
                     Prefs.setAutoImages(act, on);
                 }
             }));
+        privacy.addView(ui.space(8));
+        privacy.addView(ui.text(R.string.settings_usage_reset_desc, Ui.CAPTION), ui.fillWidth());
+        privacy.addView(ui.button(R.string.settings_usage_reset, Ui.OUTLINE, 0, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Prefs.resetUsage(act);
+                android.widget.Toast.makeText(act, R.string.usage_reset_done, android.widget.Toast.LENGTH_SHORT).show();
+            }
+        }));
         col.addView(privacy, ui.fillWidth());
         col.addView(ui.space(12));
 

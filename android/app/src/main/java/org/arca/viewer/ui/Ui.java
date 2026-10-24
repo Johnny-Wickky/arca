@@ -5,8 +5,6 @@ package org.arca.viewer.ui;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.res.ColorStateList;
@@ -172,6 +170,8 @@ public final class Ui {
         TextView t = new TextView(context);
         t.setText(s);
         style(t, style);
+        // Smart-selection / link actions would hand the (untrusted) text to a classifier service.
+        Compat.noTextClassifier(t);
         t.setIncludeFontPadding(true);
         return t;
     }
@@ -341,16 +341,34 @@ public final class Ui {
 
     // ---- dialogs and clipboard --------------------------------------------------------------
 
+    /** How long copied text stays on the clipboard. */
+    private static final long CLIPBOARD_CLEAR_MS = 60_000;
+
     /** Copies text to the clipboard and says so (Android 13+ shows its own confirmation). */
     public void copy(String label, String text) {
-        ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm == null) {
-            return;
-        }
-        cm.setPrimaryClip(ClipData.newPlainText(label, text));
+        // Document text can be sensitive: flagged so the system hides it in the clipboard preview,
+        // and cleared again after a minute (where the platform allows).
+        Compat.copySensitive(context, label, text, CLIPBOARD_CLEAR_MS);
         if (android.os.Build.VERSION.SDK_INT < 33) {
             Toast.makeText(context, R.string.copied, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /**
+     * Shows a dialog whose window is protected like the activity's: dialogs are separate windows,
+     * so the activity's FLAG_SECURE and autofill / content-capture opt-outs do not cover them.
+     * Every dialog of the app goes through here (or {@link #harden}).
+     */
+    public static AlertDialog showHardened(Activity activity, AlertDialog.Builder builder) {
+        AlertDialog d = builder.create();
+        harden(activity, d);
+        d.show();
+        return d;
+    }
+
+    /** Applies the activity's window protection to {@code dialog}; call before {@code show()}. */
+    public static void harden(Activity activity, android.app.Dialog dialog) {
+        Compat.hardenDialog(activity, dialog);
     }
 
     /** Receives the password the reader typed (the array is theirs to wipe). */
@@ -381,7 +399,7 @@ public final class Ui {
             box.addView(err);
         }
         box.addView(field);
-        new AlertDialog.Builder(activity)
+        showHardened(activity, new AlertDialog.Builder(activity)
             .setTitle(R.string.password_dialog_title)
             .setView(box)
             .setPositiveButton(R.string.password_open, new DialogInterface.OnClickListener() {
@@ -390,25 +408,59 @@ public final class Ui {
                     android.text.Editable e = field.getText();
                     char[] pw = new char[e.length()];
                     e.getChars(0, pw.length, pw, 0);
+                    // clear() blanks the Editable in place; setText("") also drops the field's own copies.
                     e.clear();
+                    field.setText("");
                     if (pw.length > 0) {
                         listener.onPassword(pw);
                     }
                 }
             })
-            .setNegativeButton(R.string.cancel, null)
-            .show();
+            .setNegativeButton(R.string.cancel, null));
     }
 
     /** A dialog with long untrusted text (a link target, say), selectable, with a Copy button. */
     public void showText(Activity activity, CharSequence title, final String value, final String copyLabel) {
+        showText(activity, title, value, copyLabel, null);
+    }
+
+    /**
+     * An address found in a document: shown in full (made safe by the caller), and when its host
+     * has non-ASCII characters (a look-alike of another site) the host's ASCII form is shown under
+     * it with a warning. The copy button copies the address only.
+     */
+    public void showAddress(Activity activity, CharSequence title, String address) {
+        String safe = org.arca.viewer.core.Fmt.safe(address);
+        String ascii = org.arca.viewer.core.Fmt.asciiHost(address);
+        String note = null;
+        if (ascii != null) {
+            note = str(R.string.link_nonascii_warning);
+            if (!ascii.isEmpty()) {
+                note += "\n" + ascii;
+            }
+        }
+        showText(activity, title, safe, "link", note);
+    }
+
+    private void showText(Activity activity, CharSequence title, final String value, final String copyLabel, String note) {
         TextView body = text(value, MONO);
         body.setTextIsSelectable(true);
         int p = dp(20);
         body.setPadding(p, dp(8), p, dp(8));
         android.widget.ScrollView sv = new android.widget.ScrollView(context);
-        sv.addView(body);
-        new AlertDialog.Builder(activity)
+        if (note == null) {
+            sv.addView(body);
+        } else {
+            LinearLayout col = vbox();
+            col.addView(body);
+            TextView warn = text(note, SMALL);
+            warn.setTextColor(color(R.color.arca_danger));
+            warn.setTextIsSelectable(true);
+            warn.setPadding(p, dp(4), p, dp(8));
+            col.addView(warn);
+            sv.addView(col);
+        }
+        showHardened(activity, new AlertDialog.Builder(activity)
             .setTitle(title)
             .setView(sv)
             .setPositiveButton(R.string.copy, new DialogInterface.OnClickListener() {
@@ -417,8 +469,7 @@ public final class Ui {
                     copy(copyLabel, value);
                 }
             })
-            .setNegativeButton(R.string.close, null)
-            .show();
+            .setNegativeButton(R.string.close, null));
     }
 
     /**
@@ -458,16 +509,15 @@ public final class Ui {
                 }
             });
         }
-        b.show();
+        showHardened(activity, b);
     }
 
     /** A plain message dialog. */
     public void showMessage(Activity activity, CharSequence title, CharSequence message) {
-        new AlertDialog.Builder(activity)
+        showHardened(activity, new AlertDialog.Builder(activity)
             .setTitle(title)
             .setMessage(message)
-            .setPositiveButton(R.string.close, null)
-            .show();
+            .setPositiveButton(R.string.close, null));
     }
 
     // ---- containers -------------------------------------------------------------------------

@@ -45,6 +45,9 @@ DYNAMIC_PREFIXES = (
     "macro_lang_", "action_", "notice_", "push_",
 )
 
+# The only permission the app may request: it shows the local, offline support reminder.
+ALLOWED_PERMISSION = "android.permission.POST_NOTIFICATIONS"
+
 problems = []
 
 
@@ -363,9 +366,21 @@ def main():
                     fail(f"android:{attr} (in {sorted(where)[0]}) does not exist in the minimum SDK and is not in NEWER_ATTRS")
 
     # 6. manifest sanity: no network, no storage; only local POST_NOTIFICATIONS allowed
-    for p in re.findall(r'<uses-permission\s+android:name="([^"]+)"', manifest):
-        if p != "android.permission.POST_NOTIFICATIONS":
-            fail(f"AndroidManifest.xml declares unexpected permission '{p}'; Arca only allows local POST_NOTIFICATIONS")
+    # Parsed, not grepped: every uses-permission* and permission* element counts, whatever the
+    # quoting, attribute order or suffix (uses-permission-sdk-23, uses-permission-sdk-m, ...).
+    android_name = "{http://schemas.android.com/apk/res/android}name"
+    try:
+        manifest_root = ET.parse(os.path.join(main_dir, "AndroidManifest.xml")).getroot()
+    except ET.ParseError as e:
+        manifest_root = None
+        fail(f"AndroidManifest.xml: not well-formed XML: {e}")
+    if manifest_root is not None:
+        for el in manifest_root.iter():
+            tag = el.tag if isinstance(el.tag, str) else ""
+            if tag.startswith("uses-permission") or tag.startswith("permission"):
+                p = el.get(android_name)
+                if tag != "uses-permission" or p != ALLOWED_PERMISSION:
+                    fail(f"AndroidManifest.xml declares <{tag} {p}>; Arca only allows <uses-permission {ALLOWED_PERMISSION}>")
     if "INTERNET" in manifest:
         fail("AndroidManifest.xml mentions INTERNET")
     if 'android:exported' not in manifest:

@@ -24,6 +24,13 @@ public final class Json {
     /** Deepest nesting accepted. */
     public static final int MAX_DEPTH = 64;
 
+    /**
+     * Largest document accepted as bytes (16 MiB). Native results are bounded by the engine, but a
+     * hostile or buggy one must not be able to exhaust the heap through the parser: the bytes
+     * become a String (twice the size) and then a tree of objects.
+     */
+    public static final int MAX_INPUT_BYTES = 16 << 20;
+
     /** Thrown for malformed or over-limit input. */
     public static final class JsonException extends RuntimeException {
         private static final long serialVersionUID = 1L;
@@ -44,6 +51,9 @@ public final class Json {
     public static Object parse(byte[] utf8) {
         if (utf8 == null) {
             throw new JsonException("null input", 0);
+        }
+        if (utf8.length > MAX_INPUT_BYTES) {
+            throw new JsonException("input too large (" + utf8.length + " bytes)", 0);
         }
         return parse(new String(utf8, StandardCharsets.UTF_8));
     }

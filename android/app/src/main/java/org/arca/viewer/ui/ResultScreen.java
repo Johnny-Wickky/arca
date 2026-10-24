@@ -586,7 +586,7 @@ public final class ResultScreen extends Screen {
             if (m.truncated || m.source.length() > MAX_SOURCE) {
                 card.addView(ui.text(R.string.macro_truncated, Ui.CAPTION));
             }
-            final String full = m.source;
+            final String full = Fmt.safe(m.source);
             card.addView(ui.space(6));
             card.addView(ui.button(R.string.copy_source, Ui.TEXT_ONLY, R.drawable.ic_copy, new View.OnClickListener() {
                 @Override
@@ -660,7 +660,7 @@ public final class ResultScreen extends Screen {
             card.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    ui.showText(act, ui.str(R.string.link_dialog_title), Fmt.safe(ref.target), "link");
+                    ui.showAddress(act, ui.str(R.string.link_dialog_title), ref.target);
                 }
             });
             rows.add(card);

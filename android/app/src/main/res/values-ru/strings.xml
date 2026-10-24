@@ -135,6 +135,7 @@
     <string name="links_note">Адреса, на которые ссылается документ. Arca никогда не переходит по ним. Нажмите на адрес, чтобы прочитать его целиком.</string>
     <string name="ref_auto">Загружается само</string>
     <string name="link_dialog_title">Адрес в документе</string>
+    <string name="link_nonascii_warning">Адрес содержит символы не из ASCII и может подделывать другой сайт. Хост в ASCII-виде (punycode):</string>
     <string name="meta_note">Сведения о том, кто и как создал документ. В документах часто остаются имена, пути и названия компьютеров, которыми вы не хотели бы делиться.</string>
     <string name="embedded_note">Файлы и объекты, хранящиеся внутри документа. Они только перечислены и никогда не открываются.</string>
     <string name="emb_file">Имя</string>
@@ -277,6 +278,9 @@
     <string name="settings_secure_desc">Скрывает приложение в списке недавних и запрещает снимки и запись экрана. Выключите, если нужно сделать снимок.</string>
     <string name="settings_reveal">Показывать скрытое по умолчанию</string>
     <string name="settings_reveal_desc">Скрытый текст, листы и слайды появятся в просмотре с пометкой. Переключить можно и там.</string>
+    <string name="settings_usage_reset">Сбросить локальные счётчики</string>
+    <string name="settings_usage_reset_desc">Очищает счётчики, которые хранятся только на этом устройстве: проверено документов, найдено угроз и Паспорт мецената. Ничего никуда не отправляется.</string>
+    <string name="usage_reset_done">Счётчики сброшены</string>
 
     <!-- Диагностика -->
     <string name="diag_engine">Движок</string>
@@ -313,6 +317,7 @@
     <string name="pages_position">Страница %1$d из %2$d</string>
     <string name="pages_loading">Рисуем страницу в песочнице…</string>
     <string name="pages_failed">Эту страницу нарисовать не вышло.</string>
+    <string name="pages_too_large">Страница слишком велика для показа</string>
     <string name="pages_note_truncated">Страница очень сложная, часть её не показана.</string>
     <string name="pages_note_approx">Градиенты и узоры показаны плоским цветом, картинки — серыми прямоугольниками (нажмите, чтобы открыть), шрифты заменены.</string>
     <string name="image_show">Показать картинку</string>
@@ -342,6 +347,7 @@
     <!-- Local Support Reminders (Zero-Network, Local Only) -->
     <string name="notif_channel_reminders">Напоминания</string>
     <string name="notif_channel_reminders_desc">Периодические напоминания о поддержке проекта</string>
+    <string name="notif_public_text">Напоминание от Arca</string>
     <string name="settings_reminders_title">Напоминания</string>
     <string name="settings_reminders">Напоминать о поддержке</string>
     <string name="settings_reminders_desc">Ненавязчивое напоминание раз в неделю о поддержке студентов-разработчиков. Не беспокоит ночью.</string>

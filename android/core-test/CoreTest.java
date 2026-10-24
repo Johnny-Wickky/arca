@@ -69,6 +69,16 @@ public final class CoreTest {
         eq("\uD83D\uDE00", Json.parse("\"\uD83D\uDE00\""), "raw astral character");
         eq("привет", Json.parse("\"привет\""), "raw cyrillic");
         eq("привет", Json.parse("\"привет\"".getBytes(StandardCharsets.UTF_8)), "utf-8 bytes");
+        byte[] atLimit = new byte[Json.MAX_INPUT_BYTES];
+        java.util.Arrays.fill(atLimit, (byte) ' ');
+        System.arraycopy("[]".getBytes(StandardCharsets.UTF_8), 0, atLimit, 0, 2);
+        check(Json.parse(atLimit) instanceof List, "input at the byte limit is parsed");
+        try {
+            Json.parse(new byte[Json.MAX_INPUT_BYTES + 1]);
+            check(false, "input over the byte limit was accepted");
+        } catch (Json.JsonException e) {
+            check(true, "input over the byte limit is refused before it is decoded");
+        }
         Object o = Json.parse("{\"a\":[1,2,{\"b\":null}],\"c\":\"d\"}");
         check(o instanceof Map, "object");
         Map<String, Object> m = Json.obj(o);
@@ -136,6 +146,45 @@ public final class CoreTest {
         eq("", Fmt.safe(null), "null");
         String huge = new String(new char[Fmt.MAX_DISPLAY + 50]).replace('\0', 'x');
         eq(Fmt.MAX_DISPLAY + 1, Fmt.safe(huge).length(), "very long text is cut with an ellipsis");
+
+        // Whole Unicode categories and blank-looking characters, by code point.
+        eq("‹U+2028›", Fmt.safe(" "), "line separator is made visible");
+        eq("‹U+2029›", Fmt.safe(" "), "paragraph separator is made visible");
+        eq("‹U+3164›", Fmt.safe("ㅤ"), "Hangul filler is made visible");
+        eq("‹U+FFA0›", Fmt.safe("ﾠ"), "halfwidth Hangul filler is made visible");
+        eq("‹U+2800›", Fmt.safe("⠀"), "Braille blank is made visible");
+        eq("‹U+E000›", Fmt.safe(""), "private use is made visible");
+        eq("‹U+0378›", Fmt.safe("͸"), "unassigned code point is made visible");
+        eq("‹U+FE0F›", Fmt.safe("️"), "variation selector is made visible");
+        eq("‹U+E0100›", Fmt.safe(new String(Character.toChars(0xE0100))), "supplementary variation selector is one marker");
+        eq("a‹U+E0041›‹U+E007F›b",
+            Fmt.safe("a" + new String(Character.toChars(0xE0041)) + new String(Character.toChars(0xE007F)) + "b"),
+            "Unicode tags are made visible, one marker each");
+        eq("‹U+D800›", Fmt.safe("\uD800"), "lone surrogate is made visible");
+        eq("x😀y", Fmt.safe("x😀y"), "a surrogate pair (emoji) is kept whole");
+        String cut = Fmt.safe("😀" + huge);
+        check(!cut.isEmpty() && cut.endsWith("…"), "long text with a pair at the start is cut");
+        String edge = new String(new char[Fmt.MAX_DISPLAY - 1]).replace('\0', 'x') + "😀yy";
+        check(!Character.isHighSurrogate(Fmt.safe(edge).charAt(Fmt.safe(edge).length() - 2)), "the cut never leaves half a pair");
+
+        // Addresses: only a non-ASCII host is flagged, and it is shown in punycode.
+        eq(null, Fmt.asciiHost("https://example.com/path"), "ASCII host is not flagged");
+        eq(null, Fmt.asciiHost("https://user@example.com:8080/é"), "non-ASCII path alone is not flagged");
+        eq(null, Fmt.asciiHost("mailto:someone@example.com"), "no host, no flag");
+        eq("xn--bcher-kva.example", Fmt.asciiHost("https://bücher.example/x"), "punycode host");
+        eq("xn--pple-43d.com", Fmt.asciiHost("http://аpple.com"), "Cyrillic a in apple.com is flagged");
+        eq("xn--pple-43d.com", Fmt.asciiHost("http://u:p@аpple.com:81?q=1#f"), "userinfo, port and query are skipped");
+        eq(null, Fmt.asciiHost(null), "null address");
+
+        // The sterile name goes by code point too.
+        check(!Fmt.sterileName("a⠀bㅤ.docx", "docx").contains("⠀"), "blank characters do not survive in a file name");
+        eq("a_b.sterile.docx", Fmt.sterileName("a⠀b.docx", "docx"), "a blank character becomes an underscore");
+
+        // The password bytes: exact UTF-8, a lone surrogate is '?', the protocol limit holds.
+        eq("hé€😀", new String(Fmt.utf8("hé€😀".toCharArray()), java.nio.charset.StandardCharsets.UTF_8), "utf8 round trip");
+        eq(1 + 2 + 3 + 4, Fmt.utf8("hé€😀".toCharArray()).length, "utf8 size is exact");
+        eq("?", new String(Fmt.utf8(new char[] {'\uD800'}), java.nio.charset.StandardCharsets.UTF_8), "lone surrogate in a password");
+        eq(1024, Fmt.utf8(new char[3000]).length, "password cut at the protocol limit");
 
         eq("abc", Fmt.clip("abc", 5), "clip short");
         eq("ab\u2026", Fmt.clip("abcdef", 3), "clip");

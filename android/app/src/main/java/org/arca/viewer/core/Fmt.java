@@ -28,18 +28,24 @@ public final class Fmt {
             return "";
         }
         int n = Math.min(s.length(), MAX_DISPLAY);
+        if (n < s.length() && Character.isHighSurrogate(s.charAt(n - 1))) {
+            n--; // never cut a pair in half
+        }
         StringBuilder sb = null;
-        for (int i = 0; i < n; i++) {
-            char c = s.charAt(i);
-            if (isSuspicious(c)) {
+        // By code point: a character outside the BMP (a tag, a variation selector) is one unit.
+        for (int i = 0; i < n; ) {
+            int cp = s.codePointAt(i);
+            int len = Character.charCount(cp);
+            if (isSuspicious(cp)) {
                 if (sb == null) {
                     sb = new StringBuilder(n + 16);
                     sb.append(s, 0, i);
                 }
-                sb.append("‹U+").append(String.format(Locale.ROOT, "%04X", (int) c)).append('›');
+                sb.append("‹U+").append(String.format(Locale.ROOT, "%04X", cp)).append('›');
             } else if (sb != null) {
-                sb.append(c);
+                sb.appendCodePoint(cp);
             }
+            i += len;
         }
         String out = sb == null ? s.substring(0, n) : sb.toString();
         return n < s.length() ? out + "…" : out;
@@ -50,12 +56,53 @@ public final class Fmt {
      * caller can wipe both arrays. At most 1024 bytes are returned (the protocol's limit).
      */
     public static byte[] utf8(char[] chars) {
-        java.nio.ByteBuffer bb = java.nio.charset.StandardCharsets.UTF_8.encode(java.nio.CharBuffer.wrap(chars));
-        byte[] out = new byte[Math.min(bb.remaining(), 1024)];
-        bb.get(out);
-        if (bb.hasArray()) {
-            java.util.Arrays.fill(bb.array(), (byte) 0);
+        // Encoded by hand into a buffer of exactly the needed size: the library encoder allocates
+        // an oversized array of its own that the caller could never wipe. A lone surrogate
+        // becomes '?', as with the library's replacement.
+        int need = 0;
+        for (int i = 0; i < chars.length; i++) {
+            char c = chars[i];
+            if (c < 0x80) {
+                need += 1;
+            } else if (c < 0x800) {
+                need += 2;
+            } else if (Character.isHighSurrogate(c) && i + 1 < chars.length && Character.isLowSurrogate(chars[i + 1])) {
+                need += 4;
+                i++;
+            } else if (Character.isSurrogate(c)) {
+                need += 1;
+            } else {
+                need += 3;
+            }
         }
+        byte[] all = new byte[need];
+        int o = 0;
+        for (int i = 0; i < chars.length; i++) {
+            char c = chars[i];
+            if (c < 0x80) {
+                all[o++] = (byte) c;
+            } else if (c < 0x800) {
+                all[o++] = (byte) (0xC0 | (c >> 6));
+                all[o++] = (byte) (0x80 | (c & 0x3F));
+            } else if (Character.isHighSurrogate(c) && i + 1 < chars.length && Character.isLowSurrogate(chars[i + 1])) {
+                int cp = Character.toCodePoint(c, chars[++i]);
+                all[o++] = (byte) (0xF0 | (cp >> 18));
+                all[o++] = (byte) (0x80 | ((cp >> 12) & 0x3F));
+                all[o++] = (byte) (0x80 | ((cp >> 6) & 0x3F));
+                all[o++] = (byte) (0x80 | (cp & 0x3F));
+            } else if (Character.isSurrogate(c)) {
+                all[o++] = (byte) '?';
+            } else {
+                all[o++] = (byte) (0xE0 | (c >> 12));
+                all[o++] = (byte) (0x80 | ((c >> 6) & 0x3F));
+                all[o++] = (byte) (0x80 | (c & 0x3F));
+            }
+        }
+        if (all.length <= 1024) {
+            return all;
+        }
+        byte[] out = java.util.Arrays.copyOf(all, 1024);
+        java.util.Arrays.fill(all, (byte) 0);
         return out;
     }
 
@@ -79,21 +126,83 @@ public final class Fmt {
         return digit;
     }
 
-    private static boolean isSuspicious(char c) {
-        if (c == '\t' || c == '\n') {
+    /**
+     * Whether a code point must not be shown as it is: it is invisible, reorders or joins text, or
+     * has no business in a name or an address. Whole Unicode categories are covered (controls,
+     * format characters, private use, unassigned, lone surrogates, line and paragraph separators),
+     * plus the blank-looking letters and selectors that are not in those categories.
+     */
+    static boolean isSuspicious(int cp) {
+        if (cp == '\t' || cp == '\n') {
             return false;
         }
-        if (c < 0x20 || (c >= 0x7F && c <= 0x9F)) {
-            return true; // C0 / C1 controls (a carriage return can overwrite a line start)
+        switch (Character.getType(cp)) {
+            case Character.CONTROL: // C0 / C1 (a carriage return can overwrite a line start)
+            case Character.FORMAT: // zero-width, directional, tags, invisible operators, BOM, annotations
+            case Character.PRIVATE_USE:
+            case Character.UNASSIGNED:
+            case Character.SURROGATE: // a lone one
+            case Character.LINE_SEPARATOR: // U+2028
+            case Character.PARAGRAPH_SEPARATOR: // U+2029
+                return true;
+            default:
+                break;
         }
-        return c == 0x061C // Arabic letter mark
-            || c == 0x180E // Mongolian vowel separator
-            || (c >= 0x200B && c <= 0x200F) // zero-width and directional marks
-            || (c >= 0x202A && c <= 0x202E) // embeddings and overrides
-            || (c >= 0x2060 && c <= 0x2064) // word joiner and invisible operators
-            || (c >= 0x2066 && c <= 0x206F) // isolates and deprecated format characters
-            || c == 0xFEFF // BOM / zero-width no-break space
-            || (c >= 0xFFF9 && c <= 0xFFFB); // interlinear annotation
+        return cp == 0x061C // Arabic letter mark
+            || cp == 0x115F || cp == 0x1160 // Hangul Choseong / Jungseong fillers
+            || cp == 0x3164 || cp == 0xFFA0 // Hangul filler, halfwidth Hangul filler
+            || cp == 0x2800 // Braille blank
+            || (cp >= 0x180B && cp <= 0x180F) // Mongolian free variation selectors
+            || (cp >= 0xFE00 && cp <= 0xFE0F) // variation selectors
+            || (cp >= 0xE0000 && cp <= 0xE007F) // Unicode tags
+            || (cp >= 0xE0100 && cp <= 0xE01EF); // variation selectors supplement
+    }
+
+    /**
+     * The host of {@code url} in its ASCII (punycode) form when the host has non-ASCII characters
+     * (a look-alike of another site, say), {@code ""} when it has some but cannot be converted, and
+     * {@code null} when the host is plain ASCII or there is none. Nothing is resolved or fetched.
+     */
+    public static String asciiHost(String url) {
+        if (url == null) {
+            return null;
+        }
+        int scheme = url.indexOf("://");
+        int start = scheme < 0 ? 0 : scheme + 3;
+        int end = url.length();
+        for (int i = start; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c == '/' || c == '?' || c == '#' || c == '\\') {
+                end = i;
+                break;
+            }
+        }
+        String host = url.substring(start, end);
+        int at = host.lastIndexOf('@');
+        if (at >= 0) {
+            host = host.substring(at + 1);
+        }
+        if (!host.startsWith("[")) {
+            int colon = host.lastIndexOf(':');
+            if (colon >= 0) {
+                host = host.substring(0, colon);
+            }
+        }
+        boolean ascii = true;
+        for (int i = 0; i < host.length(); i++) {
+            if (host.charAt(i) > 0x7F) {
+                ascii = false;
+                break;
+            }
+        }
+        if (ascii) {
+            return null;
+        }
+        try {
+            return java.net.IDN.toASCII(host, java.net.IDN.ALLOW_UNASSIGNED);
+        } catch (IllegalArgumentException e) {
+            return "";
+        }
     }
 
     /** {@code s} cut to {@code max} characters with an ellipsis (never splits a surrogate pair). */
@@ -223,12 +332,13 @@ public final class Fmt {
             base = base.substring(0, dot);
         }
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < base.length() && sb.length() < 80; i++) {
-            char c = base.charAt(i);
-            if (isSuspicious(c) || "/\\:*?\"<>|".indexOf(c) >= 0) {
+        for (int i = 0; i < base.length() && sb.length() < 80; ) {
+            int cp = base.codePointAt(i);
+            i += Character.charCount(cp);
+            if (isSuspicious(cp) || (cp < 0x80 && "/\\:*?\"<>|".indexOf(cp) >= 0)) {
                 sb.append('_');
             } else {
-                sb.append(c);
+                sb.appendCodePoint(cp);
             }
         }
         String name = sb.toString().trim();
