@@ -200,3 +200,24 @@ fn self_test_and_static_views() {
     assert!(license_text(-1).is_none());
     assert!(text(Some(release_info())).contains("\"blockers\""));
 }
+
+#[test]
+fn megabyte_figures_from_the_device_never_overflow() {
+    assert_eq!(mib_to_bytes(0, 7), 7);
+    assert_eq!(mib_to_bytes(-3, 7), 7);
+    assert_eq!(mib_to_bytes(1, 7), 1 << 20);
+    // The largest figure an `i32` can carry is 2 GiB worth of MiB: 2^31 << 20 does not fit
+    // a 32-bit `usize`. It saturates (the engine clamps to its own ceiling), it never wraps.
+    let huge = mib_to_bytes(i32::MAX, 7);
+    assert!(huge >= usize::try_from(u32::MAX).unwrap_or(usize::MAX).min(1 << 31));
+}
+
+#[test]
+fn a_module_that_is_not_the_recorded_one_is_refused() {
+    use arca_engine::{Engine, EngineConfig};
+    let wasm = vec![0u8, 1, 2, 3];
+    let digest = arca_engine::guest_digest_of(&wasm);
+    assert!(Engine::pinned(wasm.clone(), &digest, EngineConfig::default()).is_ok());
+    let other = arca_engine::guest_digest_of(b"another module");
+    assert_eq!(Engine::pinned(wasm, &other, EngineConfig::default()).unwrap_err(), Status::Fault);
+}

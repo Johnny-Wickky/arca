@@ -63,6 +63,19 @@ use crate::json::JsonWriter;
 const MAX_COL_CHARS: usize = 40;
 /// Narrowest column, in characters.
 const MIN_COL_CHARS: usize = 4;
+/// Most columns a grid header reports.
+const MAX_GRID_COLS: usize = 16_384;
+/// Bytes of column widths kept for all grids of a preview together.
+const MAX_WIDTH_BYTES: usize = 4 << 20;
+/// Longest page of preview items, as JSON, the engine will hand out.
+pub const MAX_PAGE_JSON_BYTES: usize = 8 << 20;
+/// Longest X-ray report, as JSON, the engine will hand out.
+pub const MAX_REPORT_JSON_BYTES: usize = 32 << 20;
+
+/// Characters kept of a location, a name or a token the app shows as a fact.
+const LABEL_CHARS: usize = 512;
+/// Characters kept of a detail, a target or a metadata value.
+const DETAIL_CHARS: usize = 2_048;
 
 fn u64_of(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
@@ -104,7 +117,7 @@ fn strings(w: &mut JsonWriter, key: &str, items: &[String]) {
     w.key(key);
     w.begin_array();
     for s in items {
-        w.string(s);
+        w.label(s, LABEL_CHARS);
     }
     w.end_array();
 }
@@ -112,13 +125,23 @@ fn strings(w: &mut JsonWriter, key: &str, items: &[String]) {
 /// Writes the X-ray report as JSON.
 #[must_use]
 pub fn report_json(report: &XRayReport) -> Vec<u8> {
-    let mut w = JsonWriter::new();
+    report_json_within(report, usize::MAX).unwrap_or_default()
+}
+
+/// As [`report_json`], or `None` if the document would be longer than `max_bytes`.
+///
+/// The report is built from what the guest sent (every list and string bounded by the wire
+/// limits, but together far more than an app can take); the writer stops at the limit instead of
+/// growing to the sum of them.
+#[must_use]
+pub fn report_json_within(report: &XRayReport, max_bytes: usize) -> Option<Vec<u8>> {
+    let mut w = JsonWriter::with_limit(max_bytes);
     w.begin_object();
     w.field_name("format", &report.format);
     w.field_name("family", &report.format.family());
     w.field_name("verdict", &report.verdict);
-    w.field_str("rejection", &report.rejection);
-    w.field_str("sha256", &report.sha256);
+    w.field_label("rejection", &report.rejection, DETAIL_CHARS);
+    w.field_label("sha256", &report.sha256, LABEL_CHARS);
     let c = counters(report);
     w.key("counters");
     w.begin_object();
@@ -134,8 +157,8 @@ pub fn report_json(report: &XRayReport) -> Vec<u8> {
         w.field_str("kind", f.kind.id());
         w.field_name("cat", &f.kind.category());
         w.field_name("sev", &f.severity);
-        w.field_str("loc", &f.location);
-        w.field_str("detail", &f.detail);
+        w.field_label("loc", &f.location, LABEL_CHARS);
+        w.field_label("detail", &f.detail, DETAIL_CHARS);
         w.field_bool("blocked", f.neutralized);
         w.end_object();
     }
@@ -146,8 +169,9 @@ pub fn report_json(report: &XRayReport) -> Vec<u8> {
     for m in &report.macros {
         w.begin_object();
         w.field_name("lang", &m.language);
-        w.field_str("loc", &m.location);
-        w.field_str("name", &m.name);
+        w.field_label("loc", &m.location, LABEL_CHARS);
+        w.field_label("name", &m.name, LABEL_CHARS);
+        // The source is shown as code: its line breaks are its structure.
         w.field_str("source", &m.source);
         w.field_bool("truncated", m.truncated);
         strings(&mut w, "autoExec", &m.auto_exec);
@@ -161,10 +185,10 @@ pub fn report_json(report: &XRayReport) -> Vec<u8> {
     w.begin_array();
     for r in &report.external_refs {
         w.begin_object();
-        w.field_str("target", &r.target);
+        w.field_label("target", &r.target, DETAIL_CHARS);
         w.field_name("kind", &r.kind);
         w.field_name("class", &r.class);
-        w.field_str("loc", &r.location);
+        w.field_label("loc", &r.location, LABEL_CHARS);
         w.field_bool("auto", r.auto_load);
         w.end_object();
     }
@@ -175,9 +199,9 @@ pub fn report_json(report: &XRayReport) -> Vec<u8> {
     for m in &report.metadata {
         w.begin_object();
         w.field_name("key", &m.key);
-        w.field_str("name", &m.name);
-        w.field_str("value", &m.value);
-        w.field_str("src", &m.source);
+        w.field_label("name", &m.name, LABEL_CHARS);
+        w.field_label("value", &m.value, DETAIL_CHARS);
+        w.field_label("src", &m.source, LABEL_CHARS);
         w.end_object();
     }
     w.end_array();
@@ -186,13 +210,13 @@ pub fn report_json(report: &XRayReport) -> Vec<u8> {
     w.begin_array();
     for e in &report.embedded {
         w.begin_object();
-        w.field_str("loc", &e.location);
+        w.field_label("loc", &e.location, LABEL_CHARS);
         w.field_name("kind", &e.kind);
-        w.field_str("class", &e.class_name);
-        w.field_str("clsid", &e.clsid);
-        w.field_str("file", &e.file_name);
+        w.field_label("class", &e.class_name, LABEL_CHARS);
+        w.field_label("clsid", &e.clsid, LABEL_CHARS);
+        w.field_label("file", &e.file_name, LABEL_CHARS);
         w.field_u64("size", e.size);
-        w.field_str("sha256", &e.sha256);
+        w.field_label("sha256", &e.sha256, LABEL_CHARS);
         w.end_object();
     }
     w.end_array();
@@ -205,7 +229,7 @@ pub fn report_json(report: &XRayReport) -> Vec<u8> {
     w.field_u64("nesting", report.stats.max_nesting);
     w.end_object();
     w.end_object();
-    w.finish()
+    w.finish_within()
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +291,7 @@ pub fn page_json(page: &PageModel) -> Vec<u8> {
                 for v in m {
                     w.f32(*v);
                 }
-                w.string(label);
+                w.label(label, LABEL_CHARS);
                 w.u64(u64::from(*id));
             }
             Prim::Save => w.string("S"),
@@ -298,14 +322,14 @@ pub fn sanitized_json(doc: &SanitizedDocument) -> Vec<u8> {
     for a in &doc.actions {
         w.begin_object();
         w.field_name("kind", &a.kind);
-        w.field_str("target", &a.target);
+        w.field_label("target", &a.target, DETAIL_CHARS);
         w.end_object();
     }
     w.end_array();
     w.key("verification");
     w.begin_object();
     w.field_name("verdict", &doc.verification.verdict);
-    w.field_str("sha256", &doc.verification.sha256);
+    w.field_label("sha256", &doc.verification.sha256, LABEL_CHARS);
     w.field_u64("findings", u64_of(doc.verification.findings.len()));
     w.end_object();
     w.end_object();
@@ -315,6 +339,15 @@ pub fn sanitized_json(doc: &SanitizedDocument) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 // Preview
 // ---------------------------------------------------------------------------
+
+/// Why a page of preview items was not produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageError {
+    /// The preview has no such section.
+    NoSuchSection,
+    /// The items, as JSON, are longer than the limit.
+    TooLarge,
+}
 
 /// A preview together with the tables that make paging by *item* cheap.
 #[derive(Debug)]
@@ -329,6 +362,14 @@ struct SectionIndex {
     starts: Vec<u64>,
     /// Column widths (characters) of the grid blocks, by block index.
     widths: HashMap<usize, Vec<u8>>,
+    /// Number of columns of the table blocks (the widest row), by block index. Computed once:
+    /// a page of a table with a million rows must not read the million rows to learn it.
+    columns: HashMap<usize, usize>,
+}
+
+/// Columns of a table: the widest row, counting spans, and at least one.
+fn table_columns(t: &arca_preview::model::Table) -> usize {
+    t.rows.iter().map(row_span).max().unwrap_or(1).max(1)
 }
 
 fn items_of(block: &Block) -> u64 {
@@ -339,9 +380,32 @@ fn items_of(block: &Block) -> u64 {
     }
 }
 
-fn grid_widths(g: &Grid) -> Vec<u8> {
-    let cols = usize::try_from(g.cols).unwrap_or(usize::MAX).min(16_384);
-    let mut widths = vec![MIN_COL_CHARS; cols];
+/// Columns a grid header reports: what the grid declares, at most [`MAX_GRID_COLS`].
+fn declared_cols(g: &Grid) -> usize {
+    usize::try_from(g.cols).unwrap_or(usize::MAX).min(MAX_GRID_COLS)
+}
+
+/// Widths of the columns that hold cells, `budget` permitting.
+///
+/// A grid declares how many columns it has, and a hostile one declares 16 384 whatever it holds,
+/// so only the columns up to the last one with a cell are measured and kept; the header pads the
+/// rest with the minimum width when it is written. The widths of all grids of a preview share
+/// `budget` (bytes); a grid that no longer fits keeps none and is shown at minimum width.
+fn grid_widths(g: &Grid, budget: &mut usize) -> Vec<u8> {
+    let declared = declared_cols(g);
+    let used = g
+        .rows
+        .iter()
+        .flat_map(|row| row.cells.iter())
+        .filter_map(|cell| usize::try_from(cell.col).ok())
+        .filter(|col| *col < declared)
+        .max()
+        .map_or(0, |col| col + 1);
+    if used > *budget {
+        return Vec::new();
+    }
+    *budget -= used;
+    let mut widths = vec![MIN_COL_CHARS; used];
     for row in &g.rows {
         for cell in &row.cells {
             let Ok(col) = usize::try_from(cell.col) else { continue };
@@ -358,6 +422,7 @@ impl PreviewIndex {
     /// Indexes `preview`.
     #[must_use]
     pub fn new(preview: Preview) -> Self {
+        let mut width_budget = MAX_WIDTH_BYTES;
         let sections = preview
             .sections
             .iter()
@@ -366,8 +431,14 @@ impl PreviewIndex {
                 let mut total = 0u64;
                 idx.starts.push(0);
                 for (b, block) in s.blocks.iter().enumerate() {
-                    if let Block::Grid(g) = block {
-                        idx.widths.insert(b, grid_widths(g));
+                    match block {
+                        Block::Grid(g) => {
+                            idx.widths.insert(b, grid_widths(g, &mut width_budget));
+                        }
+                        Block::Table(t) => {
+                            idx.columns.insert(b, table_columns(t));
+                        }
+                        Block::Para(_) | Block::Image(_) | Block::Rule => {}
                     }
                     total = total.saturating_add(items_of(block));
                     idx.starts.push(total);
@@ -382,6 +453,17 @@ impl PreviewIndex {
     #[must_use]
     pub const fn preview(&self) -> &Preview {
         &self.preview
+    }
+
+    /// Bytes the index holds besides the preview itself (offsets and column widths).
+    #[must_use]
+    pub fn index_bytes(&self) -> usize {
+        self.sections
+            .iter()
+            .map(|s| {
+                s.starts.len() * size_of::<u64>() + s.widths.values().map(Vec::len).sum::<usize>()
+            })
+            .sum()
     }
 
     /// Number of items in `section`.
@@ -403,7 +485,7 @@ impl PreviewIndex {
         for (i, s) in p.sections.iter().enumerate() {
             w.begin_object();
             w.field_name("kind", &s.kind);
-            w.field_str("name", &s.name);
+            w.field_label("name", &s.name, LABEL_CHARS);
             w.field_bool("hidden", s.hidden);
             w.field_u64("items", self.item_count(i));
             w.end_object();
@@ -415,7 +497,7 @@ impl PreviewIndex {
             w.begin_object();
             w.field_name("kind", &n.kind);
             w.field_u64("count", n.count);
-            w.field_str("detail", &n.detail);
+            w.field_label("detail", &n.detail, DETAIL_CHARS);
             w.end_object();
         }
         w.end_array();
@@ -433,14 +515,29 @@ impl PreviewIndex {
     /// `None` if the section does not exist; a range past the end gives `[]`.
     #[must_use]
     pub fn items_json(&self, section: usize, from: u64, count: usize) -> Option<Vec<u8>> {
-        let sec = self.preview.sections.get(section)?;
-        let idx = self.sections.get(section)?;
+        self.items_json_within(section, from, count, usize::MAX).ok()
+    }
+
+    /// As [`PreviewIndex::items_json`], but the array may not be longer than `max_bytes`: a page
+    /// of cells with megabytes of text each is refused instead of built.
+    ///
+    /// # Errors
+    /// [`PageError::NoSuchSection`], or [`PageError::TooLarge`] when the items do not fit.
+    pub fn items_json_within(
+        &self,
+        section: usize,
+        from: u64,
+        count: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, PageError> {
+        let sec = self.preview.sections.get(section).ok_or(PageError::NoSuchSection)?;
+        let idx = self.sections.get(section).ok_or(PageError::NoSuchSection)?;
         let total = idx.starts.last().copied().unwrap_or(0);
         let end = from.saturating_add(u64_of(count)).min(total);
-        let mut w = JsonWriter::new();
+        let mut w = JsonWriter::with_limit(max_bytes);
         w.begin_array();
         let mut pos = from;
-        while pos < end {
+        while pos < end && !w.is_over() {
             let b = idx.starts.partition_point(|&s| s <= pos).saturating_sub(1);
             let (Some(&start), Some(&next)) = (idx.starts.get(b), idx.starts.get(b + 1)) else {
                 break;
@@ -451,11 +548,11 @@ impl PreviewIndex {
             if take == 0 {
                 break;
             }
-            write_items(&mut w, block, idx.widths.get(&b), offset, take);
+            write_items(&mut w, block, (idx.widths.get(&b), idx.columns.get(&b)), offset, take);
             pos += take;
         }
         w.end_array();
-        Some(w.finish())
+        w.finish_within().ok_or(PageError::TooLarge)
     }
 
     /// Section accessor for tests and callers that need the typed value.
@@ -465,13 +562,16 @@ impl PreviewIndex {
     }
 }
 
+/// Writes `take` items of `block` from item `offset`. `shape` is what the index precomputed for
+/// the block: the column widths of a grid, the column count of a table.
 fn write_items(
     w: &mut JsonWriter,
     block: &Block,
-    widths: Option<&Vec<u8>>,
+    shape: (Option<&Vec<u8>>, Option<&usize>),
     offset: u64,
     take: u64,
 ) {
+    let (widths, columns) = shape;
     let off = usize::try_from(offset).unwrap_or(usize::MAX);
     let n = usize::try_from(take).unwrap_or(usize::MAX);
     match block {
@@ -488,7 +588,7 @@ fn write_items(
             w.end_object();
         }
         Block::Table(t) => {
-            let columns = t.rows.iter().map(row_span).max().unwrap_or(1).max(1);
+            let columns = columns.copied().unwrap_or_else(|| table_columns(t));
             let last = t.rows.len().saturating_sub(1);
             for (i, row) in t.rows.iter().enumerate().skip(off).take(n) {
                 table_row(w, row, columns, i == 0, i == last);
@@ -558,8 +658,16 @@ fn grid_header(w: &mut JsonWriter, g: &Grid, widths: Option<&Vec<u8>>) {
     w.field_u64("cols", u64::from(g.cols));
     w.key("w");
     w.begin_array();
+    // Measured columns first; the columns past them (and all of them when the widths were not
+    // kept) are at the minimum.
+    let kept = widths.map_or(0, |v| v.len());
     for width in widths.into_iter().flatten() {
         w.u64(u64::from(*width));
+    }
+    if widths.is_some() {
+        for _ in kept..declared_cols(g) {
+            w.u64(u64_of(MIN_COL_CHARS));
+        }
     }
     w.end_array();
     w.field_u64("rows", u64_of(g.rows.len()));
@@ -570,8 +678,8 @@ fn grid_header(w: &mut JsonWriter, g: &Grid, widths: Option<&Vec<u8>>) {
 fn image(w: &mut JsonWriter, i: &ImageInfo) {
     w.begin_object();
     w.field_str("k", "i");
-    w.field_str("alt", &i.alt);
-    w.field_str("media", &i.media);
+    w.field_label("alt", &i.alt, DETAIL_CHARS);
+    w.field_label("media", &i.media, LABEL_CHARS);
     w.field_u64("bytes", i.bytes);
     w.field_bool("ext", i.external);
     if i.id != IMAGE_NONE {
@@ -844,13 +952,13 @@ pub fn image_json(img: &arca_image::Image) -> Vec<u8> {
         None => w.null(),
         Some(e) => {
             w.begin_object();
-            w.field_str("make", &e.make);
-            w.field_str("model", &e.model);
-            w.field_str("software", &e.software);
-            w.field_str("datetime", &e.datetime);
-            w.field_str("artist", &e.artist);
-            w.field_str("copyright", &e.copyright);
-            w.field_str("owner", &e.owner);
+            w.field_label("make", &e.make, LABEL_CHARS);
+            w.field_label("model", &e.model, LABEL_CHARS);
+            w.field_label("software", &e.software, LABEL_CHARS);
+            w.field_label("datetime", &e.datetime, LABEL_CHARS);
+            w.field_label("artist", &e.artist, LABEL_CHARS);
+            w.field_label("copyright", &e.copyright, LABEL_CHARS);
+            w.field_label("owner", &e.owner, LABEL_CHARS);
             w.field_u64("orientation", u64::from(e.orientation));
             w.field_bool("serial", e.serial);
             w.field_bool("makerNote", e.maker_note);

@@ -316,6 +316,9 @@ fn overlap_with_data_descriptor_style_headers_is_rejected() {
     let b_off = u32::try_from(out.len()).unwrap();
     local(&mut out, &b);
     let cd_offset = u32::try_from(out.len()).unwrap();
+    // The writer also filled the sizes of the local header, so only the layout can object.
+    out[18..22].copy_from_slice(&(cd_offset - 35).to_le_bytes());
+    out[22..26].copy_from_slice(&(cd_offset - 35).to_le_bytes());
     let mut cd = Vec::new();
     let a = Raw { usize_: cd_offset - 35, ..Raw::stored(b"a.xml", b"") };
     central(&mut cd, &a, 0, cd_offset - 35);
@@ -413,4 +416,330 @@ fn entry_count_limit() {
     let bytes = build(&[], &members, &[]);
     let limits = ZipLimits { max_entries: 5, ..ZipLimits::default() };
     assert!(matches!(ZipArchive::parse(&bytes, limits), Err(ZipError::TooManyEntries { .. })));
+}
+
+// ---------------------------------------------------------------------------
+// Hostile structure: hand-assembled members with full control over both headers
+// ---------------------------------------------------------------------------
+
+/// A member whose local header, central header, extras, comment and trailer are free.
+#[derive(Clone)]
+struct Spec {
+    raw: Raw,
+    local_flags: u16,
+    /// `(crc, compressed, uncompressed)` as written in the local header.
+    local_sizes: (u32, u32, u32),
+    local_extra: Vec<u8>,
+    central_extra: Vec<u8>,
+    comment: Vec<u8>,
+    /// Bytes written straight after the payload (a data descriptor, or garbage).
+    after: Vec<u8>,
+    central_csize: u32,
+}
+
+impl Spec {
+    fn new(raw: Raw) -> Self {
+        let csize = u32::try_from(raw.payload.len()).unwrap();
+        Self {
+            local_sizes: (raw.crc, csize, raw.usize_),
+            central_csize: csize,
+            raw,
+            local_flags: 0,
+            local_extra: Vec::new(),
+            central_extra: Vec::new(),
+            comment: Vec::new(),
+            after: Vec::new(),
+        }
+    }
+}
+
+fn extra_field(id: u16, body: &[u8]) -> Vec<u8> {
+    let mut e = Vec::new();
+    p16(&mut e, id);
+    p16(&mut e, u16::try_from(body.len()).unwrap());
+    e.extend_from_slice(body);
+    e
+}
+
+fn unicode_path_field(header_name: &[u8], unicode: &[u8], good_crc: bool) -> Vec<u8> {
+    let mut body = vec![1u8];
+    let crc = arca_digest::crc32(header_name);
+    p32(&mut body, if good_crc { crc } else { !crc });
+    body.extend_from_slice(unicode);
+    extra_field(0x7075, &body)
+}
+
+fn assemble(members: &[Spec], archive_comment: &[u8], trailer: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut offsets = Vec::new();
+    for m in members {
+        offsets.push(u32::try_from(out.len()).unwrap());
+        p32(&mut out, 0x0403_4b50);
+        p16(&mut out, 20);
+        p16(&mut out, m.local_flags);
+        p16(&mut out, m.raw.method);
+        p16(&mut out, 0);
+        p16(&mut out, 0x21);
+        p32(&mut out, m.local_sizes.0);
+        p32(&mut out, m.local_sizes.1);
+        p32(&mut out, m.local_sizes.2);
+        p16(&mut out, u16::try_from(m.raw.name.len()).unwrap());
+        p16(&mut out, u16::try_from(m.local_extra.len()).unwrap());
+        out.extend_from_slice(&m.raw.name);
+        out.extend_from_slice(&m.local_extra);
+        out.extend_from_slice(&m.raw.payload);
+        out.extend_from_slice(&m.after);
+    }
+    let cd_offset = u32::try_from(out.len()).unwrap();
+    let mut cd = Vec::new();
+    for (m, off) in members.iter().zip(&offsets) {
+        p32(&mut cd, 0x0201_4b50);
+        p16(&mut cd, m.raw.made_by);
+        p16(&mut cd, 20);
+        p16(&mut cd, m.local_flags);
+        p16(&mut cd, m.raw.method);
+        p16(&mut cd, 0);
+        p16(&mut cd, 0x21);
+        p32(&mut cd, m.raw.crc);
+        p32(&mut cd, m.central_csize);
+        p32(&mut cd, m.raw.usize_);
+        p16(&mut cd, u16::try_from(m.raw.name.len()).unwrap());
+        p16(&mut cd, u16::try_from(m.central_extra.len()).unwrap());
+        p16(&mut cd, u16::try_from(m.comment.len()).unwrap());
+        p16(&mut cd, 0);
+        p16(&mut cd, 0);
+        p32(&mut cd, m.raw.ext_attr);
+        p32(&mut cd, *off);
+        cd.extend_from_slice(&m.raw.name);
+        cd.extend_from_slice(&m.central_extra);
+        cd.extend_from_slice(&m.comment);
+    }
+    let cd_size = u32::try_from(cd.len()).unwrap();
+    out.extend_from_slice(&cd);
+    p32(&mut out, 0x0605_4b50);
+    p16(&mut out, 0);
+    p16(&mut out, 0);
+    p16(&mut out, u16::try_from(members.len()).unwrap());
+    p16(&mut out, u16::try_from(members.len()).unwrap());
+    p32(&mut out, cd_size);
+    p32(&mut out, cd_offset);
+    p16(&mut out, u16::try_from(archive_comment.len()).unwrap());
+    out.extend_from_slice(archive_comment);
+    out.extend_from_slice(trailer);
+    out
+}
+
+/// An end-of-central-directory record on its own (22 bytes, no comment).
+fn lone_eocd() -> Vec<u8> {
+    let mut e = Vec::new();
+    eocd(&mut e, 0, 0, 0);
+    e
+}
+
+#[test]
+fn a_second_end_record_hidden_in_an_entry_comment_is_refused() {
+    // The record at the end of the file is a decoy; a reader that stops at the signature
+    // in the comment sees a different central directory.
+    let mut m = Spec::new(Raw::stored(b"a.xml", b"x"));
+    m.comment = lone_eocd();
+    let bytes = assemble(&[m], &[], &[]);
+    assert!(matches!(
+        ZipArchive::parse(&bytes, ZipLimits::default()),
+        Err(ZipError::AmbiguousEndOfCentralDirectory)
+    ));
+}
+
+#[test]
+fn an_end_record_signature_after_the_real_one_is_refused() {
+    // The tail record claims a comment that does not fit, so the real record stays the
+    // chosen one, but a reader that scans from the front would meet the other first.
+    let mut fake = lone_eocd();
+    fake[20..22].copy_from_slice(&u16::MAX.to_le_bytes());
+    let bytes = assemble(&[Spec::new(Raw::stored(b"a.xml", b"x"))], &[], &fake);
+    assert!(matches!(
+        ZipArchive::parse(&bytes, ZipLimits::default()),
+        Err(ZipError::AmbiguousEndOfCentralDirectory)
+    ));
+    // The same bytes inside the archive comment of a well-formed record.
+    let bytes = assemble(&[Spec::new(Raw::stored(b"a.xml", b"x"))], &fake, &[]);
+    assert!(matches!(
+        ZipArchive::parse(&bytes, ZipLimits::default()),
+        Err(ZipError::AmbiguousEndOfCentralDirectory)
+    ));
+}
+
+#[test]
+fn a_stored_nested_archive_is_not_a_second_end_record() {
+    let inner = assemble(&[Spec::new(Raw::stored(b"in.xml", b"inner"))], &[], &[]);
+    let bytes = assemble(&[Spec::new(Raw::stored(b"nested.zip", &inner))], &[], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    let e = zip.entry("nested.zip").unwrap();
+    assert_eq!(zip.read(e, &mut budget()).unwrap(), inner);
+}
+
+#[test]
+fn bytes_that_merely_spell_the_signature_are_not_a_second_end_record() {
+    // A CRC or an offset can equal "PK\x05\x06"; without the shape of a record it is data.
+    let mut m = Spec::new(Raw::stored(b"a.xml", b"x"));
+    m.comment = vec![b'P', b'K', 5, 6, 1, 1, 1, 1];
+    let bytes = assemble(&[m], &[], &[]);
+    assert!(ZipArchive::parse(&bytes, ZipLimits::default()).is_ok());
+}
+
+#[test]
+fn entry_comments_are_reported() {
+    let mut m = Spec::new(Raw::stored(b"a.xml", b"x"));
+    m.comment = b"note".to_vec();
+    let bytes = assemble(&[m], &[], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    assert!(zip.anomalies().iter().any(|a| matches!(a, ZipAnomaly::ArchiveComment { bytes: 4 })));
+}
+
+#[test]
+fn unread_bytes_inside_a_deflate_range_are_refused() {
+    let mut raw = Raw::deflated(b"a.xml", &[b'x'; 500]);
+    raw.payload.extend_from_slice(b"HIDDEN-PAYLOAD");
+    let bytes = assemble(&[Spec::new(raw)], &[], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    assert!(matches!(
+        zip.read(&zip.entries()[0], &mut budget()),
+        Err(ZipError::CompressedSizeMismatch(_))
+    ));
+}
+
+fn descriptor(crc: u32, csize: u32, usize_: u32, signed: bool) -> Vec<u8> {
+    let mut d = Vec::new();
+    if signed {
+        p32(&mut d, 0x0807_4b50);
+    }
+    p32(&mut d, crc);
+    p32(&mut d, csize);
+    p32(&mut d, usize_);
+    d
+}
+
+#[test]
+fn a_matching_data_descriptor_is_accepted_and_part_of_the_member() {
+    for signed in [true, false] {
+        let raw = Raw::stored(b"a.xml", b"hello");
+        let mut m = Spec::new(raw.clone());
+        m.local_flags = 8;
+        m.local_sizes = (0, 0, 0);
+        m.after = descriptor(raw.crc, 5, 5, signed);
+        let bytes = assemble(&[m], &[], &[]);
+        let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+        assert!(zip.anomalies().is_empty(), "{:?}", zip.anomalies());
+        assert_eq!(zip.read(&zip.entries()[0], &mut budget()).unwrap(), b"hello");
+    }
+}
+
+#[test]
+fn a_lying_data_descriptor_is_refused() {
+    let raw = Raw::stored(b"a.xml", b"hello");
+    for (crc, c, u) in [(raw.crc ^ 1, 5, 5), (raw.crc, 6, 5), (raw.crc, 5, 99)] {
+        let mut m = Spec::new(raw.clone());
+        m.local_flags = 8;
+        m.local_sizes = (0, 0, 0);
+        m.after = descriptor(crc, c, u, true);
+        let bytes = assemble(&[m], &[], &[]);
+        assert!(matches!(
+            ZipArchive::parse(&bytes, ZipLimits::default()),
+            Err(ZipError::LocalHeaderMismatch(_))
+        ));
+    }
+    // Flagged, but neither a descriptor nor sizes in the local header.
+    let mut m = Spec::new(raw);
+    m.local_flags = 8;
+    m.local_sizes = (0, 0, 0);
+    let bytes = assemble(&[m], &[], &[]);
+    assert!(matches!(
+        ZipArchive::parse(&bytes, ZipLimits::default()),
+        Err(ZipError::LocalHeaderMismatch(_))
+    ));
+}
+
+#[test]
+fn unreferenced_bytes_between_members_are_reported_even_when_small() {
+    let mut a = Spec::new(Raw::stored(b"a.xml", b"aaaa"));
+    a.after = vec![0xEE; 6]; // not a descriptor, nothing accounts for it
+    let bytes = assemble(&[a, Spec::new(Raw::stored(b"b.xml", b"bbbb"))], &[], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    assert!(
+        zip.anomalies().iter().any(|a| matches!(a, ZipAnomaly::UnreferencedData { bytes: 6 })),
+        "{:?}",
+        zip.anomalies()
+    );
+}
+
+fn zip64_sizes(uncompressed: u64, compressed: u64) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&uncompressed.to_le_bytes());
+    body.extend_from_slice(&compressed.to_le_bytes());
+    extra_field(0x0001, &body)
+}
+
+#[test]
+fn zip64_markers_in_the_local_header_are_checked_against_the_central_sizes() {
+    let raw = Raw::stored(b"a.xml", b"hello");
+    let marked = |extra: Vec<u8>| {
+        let mut m = Spec::new(raw.clone());
+        m.local_sizes = (raw.crc, u32::MAX, u32::MAX);
+        m.local_extra = extra;
+        assemble(&[m], &[], &[])
+    };
+    // Honest sizes in the local ZIP64 extra field.
+    let ok = marked(zip64_sizes(5, 5));
+    assert!(ZipArchive::parse(&ok, ZipLimits::default()).is_ok());
+    // Lying sizes, or none at all.
+    for extra in [zip64_sizes(5, 6), zip64_sizes(500, 5), Vec::new()] {
+        assert!(matches!(
+            ZipArchive::parse(&marked(extra), ZipLimits::default()),
+            Err(ZipError::LocalHeaderMismatch(_))
+        ));
+    }
+}
+
+#[test]
+fn a_directory_entry_cannot_carry_data() {
+    let mut raw = Raw::stored(b"dir/", b"");
+    raw.payload = vec![0x55; 64];
+    let bytes = assemble(&[Spec::new(raw)], &[], &[]);
+    assert!(matches!(
+        ZipArchive::parse(&bytes, ZipLimits::default()),
+        Err(ZipError::LocalHeaderMismatch(_))
+    ));
+    // An empty deflate stream (two bytes) is what some writers emit.
+    let mut raw = Raw::deflated(b"dir/", b"");
+    raw.usize_ = 0;
+    let bytes = assemble(&[Spec::new(raw)], &[], &[]);
+    assert!(ZipArchive::parse(&bytes, ZipLimits::default()).is_ok());
+}
+
+#[test]
+fn a_unicode_path_extra_that_renames_the_member_is_refused() {
+    let raw = Raw::stored(b"word/document.xml", b"x");
+    let renamed = |central: bool, good_crc: bool| {
+        let mut m = Spec::new(raw.clone());
+        let field = unicode_path_field(b"word/document.xml", b"word/evil.bin", good_crc);
+        if central {
+            m.central_extra = field;
+        } else {
+            m.local_extra = field;
+        }
+        assemble(&[m], &[], &[])
+    };
+    for central in [true, false] {
+        assert!(matches!(
+            ZipArchive::parse(&renamed(central, true), ZipLimits::default()),
+            Err(ZipError::UnicodePathMismatch(_))
+        ));
+    }
+    // A field whose CRC is not the header name's belongs to a stale name: readers drop it.
+    assert!(ZipArchive::parse(&renamed(true, false), ZipLimits::default()).is_ok());
+    // The same name in the field is only reported.
+    let mut m = Spec::new(raw);
+    m.central_extra = unicode_path_field(b"word/document.xml", b"word/document.xml", true);
+    let bytes = assemble(&[m], &[], &[]);
+    let zip = ZipArchive::parse(&bytes, ZipLimits::default()).unwrap();
+    assert!(zip.anomalies().iter().any(|a| matches!(a, ZipAnomaly::UnicodePathExtra(_))));
 }

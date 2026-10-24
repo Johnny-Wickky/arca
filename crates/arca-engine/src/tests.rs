@@ -20,6 +20,9 @@ use arca_abi::request::Op;
 
 use crate::{Engine, EngineConfig, Host, Status, op};
 
+/// The most fuel any single run may be granted, whatever the document declares.
+const FUEL_CEILING: u64 = 1_000_000_000_000;
+
 fn required() -> bool {
     std::env::var_os("ARCA_REQUIRE_E2E").is_some_and(|v| !v.is_empty() && v != "0")
 }
@@ -622,7 +625,8 @@ fn the_budget_of_a_preview_or_a_sterile_copy_grows_with_what_the_scan_unpacked()
     );
     // The fixed ceilings stay: fuel, the device's memory limit and the wall-clock limits.
     let huge = engine.policy_for(Op::Sanitize, len, u64::MAX);
-    assert!(huge.fuel.for_input(len) <= huge.fuel.max);
+    // (`for_input` clamps to `max`, so only a constant says anything.)
+    assert!(huge.fuel.for_input(len) <= FUEL_CEILING);
     assert!(huge.memory_limit_for(len) <= engine.config().max_memory_bytes);
     assert_eq!(huge.max_wall_time, none_sanitize.max_wall_time);
 }
@@ -648,7 +652,7 @@ fn a_sterile_copy_of_a_picture_gets_a_picture_budget_and_nothing_else_does() {
     assert!(full.max_wall_time > reduced.max_wall_time);
     assert!(reduced.memory_limit_for(len) >= 256 << 20);
     // The fixed ceilings stay.
-    assert!(full.fuel.for_input(len) <= full.fuel.max);
+    assert!(full.fuel.for_input(len) <= FUEL_CEILING);
     assert!(full.max_wall_time <= Some(std::time::Duration::from_secs(900)));
     // Nothing else gets it: not a document, not another operation on a picture.
     let docx = b"PK\x03\x04 not a picture";

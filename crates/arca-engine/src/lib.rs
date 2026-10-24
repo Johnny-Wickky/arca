@@ -30,3 +30,5 @@ pub use render::{Counters, PreviewIndex};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_hardening;

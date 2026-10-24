@@ -4,12 +4,30 @@
 //! RC4. Broken as a stream cipher; present because PDF revisions 2–4 and the legacy Office
 //! formats use it, and only to read what its owner already holds the key to.
 
+use zeroize::Zeroize;
+
 /// The RC4 keystream state.
-#[derive(Debug, Clone)]
+///
+/// The state is derived from the key: it is wiped on drop, cannot be cloned and shows nothing
+/// of itself in `Debug`.
 pub struct Rc4 {
     s: [u8; 256],
     i: u8,
     j: u8,
+}
+
+impl core::fmt::Debug for Rc4 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Rc4 { .. }")
+    }
+}
+
+impl Drop for Rc4 {
+    fn drop(&mut self) {
+        self.s.zeroize();
+        self.i.zeroize();
+        self.j.zeroize();
+    }
 }
 
 impl Rc4 {

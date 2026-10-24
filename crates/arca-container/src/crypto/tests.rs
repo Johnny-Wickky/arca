@@ -278,3 +278,43 @@ fn equality_does_not_stop_early() {
     assert!(!constant_time_eq(b"abc", b"abd"));
     assert!(!constant_time_eq(b"abc", b"ab"));
 }
+
+#[test]
+fn cbc_decryption_refuses_a_partial_block() {
+    let aes = aes::Aes::new(&[7; 16]).expect("key");
+    let sealed = aes.cbc_encrypt(&[0; 16], &[0x41; 32]).expect("cbc");
+    assert_eq!(aes.cbc_decrypt(&[0; 16], &sealed).expect("whole blocks"), vec![0x41; 32]);
+    // Appended or cut-off bytes used to be dropped silently.
+    let mut longer = sealed.clone();
+    longer.push(0);
+    assert!(aes.cbc_decrypt(&[0; 16], &longer).is_none());
+    assert!(aes.cbc_decrypt(&[0; 16], &sealed[..31]).is_none());
+}
+
+#[test]
+fn key_material_does_not_show_in_debug_output() {
+    let key = [0xA7u8; 16];
+    let aes = aes::Aes::new(&key).expect("key");
+    let shown = format!("{aes:?}");
+    // The key schedule starts with the key itself; no byte of it may be printed.
+    assert!(!shown.contains("167") && !shown.contains("a7") && !shown.contains("A7"), "{shown}");
+    let rc4 = rc4::Rc4::new(&[0x55; 5]);
+    assert_eq!(format!("{rc4:?}"), "Rc4 { .. }");
+}
+
+#[test]
+fn bad_padding_of_every_kind_is_the_same_answer() {
+    let cases: [Vec<u8>; 6] = [
+        vec![7, 0],                                    // zero
+        vec![7, 17],                                   // beyond a block
+        vec![7, 3, 2],                                 // wrong byte inside the padding
+        vec![2],                                       // longer than the data
+        vec![9; 16].into_iter().chain([20]).collect(), // beyond a block, long data
+        vec![1, 2, 3, 4, 5, 5, 5, 4],                  // padding byte differs from its run
+    ];
+    for case in cases {
+        assert_eq!(aes::unpad_pkcs7(case.clone()), None, "{case:?}");
+    }
+    assert_eq!(aes::unpad_pkcs7(vec![1; 15].into_iter().chain([1]).collect()), Some(vec![1; 15]));
+    assert_eq!(aes::unpad_pkcs7(vec![16; 16]), Some(Vec::new()));
+}

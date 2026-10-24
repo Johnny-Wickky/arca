@@ -270,8 +270,12 @@ fn cp1252(b: u8) -> char {
     }
 }
 
-/// Renders a string for display: control characters become `\xNN`, the
-/// result is truncated to `max_chars` characters (with an ellipsis).
+/// Renders a string as one line of visible characters: whatever a document puts into a name,
+/// a target or an instruction cannot forge a second line or hide behind a blank. Control
+/// characters (line breaks and tabs included) become `\xNN`, characters that reorder text or
+/// draw nothing become `\u{XXXX}`.
+///
+/// The result is truncated to `max_chars` characters (with an ellipsis).
 #[must_use]
 pub fn display_safe(s: &str, max_chars: usize) -> String {
     let mut out = String::new();
@@ -280,10 +284,10 @@ pub fn display_safe(s: &str, max_chars: usize) -> String {
             out.push('…');
             break;
         }
-        if c.is_control() && c != '\n' && c != '\t' {
+        if c.is_control() {
             out.push_str(&format!("\\x{:02X}", u32::from(c)));
-        } else if is_bidi_control(c) {
-            // Trojan-Source style reordering characters are made visible.
+        } else if is_bidi_control(c) || is_invisible(c) {
+            // Trojan-Source style reordering and "blank" characters are made visible.
             out.push_str(&format!("\\u{{{:04X}}}", u32::from(c)));
         } else {
             out.push(c);
@@ -296,6 +300,44 @@ pub fn display_safe(s: &str, max_chars: usize) -> String {
 #[must_use]
 pub const fn is_bidi_control(c: char) -> bool {
     matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
+}
+
+/// Characters that draw nothing (or only a blank) yet are not whitespace: format controls
+/// (Unicode category Cf: soft hyphen, zero-width space and joiners, word joiner, invisible
+/// operators, deprecated format characters, tags, the byte order mark), the line and
+/// paragraph separators, variation selectors, and the fillers and the blank pattern that
+/// pass for a space. The bidirectional controls are included.
+#[must_use]
+pub const fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{08E2}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+            | '\u{E0100}'..='\u{E01EF}'
+    )
 }
 
 /// Truncates `s` to at most `max_bytes` bytes on a character boundary.
@@ -340,6 +382,18 @@ mod tests {
         assert_eq!(display_safe("\u{5}Summary", 50), "\\x05Summary");
         assert_eq!(display_safe("a\u{202E}b", 50), "a\\u{202E}b");
         assert_eq!(display_safe("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn display_safe_is_one_visible_line() {
+        // A line break would let a document forge a second line of a report.
+        assert_eq!(display_safe("a\nb\r\tc", 50), "a\\x0Ab\\x0D\\x09c");
+        // Zero-width and tag characters, the byte order mark and the separators are shown.
+        assert_eq!(
+            display_safe("a\u{200B}b\u{FEFF}c\u{E0041}d\u{2028}e\u{00AD}f\u{FE0F}", 50),
+            "a\\u{200B}b\\u{FEFF}c\\u{E0041}d\\u{2028}e\\u{00AD}f\\u{FE0F}"
+        );
+        assert_eq!(display_safe("плюс ünï", 50), "плюс ünï");
     }
 
     #[test]

@@ -33,6 +33,14 @@ pub enum NameRejection {
     EmptyComponent,
     /// The name contains a Unicode bidirectional override.
     BidiControl,
+    /// The name contains a character that draws nothing (zero-width, tag, separator, filler).
+    InvisibleCharacter,
+    /// A component ends in `.` or a space, which Windows silently drops.
+    TrailingDotOrSpace,
+    /// The name contains `:` (drive, alternate data stream, URI scheme).
+    Colon,
+    /// The name contains a percent-encoded dot, slash or backslash (`%2e`, `%2f`, `%5c`).
+    PercentEncodedSeparator,
 }
 
 impl fmt::Display for NameRejection {
@@ -49,6 +57,10 @@ impl fmt::Display for NameRejection {
             Self::DotComponent => "'.' path component",
             Self::EmptyComponent => "empty path component",
             Self::BidiControl => "bidirectional override character",
+            Self::InvisibleCharacter => "invisible (format, separator or filler) character",
+            Self::TrailingDotOrSpace => "path component ends in a dot or a space",
+            Self::Colon => "':' in the name",
+            Self::PercentEncodedSeparator => "percent-encoded dot or separator",
         };
         f.write_str(s)
     }
@@ -90,6 +102,9 @@ pub fn validate_member_str(name: &str) -> Result<(), NameRejection> {
         if crate::text::is_bidi_control(c) {
             return Err(NameRejection::BidiControl);
         }
+        if crate::text::is_invisible(c) {
+            return Err(NameRejection::InvisibleCharacter);
+        }
     }
     if name.starts_with('/') {
         return Err(NameRejection::Absolute);
@@ -111,6 +126,17 @@ pub fn validate_member_str(name: &str) -> Result<(), NameRejection> {
             ".." => return Err(NameRejection::ParentTraversal),
             _ => {}
         }
+        if component.ends_with(['.', ' ']) {
+            return Err(NameRejection::TrailingDotOrSpace);
+        }
+    }
+    if name.contains(':') {
+        return Err(NameRejection::Colon);
+    }
+    // `%2e%2e/` is `../` to a reader that decodes names (URI-style OPC resolvers do).
+    let lower = name.to_ascii_lowercase();
+    if ["%2e", "%2f", "%5c"].iter().any(|p| lower.contains(p)) {
+        return Err(NameRejection::PercentEncodedSeparator);
     }
     Ok(())
 }
@@ -152,6 +178,17 @@ mod tests {
             (b"\xff\xfe", NameRejection::InvalidUtf8),
             ("doc\u{202E}lmx.exe".as_bytes(), NameRejection::BidiControl),
             (b"/", NameRejection::Absolute),
+            ("a\u{200B}b".as_bytes(), NameRejection::InvisibleCharacter),
+            ("a\u{E0041}".as_bytes(), NameRejection::InvisibleCharacter),
+            ("a\u{2028}b".as_bytes(), NameRejection::InvisibleCharacter),
+            ("a\u{00AD}b".as_bytes(), NameRejection::InvisibleCharacter),
+            (b"word/document.xml.", NameRejection::TrailingDotOrSpace),
+            (b"word/document.xml ", NameRejection::TrailingDotOrSpace),
+            (b"word./document.xml", NameRejection::TrailingDotOrSpace),
+            (b"word/doc:stream.xml", NameRejection::Colon),
+            (b"%2e%2e/evil", NameRejection::PercentEncodedSeparator),
+            (b"word%2Fdocument.xml", NameRejection::PercentEncodedSeparator),
+            (b"word%5cdocument.xml", NameRejection::PercentEncodedSeparator),
         ];
         for (raw, expected) in cases {
             assert_eq!(validate_member_name(raw, 1024), Err(*expected), "{raw:?}");

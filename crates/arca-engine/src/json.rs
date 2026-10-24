@@ -11,13 +11,33 @@
 use core::fmt::Debug;
 
 /// Streaming JSON writer into a byte buffer.
-#[derive(Debug, Default)]
+///
+/// A writer made with [`JsonWriter::with_limit`] stops appending once the document would pass
+/// the limit, so a result built from document-controlled sizes cannot grow without bound; see
+/// [`JsonWriter::finish_within`].
+#[derive(Debug)]
 pub struct JsonWriter {
     out: Vec<u8>,
     /// One entry per open container: `true` while it has no element yet.
     first: Vec<bool>,
     /// A key was just written, so the next value follows without a comma.
     after_key: bool,
+    /// The most bytes the document may have.
+    limit: usize,
+    /// The limit was reached; nothing more is appended.
+    over: bool,
+}
+
+impl Default for JsonWriter {
+    fn default() -> Self {
+        Self {
+            out: Vec::new(),
+            first: Vec::new(),
+            after_key: false,
+            limit: usize::MAX,
+            over: false,
+        }
+    }
 }
 
 impl JsonWriter {
@@ -27,10 +47,40 @@ impl JsonWriter {
         Self::default()
     }
 
+    /// An empty writer whose document may not pass `limit` bytes.
+    #[must_use]
+    pub fn with_limit(limit: usize) -> Self {
+        Self { limit, ..Self::default() }
+    }
+
+    /// `true` once the limit was reached (the rest of the document was not written).
+    #[must_use]
+    pub const fn is_over(&self) -> bool {
+        self.over
+    }
+
     /// The finished document.
     #[must_use]
     pub fn finish(self) -> Vec<u8> {
         self.out
+    }
+
+    /// The finished document, or `None` if it did not fit the limit.
+    #[must_use]
+    pub fn finish_within(self) -> Option<Vec<u8>> {
+        if self.over { None } else { Some(self.out) }
+    }
+
+    /// Appends raw bytes unless the limit is (or would be) passed.
+    fn raw(&mut self, bytes: &[u8]) {
+        if self.over {
+            return;
+        }
+        if self.out.len().saturating_add(bytes.len()) > self.limit {
+            self.over = true;
+            return;
+        }
+        self.out.extend_from_slice(bytes);
     }
 
     /// Bytes written so far.
@@ -54,7 +104,7 @@ impl JsonWriter {
             if *first {
                 *first = false;
             } else {
-                self.out.push(b',');
+                self.raw(b",");
             }
         }
     }
@@ -62,34 +112,34 @@ impl JsonWriter {
     /// Opens an object.
     pub fn begin_object(&mut self) {
         self.before_value();
-        self.out.push(b'{');
+        self.raw(b"{");
         self.first.push(true);
     }
 
     /// Closes the innermost object.
     pub fn end_object(&mut self) {
         self.first.pop();
-        self.out.push(b'}');
+        self.raw(b"}");
     }
 
     /// Opens an array.
     pub fn begin_array(&mut self) {
         self.before_value();
-        self.out.push(b'[');
+        self.raw(b"[");
         self.first.push(true);
     }
 
     /// Closes the innermost array.
     pub fn end_array(&mut self) {
         self.first.pop();
-        self.out.push(b']');
+        self.raw(b"]");
     }
 
     /// Writes an object key; the next call must write its value.
     pub fn key(&mut self, key: &str) {
         self.before_value();
         self.push_string(key);
-        self.out.push(b':');
+        self.raw(b":");
         self.after_key = true;
     }
 
@@ -108,13 +158,13 @@ impl JsonWriter {
     /// Writes an unsigned integer.
     pub fn u64(&mut self, value: u64) {
         self.before_value();
-        self.out.extend_from_slice(value.to_string().as_bytes());
+        self.raw(value.to_string().as_bytes());
     }
 
     /// Writes a signed integer.
     pub fn i64(&mut self, value: i64) {
         self.before_value();
-        self.out.extend_from_slice(value.to_string().as_bytes());
+        self.raw(value.to_string().as_bytes());
     }
 
     /// Writes a number with at most two decimals (a coordinate or a size); not-a-number and
@@ -134,25 +184,42 @@ impl JsonWriter {
         if text == "-0" {
             text = "0".into();
         }
-        self.out.extend_from_slice(text.as_bytes());
+        self.raw(text.as_bytes());
     }
 
     /// Writes a boolean.
     pub fn bool(&mut self, value: bool) {
         self.before_value();
-        self.out.extend_from_slice(if value { b"true" } else { b"false" });
+        self.raw(if value { b"true" } else { b"false" });
     }
 
     /// Writes `null`.
     pub fn null(&mut self) {
         self.before_value();
-        self.out.extend_from_slice(b"null");
+        self.raw(b"null");
     }
 
     /// `"key": "value"`.
     pub fn field_str(&mut self, key: &str, value: &str) {
         self.key(key);
         self.string(value);
+    }
+
+    /// A string the document supplied that the app shows as a *fact about* the document (a
+    /// location, a name, a target, a value) rather than as its content: written through
+    /// [`arca_container::text::display_safe`], so line breaks, control, bidirectional and
+    /// invisible characters arrive as visible escapes and the text is cut at `max_chars`.
+    ///
+    /// The guest normalises these already; the host does it again because the guest is the part
+    /// that handles hostile input, and what it reports is not to be trusted to be display-safe.
+    pub fn label(&mut self, value: &str, max_chars: usize) {
+        self.string(&arca_container::text::display_safe(value, max_chars));
+    }
+
+    /// `"key": label`, see [`JsonWriter::label`].
+    pub fn field_label(&mut self, key: &str, value: &str, max_chars: usize) {
+        self.key(key);
+        self.label(value, max_chars);
     }
 
     /// `"key": value`.
@@ -174,24 +241,27 @@ impl JsonWriter {
     }
 
     fn push_string(&mut self, s: &str) {
-        self.out.push(b'"');
+        self.raw(b"\"");
         let mut buf = [0u8; 4];
         for c in s.chars() {
+            if self.over {
+                return;
+            }
             match c {
-                '"' => self.out.extend_from_slice(b"\\\""),
-                '\\' => self.out.extend_from_slice(b"\\\\"),
-                '\n' => self.out.extend_from_slice(b"\\n"),
-                '\r' => self.out.extend_from_slice(b"\\r"),
-                '\t' => self.out.extend_from_slice(b"\\t"),
+                '"' => self.raw(b"\\\""),
+                '\\' => self.raw(b"\\\\"),
+                '\n' => self.raw(b"\\n"),
+                '\r' => self.raw(b"\\r"),
+                '\t' => self.raw(b"\\t"),
                 // Control characters, DEL and the two line separators that break
                 // JavaScript-era parsers: always escaped.
                 c if u32::from(c) < 0x20 || matches!(c, '\u{7f}' | '\u{2028}' | '\u{2029}') => {
-                    self.out.extend_from_slice(format!("\\u{:04x}", u32::from(c)).as_bytes());
+                    self.raw(format!("\\u{:04x}", u32::from(c)).as_bytes());
                 }
-                c => self.out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes()),
+                c => self.raw(c.encode_utf8(&mut buf).as_bytes()),
             }
         }
-        self.out.push(b'"');
+        self.raw(b"\"");
     }
 }
 

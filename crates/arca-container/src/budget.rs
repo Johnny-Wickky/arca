@@ -36,6 +36,8 @@ pub struct InflateBudget {
     compressed_in: u64,
     max_aggregate_ratio: u64,
     aggregate_grace: u64,
+    /// Size of the document as it arrived, once known (see [`Self::with_original_input`]).
+    original_input: Option<u64>,
 }
 
 impl InflateBudget {
@@ -45,7 +47,27 @@ impl InflateBudget {
     /// decompressions once more than `aggregate_grace` bytes were produced.
     #[must_use]
     pub const fn new(limit: u64, max_aggregate_ratio: u64, aggregate_grace: u64) -> Self {
-        Self { limit, remaining: limit, compressed_in: 0, max_aggregate_ratio, aggregate_grace }
+        Self {
+            limit,
+            remaining: limit,
+            compressed_in: 0,
+            max_aggregate_ratio,
+            aggregate_grace,
+            original_input: None,
+        }
+    }
+
+    /// Measures the aggregate ratio against the size of the document as it arrived.
+    ///
+    /// Without this the `consumed` side of every charge is summed, and an archive nested in
+    /// an archive counts twice: the inner archive is already *output* of the outer inflate,
+    /// so its compressed members would "pay" for the expansion of the outer layer and a
+    /// stack of layers could expand far beyond the ratio. Once the original size is known,
+    /// the sizes passed as `consumed` no longer matter for the ratio.
+    #[must_use]
+    pub const fn with_original_input(mut self, len: u64) -> Self {
+        self.original_input = Some(len);
+        self
     }
 
     /// Bytes still available.
@@ -70,7 +92,11 @@ impl InflateBudget {
             return Err(BudgetExceeded { requested: produced, remaining: self.remaining });
         }
         let total_out = self.produced().saturating_add(produced);
-        let total_in = self.compressed_in.saturating_add(consumed).max(1);
+        let total_in = match self.original_input {
+            Some(len) => len,
+            None => self.compressed_in.saturating_add(consumed),
+        }
+        .max(1);
         if total_out > self.aggregate_grace
             && total_out > total_in.saturating_mul(self.max_aggregate_ratio)
         {
@@ -101,6 +127,21 @@ mod tests {
         assert_eq!(b.remaining(), 40);
         assert!(b.charge(40, 40).is_ok());
         assert_eq!(b.remaining(), 0);
+    }
+
+    #[test]
+    fn nested_layers_do_not_pay_for_each_other() {
+        // 1 KiB document; the outer layer inflates to 1 MiB (1024:1 is refused outright, so
+        // use 64 KiB), and the inner layer inflates again from those 64 KiB.
+        let layered = |budget: &mut InflateBudget| {
+            budget.charge(64 << 10, 1 << 10)?; // outer layer: 64:1
+            budget.charge(4 << 20, 64 << 10) // inner layer: 64:1 of the outer output
+        };
+        // Summing the inputs: 4.06 MiB out of 65 KiB "in" is 63:1, inside the limit of 100.
+        assert!(layered(&mut InflateBudget::new(u64::MAX, 100, 0)).is_ok());
+        // Against the document as it arrived, 1 KiB became 4 MiB: 4096:1.
+        let mut anchored = InflateBudget::new(u64::MAX, 100, 0).with_original_input(1 << 10);
+        assert!(layered(&mut anchored).is_err());
     }
 
     #[test]

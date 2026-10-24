@@ -48,26 +48,36 @@ pub fn init(max_input_mib: i32, max_memory_mib: i32, scan_secs: i32, preview_sec
     if !has_guest() {
         return Status::NotReady.code();
     }
-    if arca_engine::guest_digest_of(guest::GUEST_WASM) != GUEST_SHA256 {
-        return Status::Fault.code();
-    }
-    let mib = |v: i32, default: usize| {
-        usize::try_from(v).ok().filter(|v| *v > 0).map_or(default, |v| v << 20)
-    };
     let secs = |v: i32, default: u64| u64::try_from(v).ok().filter(|v| *v > 0).unwrap_or(default);
     let d = EngineConfig::default();
     let config = EngineConfig {
-        max_input_bytes: mib(max_input_mib, d.max_input_bytes),
-        max_memory_bytes: mib(max_memory_mib, d.max_memory_bytes),
+        max_input_bytes: mib_to_bytes(max_input_mib, d.max_input_bytes),
+        max_memory_bytes: mib_to_bytes(max_memory_mib, d.max_memory_bytes),
         scan_timeout: Duration::from_secs(secs(scan_secs, d.scan_timeout.as_secs())),
         preview_timeout: Duration::from_secs(secs(preview_secs, d.preview_timeout.as_secs())),
     };
+    // The module must be the one this library was built with: its digest is a build-time
+    // constant, not something computed from the bytes about to be trusted.
+    let engine = match Engine::pinned(guest::GUEST_WASM, GUEST_SHA256, config) {
+        Ok(engine) => engine,
+        Err(status) => return status.code(),
+    };
     // A concurrent first call may win; both built the same engine.
-    let _ = HOST.set(Host::new(Engine::new(guest::GUEST_WASM, config)));
+    let _ = HOST.set(Host::new(engine));
     Status::Ok.code()
 }
 
+/// `v` MiB in bytes; `default` for zero or a negative value. A figure that does not fit
+/// `usize` (a 32-bit phone asked for 4 GiB) saturates, and the engine clamps it to its ceiling.
+pub(crate) fn mib_to_bytes(v: i32, default: usize) -> usize {
+    usize::try_from(v).ok().filter(|v| *v > 0).map_or(default, |v| v.saturating_mul(1 << 20))
+}
+
 fn host() -> Result<&'static Host, Status> {
+    #[cfg(test)]
+    if let Some(h) = test_host::current() {
+        return Ok(h);
+    }
     HOST.get().ok_or(Status::NotReady)
 }
 
@@ -303,4 +313,29 @@ pub fn license_text(which: i32) -> Option<Vec<u8>> {
 #[must_use]
 pub fn release_info() -> Vec<u8> {
     render::release_blockers_json()
+}
+
+/// A per-thread host for tests: the handle tables work without a guest module, so the
+/// tests of handle validation neither depend on nor change the process-wide host.
+#[cfg(test)]
+pub(crate) mod test_host {
+    use std::cell::Cell;
+
+    use super::{Engine, EngineConfig, Host};
+
+    thread_local! {
+        static CURRENT: Cell<Option<&'static Host>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn current() -> Option<&'static Host> {
+        CURRENT.with(Cell::get)
+    }
+
+    /// Installs a fresh host (over an empty module, which is never run) for this thread.
+    pub(crate) fn install() {
+        // Leaked on purpose: a test host lives for the rest of the (test) process.
+        let host: &'static Host =
+            Box::leak(Box::new(Host::new(Engine::new(Vec::<u8>::new(), EngineConfig::default()))));
+        CURRENT.with(|c| c.set(Some(host)));
+    }
 }

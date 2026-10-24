@@ -18,6 +18,8 @@ fn uninitialized_state_returns_not_ready() {
 
 #[test]
 fn invalid_handles_produce_status_bad_handle() {
+    // An initialised host (of this thread) answers for the handle, not for readiness.
+    test_host::install();
     assert_eq!(doc_len(9999), -i64::from(Status::BadHandle.code()));
     assert_eq!(outcome_status(9999), -Status::BadHandle.code());
     assert_eq!(report(9999), Err(Status::BadHandle));
@@ -59,21 +61,26 @@ fn passport_flow() {
 
 #[test]
 fn document_and_job_lifecycle() {
+    test_host::install();
     let doc = doc_new(1024 * 1024);
-    if is_init() {
-        assert!(doc > 0);
-        let chunk = b"Hello, Arca!";
-        assert_eq!(doc_append(doc, chunk), Status::Ok.code());
-        assert_eq!(doc_len(doc), i64::try_from(chunk.len()).unwrap_or(-1));
+    assert!(doc > 0);
+    let chunk = b"Hello, Arca!";
+    assert_eq!(doc_append(doc, chunk), Status::Ok.code());
+    assert_eq!(doc_len(doc), i64::try_from(chunk.len()).unwrap_or(-1));
 
-        let job = job_new();
-        assert!(job > 0);
-        job_cancel(job);
-        job_free(job);
+    let job = job_new();
+    assert!(job > 0);
+    job_cancel(job);
+    job_free(job);
 
-        doc_free(doc);
-        assert_eq!(doc_len(doc), -i64::from(Status::BadHandle.code()));
-    } else {
-        assert_eq!(doc, -i64::from(Status::NotReady.code()));
-    }
+    doc_free(doc);
+    assert_eq!(doc_len(doc), -i64::from(Status::BadHandle.code()));
+}
+
+#[test]
+fn non_positive_handles_are_bad_handles() {
+    test_host::install();
+    assert_eq!(doc_len(0), -i64::from(Status::BadHandle.code()));
+    assert_eq!(doc_len(-5), -i64::from(Status::BadHandle.code()));
+    assert_eq!(doc_append(i64::MIN, b"x"), Status::BadHandle.code());
 }

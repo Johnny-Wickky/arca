@@ -150,3 +150,146 @@ fn clsid_formatting() {
     assert_eq!(format_clsid(&c), "{0002CE02-0000-0000-C000-000000000046}");
     assert!(clsid_is_null(&[0; 16]));
 }
+
+fn set_fat(file: &mut [u8], sector: u32, value: u32) {
+    let fat0 = u32::from_le_bytes(file[76..80].try_into().unwrap()) as usize;
+    let off = (fat0 + 1) * 512 + sector as usize * 4;
+    file[off..off + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn start_of(file: &[u8], path: &str) -> u32 {
+    let cf = CompoundFile::parse(file, CfbLimits::default()).unwrap();
+    cf.entries()[cf.find(path).unwrap()].start_sector
+}
+
+fn utf16(name: &str) -> Vec<u8> {
+    name.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// Overwrites the first occurrence of the UTF-16LE `from` with `to` (same length).
+fn rename_raw(file: &mut [u8], from: &str, to: &[u16]) {
+    let needle = utf16(from);
+    let at = file.windows(needle.len()).position(|w| w == needle).unwrap();
+    for (i, u) in to.iter().enumerate() {
+        file[at + i * 2..at + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+    }
+}
+
+#[test]
+fn a_sector_shared_by_two_streams_is_refused() {
+    let mut file = sample();
+    let a = start_of(&file, "WordDocument");
+    let b = start_of(&file, "Macros/VBA/ThisDocument");
+    // WordDocument's chain: a -> b -> b+1 ...: its sectors are also ThisDocument's.
+    set_fat(&mut file, a, b);
+    assert!(matches!(
+        CompoundFile::parse(&file, CfbLimits::default()),
+        Err(CfbError::CrossLinked(_))
+    ));
+}
+
+#[test]
+fn a_stream_over_the_fat_sectors_is_refused() {
+    let mut file = sample();
+    let a = start_of(&file, "WordDocument");
+    let fat0 = u32::from_le_bytes(file[76..80].try_into().unwrap());
+    set_fat(&mut file, a, fat0);
+    assert!(matches!(
+        CompoundFile::parse(&file, CfbLimits::default()),
+        Err(CfbError::CrossLinked(_))
+    ));
+}
+
+#[test]
+fn two_mini_streams_sharing_a_mini_sector_are_refused() {
+    let mut b = CfbBuilder::new();
+    b.add_stream("One", vec![1; 200]).unwrap();
+    b.add_stream("Two", vec![2; 200]).unwrap();
+    let mut file = b.finish().unwrap();
+    // Raw directory: entry 1 and 2 are the streams; point "Two" at the start of "One".
+    let (mut starts, mut offs) = (Vec::new(), Vec::new());
+    for i in 1..3 {
+        let off = dir_entry_offset(&file, i) + 116;
+        starts.push(u32::from_le_bytes(file[off..off + 4].try_into().unwrap()));
+        offs.push(off);
+    }
+    assert_ne!(starts[0], starts[1]);
+    file[offs[1]..offs[1] + 4].copy_from_slice(&starts[0].to_le_bytes());
+    assert!(matches!(
+        CompoundFile::parse(&file, CfbLimits::default()),
+        Err(CfbError::CrossLinked(_))
+    ));
+}
+
+#[test]
+fn rereading_streams_is_metered() {
+    let file = sample();
+    let limits = CfbLimits { max_total_read: 6000, ..CfbLimits::default() };
+    let cf = CompoundFile::parse(&file, limits).unwrap();
+    let wd = cf.find("WordDocument").unwrap();
+    assert_eq!(cf.read_stream(wd).unwrap().len(), 5000);
+    assert!(matches!(cf.read_stream(wd), Err(CfbError::ReadBudgetExceeded)));
+    // A small stream still fits in what is left.
+    let si = cf.find("\u{5}SummaryInformation").unwrap();
+    assert_eq!(cf.read_stream(si).unwrap().len(), 3);
+}
+
+#[test]
+fn forbidden_characters_in_names_are_refused() {
+    for bad in ['/', '\\', ':', '!'] {
+        let mut file = sample();
+        rename_raw(&mut file, "WordDocument", &[bad as u16]);
+        assert!(
+            matches!(
+                CompoundFile::parse(&file, CfbLimits::default()),
+                Err(CfbError::InvalidDirectory(_))
+            ),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn data_hidden_after_the_name_terminator_is_refused() {
+    let mut b = CfbBuilder::new();
+    b.add_stream("Workbook", vec![1; 10]).unwrap();
+    let mut file = b.finish().unwrap();
+    // "Workbook" -> "Work\0ook" with the declared length unchanged: other readers see a
+    // different name than the one this reader stops at.
+    rename_raw(&mut file, "Workbook", &['W' as u16, 'o' as u16, 'r' as u16, 'k' as u16, 0]);
+    assert!(matches!(
+        CompoundFile::parse(&file, CfbLimits::default()),
+        Err(CfbError::InvalidDirectory(_))
+    ));
+}
+
+#[test]
+fn duplicate_sibling_names_are_refused_ignoring_case() {
+    let mut b = CfbBuilder::new();
+    b.add_stream("Alpha", vec![1; 10]).unwrap();
+    b.add_stream("Alphb", vec![2; 10]).unwrap();
+    let mut file = b.finish().unwrap();
+    rename_raw(&mut file, "Alphb", &['A' as u16, 'L' as u16, 'P' as u16, 'H' as u16, 'A' as u16]);
+    assert!(matches!(
+        CompoundFile::parse(&file, CfbLimits::default()),
+        Err(CfbError::InvalidDirectory(_))
+    ));
+    // The same name under different storages is fine.
+    let mut ok = CfbBuilder::new();
+    ok.add_stream("A/Alpha", vec![1]).unwrap();
+    ok.add_stream("B/Alpha", vec![1]).unwrap();
+    assert!(CompoundFile::parse(&ok.finish().unwrap(), CfbLimits::default()).is_ok());
+}
+
+#[test]
+fn the_directory_chain_is_counted_before_it_is_copied() {
+    let mut b = CfbBuilder::new();
+    for i in 0..40 {
+        b.add_stream(&format!("S{i}"), vec![1; 4]).unwrap();
+    }
+    let file = b.finish().unwrap();
+    let limits = CfbLimits { max_directory_entries: 8, ..CfbLimits::default() };
+    assert!(
+        matches!(CompoundFile::parse(&file, limits), Err(CfbError::TooManyEntries(n)) if n >= 40)
+    );
+}

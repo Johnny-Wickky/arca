@@ -16,11 +16,20 @@
 //!   and a depth limit; unreachable ("orphaned") entries are reported because
 //!   they are a known hiding place for payloads;
 //! * stream sizes are bounded by [`CfbLimits`] and by the chain actually
-//!   present in the file — a stream can never be read past its chain.
+//!   present in the file — a stream can never be read past its chain;
+//! * every sector has at most one owner (FAT, DIFAT, directory, mini-FAT, mini
+//!   stream or one stream): a sector shared between two streams is a "cross-link"
+//!   and refused, because it lets a few kilobytes of file be read as gigabytes;
+//! * the bytes handed out by [`CompoundFile::read_stream`] are metered against
+//!   [`CfbLimits::max_total_read`], so re-reading does not multiply the footprint;
+//! * entry names may not contain the characters the specification forbids
+//!   (`/ \ : !`), hide data behind their terminating NUL or repeat among siblings,
+//!   and the memory of all paths is bounded.
 
 pub mod writer;
 
 use core::fmt;
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashSet};
 
 use crate::bytes::{LeReader, slice, to_usize, u16_le, u32_le};
@@ -46,13 +55,24 @@ pub struct CfbLimits {
     pub max_stream_size: u64,
     /// Maximum storage nesting depth.
     pub max_depth: usize,
+    /// Maximum number of bytes [`CompoundFile::read_stream`] hands out over the life of one
+    /// parsed file (the mini stream read while parsing is bounded by the file itself).
+    pub max_total_read: u64,
 }
 
 impl Default for CfbLimits {
     fn default() -> Self {
-        Self { max_directory_entries: 65_536, max_stream_size: 256 << 20, max_depth: 32 }
+        Self {
+            max_directory_entries: 65_536,
+            max_stream_size: 256 << 20,
+            max_depth: 32,
+            max_total_read: 1 << 30,
+        }
     }
 }
+
+/// Upper bound of the memory held by the `path` strings of all entries.
+const MAX_TOTAL_PATH_BYTES: usize = 8 << 20;
 
 /// Fatal structural errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +97,10 @@ pub enum CfbError {
     StreamTooLarge(u64),
     /// No entry with the given index exists or it is not a stream.
     NotAStream,
+    /// A sector belongs to two owners (for example to two streams).
+    CrossLinked(u32),
+    /// The streams read so far exceed [`CfbLimits::max_total_read`].
+    ReadBudgetExceeded,
 }
 
 impl fmt::Display for CfbError {
@@ -92,6 +116,8 @@ impl fmt::Display for CfbError {
             Self::TooManyEntries(n) => write!(f, "{n} directory entries exceed the limit"),
             Self::StreamTooLarge(n) => write!(f, "stream of {n} bytes exceeds the limit"),
             Self::NotAStream => f.write_str("entry is not a stream"),
+            Self::CrossLinked(s) => write!(f, "sector {s:#x} is shared by two owners"),
+            Self::ReadBudgetExceeded => f.write_str("total stream read budget exceeded"),
         }
     }
 }
@@ -155,6 +181,7 @@ pub struct CompoundFile<'a> {
     entries: Vec<DirEntry>,
     anomalies: Vec<CfbAnomaly>,
     limits: CfbLimits,
+    read_so_far: Cell<u64>,
 }
 
 /// Returns `true` if `data` begins with the OLE2 signature.
@@ -226,6 +253,7 @@ impl<'a> CompoundFile<'a> {
             entries: Vec::new(),
             anomalies: Vec::new(),
             limits,
+            read_so_far: Cell::new(0),
         };
 
         // --- DIFAT -------------------------------------------------------
@@ -233,6 +261,7 @@ impl<'a> CompoundFile<'a> {
             return Err(CfbError::InvalidHeader("FAT sector count exceeds file size"));
         }
         let mut fat_sectors: Vec<u32> = Vec::new();
+        let mut difat_sectors: Vec<u32> = Vec::new();
         for i in 0..HEADER_DIFAT_ENTRIES {
             let s = h32(76 + i * 4)?;
             if s != FREESECT {
@@ -251,6 +280,7 @@ impl<'a> CompoundFile<'a> {
                 return Err(CfbError::ChainCycle(difat_sector));
             }
             difat_seen = difat_seen.saturating_add(1);
+            difat_sectors.push(difat_sector);
             let sec = cf.sector(difat_sector)?;
             for i in 0..per_difat {
                 let s = u32_le(sec, i * 4).ok_or(CfbError::SectorOutOfRange(difat_sector))?;
@@ -282,6 +312,12 @@ impl<'a> CompoundFile<'a> {
 
         // --- Directory ---------------------------------------------------
         let dir_chain = cf.chain(first_dir_sector, &cf.fat, cf.sector_count)?;
+        // Count the entries before copying the sectors: the limit is about the chain, not
+        // about what an attacker managed to make us allocate.
+        let dir_entries = dir_chain.len().saturating_mul(sector_size / DIR_ENTRY_LEN);
+        if dir_entries > limits.max_directory_entries {
+            return Err(CfbError::TooManyEntries(dir_entries));
+        }
         let mut dir_bytes = Vec::with_capacity(dir_chain.len().saturating_mul(sector_size));
         for &s in &dir_chain {
             dir_bytes.extend_from_slice(cf.sector(s)?);
@@ -289,6 +325,7 @@ impl<'a> CompoundFile<'a> {
         let raw_entries = parse_directory(&dir_bytes, major, &limits, &mut cf.anomalies)?;
 
         // --- Mini FAT ----------------------------------------------------
+        let mut mini_fat_chain: Vec<u32> = Vec::new();
         if num_mini_fat > 0 && first_mini_fat != ENDOFCHAIN {
             let chain = cf.chain(first_mini_fat, &cf.fat, cf.sector_count)?;
             if chain.len() < to_usize(u64::from(num_mini_fat)).unwrap_or(usize::MAX) {
@@ -300,6 +337,7 @@ impl<'a> CompoundFile<'a> {
                 mini_fat.extend(words(sec));
             }
             cf.mini_fat = mini_fat;
+            mini_fat_chain = chain;
         }
 
         // --- Tree --------------------------------------------------------
@@ -316,6 +354,8 @@ impl<'a> CompoundFile<'a> {
             let size = root.size;
             cf.mini_stream = cf.read_regular(start, size)?;
         }
+
+        cf.check_ownership(&[&fat_sectors, &difat_sectors, &dir_chain, &mini_fat_chain])?;
 
         let addressable =
             u64::from(sector_count).saturating_add(1).saturating_mul(sector_size as u64);
@@ -367,11 +407,73 @@ impl<'a> CompoundFile<'a> {
         if e.size > self.limits.max_stream_size {
             return Err(CfbError::StreamTooLarge(e.size));
         }
+        let total = self.read_so_far.get().saturating_add(e.size);
+        if total > self.limits.max_total_read {
+            return Err(CfbError::ReadBudgetExceeded);
+        }
+        self.read_so_far.set(total);
         if e.size < self.mini_cutoff {
             self.read_mini(e.start_sector, e.size)
         } else {
             self.read_regular(e.start_sector, e.size)
         }
+    }
+
+    /// Refuses a file in which one sector has two owners.
+    ///
+    /// `system` lists the sectors of the FAT, DIFAT, directory and mini-FAT; the mini stream
+    /// and every stream (regular or mini) are walked here too, each over exactly the links its
+    /// declared size needs. A broken chain is not an error of this check: reading the stream
+    /// reports it, and the sectors seen before the break stay claimed.
+    fn check_ownership(&self, system: &[&[u32]]) -> Result<(), CfbError> {
+        let mut owned = vec![false; to_usize(u64::from(self.sector_count)).unwrap_or(0)];
+        let mut claim = |sectors: &[u32]| -> Result<(), CfbError> {
+            for &s in sectors {
+                let slot = owned.get_mut(s as usize).ok_or(CfbError::SectorOutOfRange(s))?;
+                if core::mem::replace(slot, true) {
+                    return Err(CfbError::CrossLinked(s));
+                }
+            }
+            Ok(())
+        };
+        for sectors in system {
+            claim(sectors)?;
+        }
+        if let Some(root) = self.entries.first()
+            && root.size > 0
+            && let Some(chain) = self.regular_chain(root.start_sector, root.size)
+        {
+            claim(&chain)?;
+        }
+        let mini_count = self.mini_stream.len() / MINI_SECTOR_LEN;
+        let mut mini_owned = vec![false; mini_count];
+        for e in &self.entries {
+            if e.kind != EntryKind::Stream || e.size == 0 || e.size > self.limits.max_stream_size {
+                continue;
+            }
+            if e.size < self.mini_cutoff {
+                let needed = to_usize(e.size).unwrap_or(usize::MAX).div_ceil(MINI_SECTOR_LEN);
+                let max = u32::try_from(mini_count).unwrap_or(u32::MAX);
+                let (chain, _) = self.walk(e.start_sector, &self.mini_fat, max, needed);
+                for s in chain {
+                    let slot =
+                        mini_owned.get_mut(s as usize).ok_or(CfbError::SectorOutOfRange(s))?;
+                    if core::mem::replace(slot, true) {
+                        return Err(CfbError::CrossLinked(s));
+                    }
+                }
+            } else if let Some(chain) = self.regular_chain(e.start_sector, e.size) {
+                claim(&chain)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The links of a regular (FAT) chain a stream of `size` bytes needs; a broken chain
+    /// yields the links before the break.
+    fn regular_chain(&self, start: u32, size: u64) -> Option<Vec<u32>> {
+        let needed = to_usize(size)?.div_ceil(self.sector_size);
+        Some(self.walk(start, &self.fat, self.sector_count, needed).0)
     }
 
     fn sector(&self, index: u32) -> Result<&'a [u8], CfbError> {
@@ -455,23 +557,40 @@ impl<'a> CompoundFile<'a> {
         max_index: u32,
         needed: usize,
     ) -> Result<Vec<u32>, CfbError> {
+        match self.walk(start, table, max_index, needed) {
+            (chain, Ok(())) => Ok(chain),
+            (_, Err(e)) => Err(e),
+        }
+    }
+
+    /// As [`Self::chain_bounded`], but a broken chain still yields the links before the break.
+    fn walk(
+        &self,
+        start: u32,
+        table: &[u32],
+        max_index: u32,
+        needed: usize,
+    ) -> (Vec<u32>, Result<(), CfbError>) {
         let mut out = Vec::with_capacity(needed.min(1 << 20));
         let mut seen = HashSet::new();
         let mut cur = start;
         while out.len() < needed {
             if cur == ENDOFCHAIN {
-                return Err(CfbError::ChainTooShort);
+                return (out, Err(CfbError::ChainTooShort));
             }
             if cur > MAXREGSECT || cur >= max_index {
-                return Err(CfbError::SectorOutOfRange(cur));
+                return (out, Err(CfbError::SectorOutOfRange(cur)));
             }
             if !seen.insert(cur) {
-                return Err(CfbError::ChainCycle(cur));
+                return (out, Err(CfbError::ChainCycle(cur)));
             }
             out.push(cur);
-            cur = *table.get(cur as usize).ok_or(CfbError::SectorOutOfRange(cur))?;
+            let Some(&next) = table.get(cur as usize) else {
+                return (out, Err(CfbError::SectorOutOfRange(cur)));
+            };
+            cur = next;
         }
-        Ok(out)
+        (out, Ok(()))
     }
 
     /// Iterates `(index, entry)` over every stream.
@@ -539,7 +658,18 @@ fn parse_directory(
             if name_len > 64 || name_len % 2 != 0 {
                 return Err(CfbError::InvalidDirectory("name length"));
             }
-            utf16le_until_nul(name_bytes.get(..name_len).unwrap_or(&[]))
+            let declared = name_bytes.get(..name_len).unwrap_or(&[]);
+            let name = utf16le_until_nul(declared);
+            // Anything but padding after the terminating NUL is data other readers would see
+            // as part of the name (or ignore): two different names for one entry.
+            let kept = name.encode_utf16().count().saturating_mul(2);
+            if declared.get(kept..).is_some_and(|rest| rest.iter().any(|&b| b != 0)) {
+                return Err(CfbError::InvalidDirectory("data after the name terminator"));
+            }
+            if obj_type != 5 && name.contains(['/', '\\', ':', '!']) {
+                return Err(CfbError::InvalidDirectory("forbidden character in name"));
+            }
+            name
         } else {
             String::new()
         };
@@ -565,6 +695,8 @@ fn build_tree(
     let mut out: Vec<DirEntry> = Vec::new();
     let mut map = vec![usize::MAX; raw.len()];
     let mut visited: BTreeSet<u32> = BTreeSet::new();
+    let mut sibling_names: HashSet<(usize, String)> = HashSet::new();
+    let mut path_bytes = 0usize;
 
     let root = raw.first().ok_or(CfbError::InvalidDirectory("empty"))?;
     out.push(DirEntry {
@@ -613,6 +745,16 @@ fn build_tree(
             } else {
                 format!("{parent_path}/{}", e.name)
             };
+            // Names compare case-insensitively: two siblings that differ only in case would be
+            // one entry to some readers and two to others.
+            let folded: String = e.name.chars().flat_map(char::to_lowercase).collect();
+            if !sibling_names.insert((parent_out, folded)) {
+                return Err(CfbError::InvalidDirectory("duplicate sibling name"));
+            }
+            path_bytes = path_bytes.saturating_add(path.len());
+            if path_bytes > MAX_TOTAL_PATH_BYTES {
+                return Err(CfbError::InvalidDirectory("paths too large"));
+            }
             let my_out = out.len();
             out.push(DirEntry {
                 name: e.name.clone(),

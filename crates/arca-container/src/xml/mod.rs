@@ -12,7 +12,13 @@
 //!   lengths are bounded ([`XmlLimits`]).
 //! * **Exactly one root element**; markup after the root is an error.
 //! * **Encoding**: UTF-8 (optionally with BOM) or UTF-16 with BOM, which is
-//!   transcoded first. Anything else is refused rather than guessed.
+//!   transcoded first. Anything else is refused rather than guessed: UTF-16/32
+//!   without a byte order mark and EBCDIC are recognised by their first bytes, and
+//!   an `encoding=` in the XML declaration must agree with the bytes.
+//! * **Characters**: only the XML `Char` production. NUL and the other C0 controls
+//!   (everything below U+0020 except tab, line feed and carriage return) and
+//!   U+FFFE/U+FFFF are refused, so a parser that stops at NUL and one that does not
+//!   cannot read two different documents out of the same bytes.
 //!
 //! Each event is returned together with its exact byte span in the source,
 //! which the span-preserving [`rewrite`] module uses to re-emit untouched
@@ -23,6 +29,7 @@ pub mod rewrite;
 use core::fmt;
 use core::ops::Range;
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
@@ -106,24 +113,74 @@ impl fmt::Display for XmlError {
 
 impl core::error::Error for XmlError {}
 
+/// How the bytes of a document are encoded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ByteEncoding {
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+}
+
 /// Decodes raw XML bytes to text according to the BOM.
 ///
+/// Documents in UTF-16 or UTF-32 without a byte order mark (and EBCDIC ones) are refused:
+/// they are read as UTF-8 by a reader that does not sniff and as something else by one that
+/// does. The text must consist of XML `Char`s only and its `encoding=` declaration, if
+/// any, must name the encoding the bytes are in.
+///
 /// # Errors
-/// Fails for invalid UTF-8/UTF-16 or oversized input.
+/// Fails for invalid UTF-8/UTF-16, an unsupported or inconsistent encoding, characters XML
+/// does not allow, or oversized input.
 pub fn decode_xml_bytes<'a>(bytes: &'a [u8], limits: &XmlLimits) -> Result<Cow<'a, str>, XmlError> {
     if bytes.len() > limits.max_input_bytes {
         return Err(XmlError::InputTooLarge(limits.max_input_bytes));
     }
-    match bytes {
-        [0xEF, 0xBB, 0xBF, rest @ ..] => core::str::from_utf8(rest)
-            .map(Cow::Borrowed)
-            .map_err(|_| XmlError::Encoding("invalid UTF-8")),
-        [0xFF, 0xFE, rest @ ..] => decode_utf16(rest, u16::from_le_bytes).map(Cow::Owned),
-        [0xFE, 0xFF, rest @ ..] => decode_utf16(rest, u16::from_be_bytes).map(Cow::Owned),
-        _ => core::str::from_utf8(bytes)
-            .map(Cow::Borrowed)
-            .map_err(|_| XmlError::Encoding("invalid UTF-8")),
+    let (text, encoding): (Cow<'a, str>, ByteEncoding) = match bytes {
+        // UTF-32 byte order marks come first: FF FE 00 00 also starts with the UTF-16LE one.
+        [0x00, 0x00, 0xFE, 0xFF, ..] | [0xFF, 0xFE, 0x00, 0x00, ..] => {
+            return Err(XmlError::Encoding("UTF-32 is not supported"));
+        }
+        [0xFF, 0xFE, rest @ ..] => {
+            (decode_utf16(rest, u16::from_le_bytes).map(Cow::Owned)?, ByteEncoding::Utf16Le)
+        }
+        [0xFE, 0xFF, rest @ ..] => {
+            (decode_utf16(rest, u16::from_be_bytes).map(Cow::Owned)?, ByteEncoding::Utf16Be)
+        }
+        // `<` as the first character of UTF-16/UTF-32 without a byte order mark.
+        [0x00, 0x3C, ..] | [0x3C, 0x00, ..] | [0x00, 0x00, 0x00, 0x3C, ..] => {
+            return Err(XmlError::Encoding("UTF-16/32 without a byte order mark"));
+        }
+        // `<?xm` in EBCDIC.
+        [0x4C, 0x6F, 0xA7, 0x94, ..] => return Err(XmlError::Encoding("EBCDIC is not supported")),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => (
+            core::str::from_utf8(rest)
+                .map(Cow::Borrowed)
+                .map_err(|_| XmlError::Encoding("invalid UTF-8"))?,
+            ByteEncoding::Utf8,
+        ),
+        _ => (
+            core::str::from_utf8(bytes)
+                .map(Cow::Borrowed)
+                .map_err(|_| XmlError::Encoding("invalid UTF-8"))?,
+            ByteEncoding::Utf8,
+        ),
+    };
+    check_chars(&text)?;
+    if let Some(declared) = declared_encoding(&text) {
+        let ok = match encoding {
+            ByteEncoding::Utf8 => declared.eq_ignore_ascii_case("utf-8"),
+            ByteEncoding::Utf16Le => {
+                declared.eq_ignore_ascii_case("utf-16") || declared.eq_ignore_ascii_case("utf-16le")
+            }
+            ByteEncoding::Utf16Be => {
+                declared.eq_ignore_ascii_case("utf-16") || declared.eq_ignore_ascii_case("utf-16be")
+            }
+        };
+        if !ok {
+            return Err(XmlError::Encoding("declared encoding differs from the byte encoding"));
+        }
     }
+    Ok(text)
 }
 
 fn decode_utf16(bytes: &[u8], f: fn([u8; 2]) -> u16) -> Result<String, XmlError> {
@@ -134,6 +191,60 @@ fn decode_utf16(bytes: &[u8], f: fn([u8; 2]) -> u16) -> Result<String, XmlError>
     char::decode_utf16(units)
         .collect::<Result<String, _>>()
         .map_err(|_| XmlError::Encoding("invalid UTF-16"))
+}
+
+/// Refuses text that is not made of XML `Char`s the parser may see: NUL and the other C0
+/// controls except tab, line feed and carriage return, and U+FFFE / U+FFFF.
+fn check_chars(text: &str) -> Result<(), XmlError> {
+    let bytes = text.as_bytes();
+    if bytes.iter().any(|&b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) {
+        return Err(XmlError::Encoding("control character is not allowed in XML"));
+    }
+    // U+FFFE and U+FFFF are EF BF BE and EF BF BF in UTF-8.
+    let mut rest = bytes;
+    while let Some(i) = rest.iter().position(|&b| b == 0xEF) {
+        rest = rest.get(i + 1..).unwrap_or_default();
+        if matches!(rest.get(..2), Some([0xBF, 0xBE | 0xBF])) {
+            return Err(XmlError::Encoding("U+FFFE / U+FFFF is not allowed in XML"));
+        }
+    }
+    Ok(())
+}
+
+/// The value of the `encoding` pseudo-attribute of the XML declaration at the start of `src`.
+#[must_use]
+pub fn declared_encoding(src: &str) -> Option<&str> {
+    declared_encoding_span(src).and_then(|span| src.get(span))
+}
+
+/// Byte range of the value of the `encoding` pseudo-attribute in `src`.
+fn declared_encoding_span(src: &str) -> Option<Range<usize>> {
+    const WS: [char; 4] = [' ', '\t', '\r', '\n'];
+    const PREFIX: &str = "<?xml";
+    let decl = src.strip_prefix(PREFIX)?;
+    // `<?xml-stylesheet` and friends are processing instructions, not the declaration.
+    if !decl.starts_with(WS) {
+        return None;
+    }
+    let decl = decl.get(..decl.find("?>")?)?;
+    // `rest` is always a suffix of `decl`, which starts `PREFIX.len()` bytes into `src`.
+    let at = |rest: &str| PREFIX.len() + decl.len() - rest.len();
+    let mut rest = decl;
+    loop {
+        rest = rest.trim_start_matches(WS);
+        let name_end = rest.find(|c: char| c == '=' || WS.contains(&c))?;
+        let name = rest.get(..name_end)?;
+        rest = rest.get(name_end..)?.trim_start_matches(WS).strip_prefix('=')?;
+        rest = rest.trim_start_matches(WS);
+        let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+        let body = rest.get(1..)?;
+        let close = body.find(quote)?;
+        if name == "encoding" {
+            let start = at(body);
+            return Some(start..start + close);
+        }
+        rest = body.get(close + 1..)?;
+    }
 }
 
 /// One parser event with its location.
@@ -178,6 +289,7 @@ impl<'a> SecureXmlReader<'a> {
         if src.len() > limits.max_input_bytes {
             return Err(XmlError::InputTooLarge(limits.max_input_bytes));
         }
+        check_chars(src)?;
         let mut reader = Reader::from_str(src);
         let cfg = reader.config_mut();
         cfg.check_end_names = true;
@@ -317,7 +429,7 @@ impl<'a> SecureXmlReader<'a> {
         // (the parser's own `with_checks` allocates a vector per element, which
         // dominated the cost of large spreadsheet parts).
         let mut inline: [&str; INLINE_ATTRS] = [""; INLINE_ATTRS];
-        let mut spill: Vec<&str> = Vec::new();
+        let mut spill: HashSet<&str> = HashSet::new();
         let mut count = 0usize;
         let mut attrs = e.attributes();
         attrs.with_checks(false);
@@ -337,7 +449,7 @@ impl<'a> SecureXmlReader<'a> {
             if let Some(slot) = inline.get_mut(count) {
                 *slot = key;
             } else {
-                spill.push(key);
+                spill.insert(key);
             }
             // Resolving the value enforces the entity policy inside attributes:
             // only the predefined entities and character references succeed.
@@ -405,6 +517,79 @@ pub fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Result of a namespace-aware attribute lookup (see [`attr_ns`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttrLookup {
+    /// No attribute has this local name.
+    Absent,
+    /// The attribute, written with the expected prefix, and nothing else of that local name.
+    Found(String),
+    /// Only attributes with another prefix carry this local name (and exactly one does).
+    /// It may be the same namespace under a different prefix, or a foreign attribute that
+    /// merely shares the name; the caller decides whether that is acceptable.
+    OtherPrefix(String),
+    /// Several attributes share the local name under different prefixes (`w:instr` next to
+    /// `x:instr`): readers that pick the first, the last or the one in the right namespace
+    /// disagree. `preferred` is the one with the expected prefix, if there is one.
+    Collision {
+        /// Value of the attribute with the expected prefix.
+        preferred: Option<String>,
+    },
+}
+
+/// Looks an attribute up by local name *and* prefix, reporting same-name collisions.
+///
+/// `prefix` is the prefix the consumer expects (`Some("r")` for `r:id`, `None` for an
+/// unprefixed attribute). Unlike [`attr`], which returns the first attribute whose local
+/// name matches whatever its prefix, this tells a consumer when the answer would depend on
+/// which attribute a reader looks at. A consumer should treat [`AttrLookup::Collision`] as a
+/// parser differential, not pick a value silently.
+#[must_use]
+pub fn attr_ns(e: &BytesStart<'_>, prefix: Option<&str>, local: &str) -> AttrLookup {
+    let mut preferred: Option<String> = None;
+    let mut other: Option<String> = None;
+    let mut matches = 0usize;
+    for a in lookup(e) {
+        let key: &str = a.key.into_inner();
+        let (p, l) = split_qname(key);
+        if l != local {
+            continue;
+        }
+        matches += 1;
+        // A value that cannot be unescaped counts as present but empty of meaning.
+        let value =
+            a.normalized_value(XmlVersion::Implicit1_0).map(Cow::into_owned).unwrap_or_default();
+        if p == prefix {
+            preferred = Some(value);
+        } else {
+            other = Some(value);
+        }
+    }
+    match (matches, preferred, other) {
+        (0, ..) => AttrLookup::Absent,
+        (1, Some(v), None) => AttrLookup::Found(v),
+        (1, None, Some(v)) => AttrLookup::OtherPrefix(v),
+        (_, preferred, _) => AttrLookup::Collision { preferred },
+    }
+}
+
+/// Replaces the encoding named in the XML declaration at the start of `src` with `UTF-8`.
+///
+/// A part that was UTF-16 and is written out as UTF-8 (a sterile copy, a rewrite) must not
+/// keep saying `encoding="UTF-16"`: the next reader would decode the bytes it was given as
+/// something they are not. Text without a declaration, or already declaring UTF-8, is
+/// returned unchanged.
+#[must_use]
+pub fn declare_utf8(src: &str) -> Cow<'_, str> {
+    let Some(span) = declared_encoding_span(src) else { return Cow::Borrowed(src) };
+    match (src.get(span.clone()), src.get(..span.start), src.get(span.end..)) {
+        (Some(enc), Some(head), Some(tail)) if !enc.eq_ignore_ascii_case("utf-8") => {
+            Cow::Owned(format!("{head}UTF-8{tail}"))
+        }
+        _ => Cow::Borrowed(src),
+    }
 }
 
 /// Returns the unescaped value of the attribute with exactly this qualified name.

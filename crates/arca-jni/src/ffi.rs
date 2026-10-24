@@ -41,8 +41,13 @@ type JLong = i64;
 type JSize = i32;
 /// `jobject`, `jclass`, `jarray`, `jbyteArray` (all opaque pointers).
 type JObject = *mut c_void;
-/// `const struct JNINativeInterface_` seen as an array of 235 function pointers.
-type Table = [*const c_void; 235];
+/// The first 229 slots of `const struct JNINativeInterface_` (up to `ExceptionCheck`, the last
+/// one used here), as an array of function pointers.
+///
+/// The real table has 233 to 235 entries depending on the JDK or Android runtime; a reference
+/// to more entries than the runtime allocated would be undefined behaviour even if the extra
+/// ones were never read, so the type covers only a prefix every runtime has.
+type Table = [*const c_void; EXCEPTION_CHECK + 1];
 /// `JNIEnv *`.
 type Env = *mut *const Table;
 
@@ -508,6 +513,23 @@ pub extern "system" fn Java_org_arca_viewer_Native_releaseInfo(
 
 #[cfg(test)]
 mod tests {
+    /// The table type covers the slots that are used and nothing past them: a reference to more
+    /// entries than a runtime allocated (233 on Android and JDK 8, 235 on JDK 21) is undefined.
+    #[test]
+    fn the_table_type_ends_at_the_last_slot_used() {
+        let slots = size_of::<super::Table>() / size_of::<*const core::ffi::c_void>();
+        assert_eq!(slots, super::EXCEPTION_CHECK + 1);
+        let used = [
+            super::EXCEPTION_CLEAR,
+            super::GET_ARRAY_LENGTH,
+            super::NEW_BYTE_ARRAY,
+            super::GET_BYTE_ARRAY_REGION,
+            super::SET_BYTE_ARRAY_REGION,
+            super::EXCEPTION_CHECK,
+        ];
+        assert!(used.iter().all(|&i| i < slots));
+    }
+
     /// Recomputes the table indices used above from the JDK's `jni.h`, when one is installed.
     #[test]
     fn jni_table_indices_match_jni_h() {

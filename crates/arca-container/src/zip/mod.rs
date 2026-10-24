@@ -13,6 +13,11 @@
 //! | recursive bombs                          | every inflate is charged to a shared [`InflateBudget`] |
 //! | local/central header confusion           | name, method and encryption flag must agree between both headers |
 //! | central-directory smuggling / prefixes   | `cd_offset + cd_size` must end exactly at the end-of-central-directory record |
+//! | a second, hidden central directory       | no other end-of-central-directory (or ZIP64) signature may follow the start of the chosen central directory: a decoy record at the end of the file with the real one inside an entry comment is refused |
+//! | trailing bytes inside a deflate range    | the deflate stream must consume exactly the compressed size the headers declare |
+//! | data descriptors that disagree           | CRC and sizes of the descriptor are read and compared with the central directory |
+//! | ZIP64 markers in local headers           | the sizes in the local ZIP64 extra field are compared too |
+//! | Unicode path extra fields                | a Unicode Path (0x7075) naming a member differently is refused |
 //! | corrupted data                           | CRC-32 of every member is verified |
 
 pub mod name;
@@ -33,6 +38,7 @@ const SIG_CENTRAL: u32 = 0x0201_4b50;
 const SIG_EOCD: u32 = 0x0605_4b50;
 const SIG_ZIP64_EOCD: u32 = 0x0606_4b50;
 const SIG_ZIP64_LOCATOR: u32 = 0x0706_4b50;
+const SIG_DATA_DESCRIPTOR: u32 = 0x0807_4b50;
 
 const EOCD_LEN: usize = 22;
 const CENTRAL_LEN: usize = 46;
@@ -155,6 +161,12 @@ pub enum ZipError {
     CrcMismatch(String),
     /// The DEFLATE stream is corrupt.
     Inflate(String),
+    /// More than one end-of-central-directory record could be taken for the real one.
+    AmbiguousEndOfCentralDirectory,
+    /// The DEFLATE stream of a member ends before (or runs past) its declared compressed size.
+    CompressedSizeMismatch(String),
+    /// An Info-ZIP Unicode Path extra field names a member differently from its header.
+    UnicodePathMismatch(String),
 }
 
 impl fmt::Display for ZipError {
@@ -202,6 +214,15 @@ impl fmt::Display for ZipError {
             }
             Self::CrcMismatch(n) => write!(f, "CRC-32 mismatch in member {n:?}"),
             Self::Inflate(n) => write!(f, "corrupt DEFLATE stream in member {n:?}"),
+            Self::AmbiguousEndOfCentralDirectory => {
+                f.write_str("more than one end-of-central-directory record is present")
+            }
+            Self::CompressedSizeMismatch(n) => {
+                write!(f, "member {n:?}: DEFLATE stream does not fill its compressed size")
+            }
+            Self::UnicodePathMismatch(n) => {
+                write!(f, "member {n:?}: Unicode path extra field names it differently")
+            }
         }
     }
 }
@@ -232,7 +253,7 @@ pub enum ZipAnomaly {
         /// Total size of the gaps.
         bytes: u64,
     },
-    /// The archive carries a comment.
+    /// The archive, or one of its members, carries a comment.
     ArchiveComment {
         /// Comment length.
         bytes: u64,
@@ -265,6 +286,8 @@ pub struct ZipEntry {
     uncompressed_size: u64,
     local_header_offset: u64,
     data_offset: u64,
+    /// Length of the data descriptor behind the data (`0` if the entry has none).
+    descriptor_len: u64,
 }
 
 impl ZipEntry {
@@ -336,6 +359,8 @@ struct Eocd {
     /// Offset at which the central directory must end (EOCD or ZIP64 EOCD record).
     cd_end_expected: u64,
     zip64: bool,
+    /// Offset of the chosen end-of-central-directory record.
+    pos: usize,
 }
 
 impl<'a> ZipArchive<'a> {
@@ -362,6 +387,7 @@ impl<'a> ZipArchive<'a> {
         }
         let cd_start = to_usize(eocd.cd_offset).ok_or(ZipError::CentralDirectoryMismatch)?;
         let cd_end_usize = to_usize(cd_end).ok_or(ZipError::CentralDirectoryMismatch)?;
+        check_single_eocd(data, cd_start, &eocd)?;
 
         let mut entries: Vec<ZipEntry> = Vec::new();
         let mut index = BTreeMap::new();
@@ -469,6 +495,9 @@ impl<'a> ZipArchive<'a> {
                 // The stream produces more (or fewer) bytes than the header admits.
                 InflateFailure::Size => ZipError::SizeMismatch(name()),
                 InflateFailure::Corrupt => ZipError::Inflate(name()),
+                // Bytes inside the member's range that the stream never reads are data
+                // another reader may interpret differently.
+                InflateFailure::Trailing => ZipError::CompressedSizeMismatch(name()),
             })?,
             method => return Err(ZipError::UnsupportedCompression { name: name(), method }),
         };
@@ -505,6 +534,8 @@ enum InflateFailure {
     Size,
     /// The stream is truncated or not valid DEFLATE.
     Corrupt,
+    /// The stream ends before the end of the compressed range.
+    Trailing,
 }
 
 /// Inflates a raw DEFLATE stream into a buffer of *exactly* `expected` bytes.
@@ -520,7 +551,7 @@ fn inflate_exact(raw: &[u8], expected: usize) -> Result<Vec<u8>, InflateFailure>
     out.try_reserve_exact(expected).map_err(|_| InflateFailure::Memory)?;
     out.resize(expected, 0);
     let mut state = Box::<DecompressorOxide>::default();
-    let (status, _consumed, written) = decompress(
+    let (status, consumed, written) = decompress(
         &mut state,
         raw,
         &mut out,
@@ -528,7 +559,8 @@ fn inflate_exact(raw: &[u8], expected: usize) -> Result<Vec<u8>, InflateFailure>
         inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
     );
     match status {
-        TINFLStatus::Done if written == expected => Ok(out),
+        TINFLStatus::Done if written == expected && consumed == raw.len() => Ok(out),
+        TINFLStatus::Done if written == expected => Err(InflateFailure::Trailing),
         TINFLStatus::Done | TINFLStatus::HasMoreOutput => Err(InflateFailure::Size),
         _ => Err(InflateFailure::Corrupt),
     }
@@ -588,6 +620,7 @@ fn find_eocd(data: &[u8], anomalies: &mut Vec<ZipAnomaly>) -> Result<Eocd, ZipEr
             cd_offset: u64::from(cd_offset),
             cd_end_expected: pos as u64,
             zip64: false,
+            pos,
         });
     }
 
@@ -629,7 +662,56 @@ fn find_eocd(data: &[u8], anomalies: &mut Vec<ZipAnomaly>) -> Result<Eocd, ZipEr
         cd_offset: r64(48)?,
         cd_end_expected: rec_off,
         zip64: true,
+        pos,
     })
+}
+
+/// Refuses an archive in which another end-of-central-directory record could be the real one.
+///
+/// The chosen record is the last one in the file whose comment fits. A reader that scans
+/// from the front, or that stops at a record inside a comment, would take a different
+/// central directory; so would a reader that honours a ZIP64 record this one ignores.
+/// Everything from the start of the central directory to the end of the file is therefore
+/// searched for further record signatures (member data before the central directory is not:
+/// a stored nested archive legitimately contains them). The ZIP64 record and locator that
+/// belong to the chosen record are expected where its locator points.
+fn check_single_eocd(data: &[u8], cd_start: usize, eocd: &Eocd) -> Result<(), ZipError> {
+    let loc = eocd.pos.checked_sub(ZIP64_LOCATOR_LEN);
+    let rec = loc
+        .filter(|&l| u32_le(data, l) == Some(SIG_ZIP64_LOCATOR))
+        .and_then(|l| u64_le(data, l + 8))
+        .and_then(to_usize);
+    let tail = data.get(cd_start..).ok_or(ZipError::CentralDirectoryMismatch)?;
+    for (i, window) in tail.windows(4).enumerate() {
+        let at = cd_start.saturating_add(i);
+        let ambiguous = match u32_le(window, 0) {
+            Some(SIG_EOCD) => at != eocd.pos && looks_like_eocd(data, at),
+            Some(SIG_ZIP64_EOCD) => Some(at) != rec && u64_le(data, at + 4).is_some(),
+            Some(SIG_ZIP64_LOCATOR) => Some(at) != loc && u32_le(data, at + 4) == Some(0),
+            _ => false,
+        };
+        if ambiguous {
+            return Err(ZipError::AmbiguousEndOfCentralDirectory);
+        }
+    }
+    Ok(())
+}
+
+/// `true` if the bytes at `at` are shaped like an end-of-central-directory record: whole,
+/// on disk 0, with a central directory on disk 0. (Four bytes that merely equal the
+/// signature, inside a CRC or an offset, do not make a second archive.)
+fn looks_like_eocd(data: &[u8], at: usize) -> bool {
+    slice(data, at, EOCD_LEN).is_some()
+        && u16_le(data, at + 4) == Some(0)
+        && u16_le(data, at + 6) == Some(0)
+}
+
+/// The name an Info-ZIP Unicode Path extra field (0x7075) carries, if it is well formed and
+/// belongs to `header_name` (its CRC-32 is the one of the raw header name).
+fn unicode_path<'e>(body: &'e [u8], header_name: &[u8]) -> Option<&'e [u8]> {
+    let (&version, rest) = body.split_first()?;
+    let crc = u32_le(rest, 0)?;
+    (version == 1 && crc == arca_digest::crc32(header_name)).then(|| rest.get(4..)).flatten()
 }
 
 fn parse_central_header(
@@ -672,6 +754,9 @@ fn parse_central_header(
     }
     let raw_name = slice(data, var_start, name_len).ok_or(bad())?;
     let extra = slice(data, var_start + name_len, extra_len).ok_or(bad())?;
+    if comment_len > 0 {
+        anomalies.push(ZipAnomaly::ArchiveComment { bytes: comment_len as u64 });
+    }
 
     let name = validate_member_name(raw_name, limits.max_name_len).map_err(|reason| {
         ZipError::InvalidName {
@@ -705,7 +790,15 @@ fn parse_central_header(
                     disk = r.u32().ok_or(bad())?;
                 }
             }
-            0x7075 => has_unicode_path = true,
+            0x7075 => {
+                has_unicode_path = true;
+                // A name that is not the header name is a second name for the member.
+                if unicode_path(body, raw_name).is_some_and(|u| u != raw_name) {
+                    return Err(ZipError::UnicodePathMismatch(name));
+                }
+            }
+            // Info-ZIP Unicode Comment: like the comment field, informational only.
+            0x6375 => anomalies.push(ZipAnomaly::ArchiveComment { bytes: size as u64 }),
             _ => {}
         }
         x = x + 4 + size;
@@ -723,7 +816,8 @@ fn parse_central_header(
     }
 
     let is_dir = name.ends_with('/');
-    if is_dir && uncompressed != 0 {
+    // A directory has no content; an empty DEFLATE stream is two bytes.
+    if is_dir && (uncompressed != 0 || compressed > 2) {
         return Err(ZipError::LocalHeaderMismatch(name));
     }
     if flags & (FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION) != 0 {
@@ -744,6 +838,7 @@ fn parse_central_header(
             uncompressed_size: uncompressed,
             local_header_offset: local_offset,
             data_offset: 0,
+            descriptor_len: 0,
         },
         next,
     ))
@@ -761,6 +856,7 @@ fn verify_local_header(data: &[u8], entry: &mut ZipEntry, cd_offset: u64) -> Res
     let name_len = usize::from(u16_le(header, 26).ok_or_else(mismatch)?);
     let extra_len = usize::from(u16_le(header, 28).ok_or_else(mismatch)?);
     let name = slice(data, pos + LOCAL_LEN, name_len).ok_or_else(mismatch)?;
+    let extra = slice(data, pos + LOCAL_LEN + name_len, extra_len).ok_or_else(mismatch)?;
     if name != entry.name.as_bytes() || method != entry.method {
         return Err(mismatch());
     }
@@ -768,21 +864,52 @@ fn verify_local_header(data: &[u8], entry: &mut ZipEntry, cd_offset: u64) -> Res
     if flags & enc_mask != entry.flags & enc_mask {
         return Err(mismatch());
     }
-    if flags & FLAG_DATA_DESCRIPTOR == 0 {
-        // Without a data descriptor the local sizes must agree too
-        // (ZIP64 local headers carry 0xFFFFFFFF and the real sizes in extra).
-        let lcrc = u32_le(header, 14).ok_or_else(mismatch)?;
-        let lcomp = u32_le(header, 18).ok_or_else(mismatch)?;
-        let lun = u32_le(header, 22).ok_or_else(mismatch)?;
-        let zip64_marked = lcomp == u32::MAX || lun == u32::MAX;
-        if !zip64_marked
-            && (lcrc != entry.crc32
-                || u64::from(lcomp) != entry.compressed_size
-                || u64::from(lun) != entry.uncompressed_size)
-        {
-            return Err(mismatch());
+
+    // The local extra field: ZIP64 sizes (when the 32-bit fields are markers) and a Unicode
+    // path that must not name the member differently from its header.
+    let lcrc = u32_le(header, 14).ok_or_else(mismatch)?;
+    let lcomp = u32_le(header, 18).ok_or_else(mismatch)?;
+    let lun = u32_le(header, 22).ok_or_else(mismatch)?;
+    let mut zip64_sizes: Option<(Option<u64>, Option<u64>)> = None;
+    let mut x = 0usize;
+    while x.checked_add(4).is_some_and(|e| e <= extra.len()) {
+        let id = u16_le(extra, x).ok_or_else(mismatch)?;
+        let size = usize::from(u16_le(extra, x + 2).ok_or_else(mismatch)?);
+        let body = slice(extra, x + 4, size).ok_or_else(mismatch)?;
+        match id {
+            0x0001 => {
+                let mut r = crate::bytes::LeReader::new(body);
+                let un = (lun == u32::MAX).then(|| r.u64()).flatten();
+                let comp = (lcomp == u32::MAX).then(|| r.u64()).flatten();
+                zip64_sizes = Some((un, comp));
+            }
+            0x7075 if unicode_path(body, name).is_some_and(|u| u != name) => {
+                return Err(ZipError::UnicodePathMismatch(entry.name.clone()));
+            }
+            _ => {}
         }
+        x = x + 4 + size;
     }
+
+    let local_agrees = {
+        let size_agrees = |marker: bool, local: u32, declared: u64, from_extra: Option<u64>| {
+            if marker { from_extra == Some(declared) } else { u64::from(local) == declared }
+        };
+        lcrc == entry.crc32
+            && size_agrees(
+                lcomp == u32::MAX,
+                lcomp,
+                entry.compressed_size,
+                zip64_sizes.and_then(|z| z.1),
+            )
+            && size_agrees(
+                lun == u32::MAX,
+                lun,
+                entry.uncompressed_size,
+                zip64_sizes.and_then(|z| z.0),
+            )
+    };
+
     let data_offset = (pos as u64)
         .checked_add(LOCAL_LEN as u64)
         .and_then(|v| v.checked_add(name_len as u64))
@@ -794,8 +921,53 @@ fn verify_local_header(data: &[u8], entry: &mut ZipEntry, cd_offset: u64) -> Res
     if data_end > cd_offset {
         return Err(ZipError::EntryOutOfBounds(entry.name.clone()));
     }
+
+    if flags & FLAG_DATA_DESCRIPTOR == 0 {
+        // Without a data descriptor the local CRC and sizes must agree too.
+        if !local_agrees {
+            return Err(mismatch());
+        }
+    } else {
+        // The sizes follow the data. Read them and hold them against the central directory;
+        // a writer that also filled the local header may omit the descriptor.
+        match data_descriptor_len(data, data_end, cd_offset, entry) {
+            Some(len) => entry.descriptor_len = len,
+            None if local_agrees => {}
+            None => return Err(mismatch()),
+        }
+    }
     entry.data_offset = data_offset;
     Ok(())
+}
+
+/// Length of the data descriptor at `at` if one that matches the central directory is there.
+///
+/// The record is `[signature] crc-32, compressed size, uncompressed size`, with 4-byte
+/// sizes, or 8-byte sizes in a ZIP64 archive; writers differ in the signature and the width.
+fn data_descriptor_len(data: &[u8], at: u64, limit: u64, entry: &ZipEntry) -> Option<u64> {
+    let at = to_usize(at)?;
+    let matches_at = |base: usize| -> Option<u64> {
+        if u32_le(data, base)? != entry.crc32 {
+            return None;
+        }
+        let sizes = base.checked_add(4)?;
+        let short = u64::from(u32_le(data, sizes)?) == entry.compressed_size
+            && u64::from(u32_le(data, sizes.checked_add(4)?)?) == entry.uncompressed_size;
+        if short {
+            return Some(12);
+        }
+        let wide = u64_le(data, sizes)? == entry.compressed_size
+            && u64_le(data, sizes.checked_add(8)?)? == entry.uncompressed_size;
+        wide.then_some(20)
+    };
+    let (sig_len, record_len) = if u32_le(data, at) == Some(SIG_DATA_DESCRIPTOR) {
+        (4usize, matches_at(at.checked_add(4)?)?)
+    } else {
+        (0, matches_at(at)?)
+    };
+    let len = record_len.checked_add(sig_len as u64)?;
+    // The record must lie before the central directory.
+    (at as u64).checked_add(len).filter(|&end| end <= limit).map(|_| len)
 }
 
 fn check_layout(
@@ -808,7 +980,7 @@ fn check_layout(
         .map(|e| {
             (
                 e.local_header_offset,
-                e.data_offset.saturating_add(e.compressed_size),
+                e.data_offset.saturating_add(e.compressed_size).saturating_add(e.descriptor_len),
                 e.name.as_str(),
             )
         })
@@ -828,16 +1000,13 @@ fn check_layout(
                 anomalies.push(ZipAnomaly::PrefixData { bytes: start });
             }
         } else {
-            // Up to 24 bytes may legitimately be a data descriptor.
-            let gap = start - cursor;
-            if gap > 24 {
-                gaps = gaps.saturating_add(gap);
-            }
+            // A data descriptor is part of its member's span; anything else is a gap.
+            gaps = gaps.saturating_add(start - cursor);
         }
         cursor = end;
         prev_name = Some(name);
     }
-    if !spans.is_empty() && cd_offset > cursor && cd_offset - cursor > 24 {
+    if !spans.is_empty() && cd_offset > cursor {
         gaps = gaps.saturating_add(cd_offset - cursor);
     }
     if gaps > 0 {

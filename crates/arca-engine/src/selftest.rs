@@ -56,10 +56,61 @@ struct Step {
     detail: String,
 }
 
-fn load(host: &Host, bytes: &[u8]) -> Result<Handle, Status> {
-    let doc = host.doc_new(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-    host.doc_append(doc, bytes)?;
+/// What the self-test holds in the host, released on every path out of a step (an early `?`
+/// included): a failing step must not leave documents, jobs or results behind.
+enum Held {
+    Doc,
+    Job,
+    Outcome,
+}
+
+struct Guard<'a> {
+    host: &'a Host,
+    handle: Handle,
+    what: Held,
+}
+
+impl<'a> Guard<'a> {
+    const fn new(host: &'a Host, handle: Handle, what: Held) -> Self {
+        Self { host, handle, what }
+    }
+
+    const fn id(&self) -> Handle {
+        self.handle
+    }
+}
+
+impl Drop for Guard<'_> {
+    fn drop(&mut self) {
+        match self.what {
+            Held::Doc => self.host.doc_free(self.handle),
+            Held::Job => self.host.job_free(self.handle),
+            Held::Outcome => self.host.outcome_free(self.handle),
+        };
+    }
+}
+
+fn load<'a>(host: &'a Host, bytes: &[u8]) -> Result<Guard<'a>, Status> {
+    let doc =
+        Guard::new(host, host.doc_new(u64::try_from(bytes.len()).unwrap_or(u64::MAX)), Held::Doc);
+    host.doc_append(doc.id(), bytes)?;
     Ok(doc)
+}
+
+/// Runs `op` and returns the result if it finished with [`Status::Ok`].
+fn run_ok<'a>(
+    host: &'a Host,
+    job: &Guard<'_>,
+    doc: &Guard<'_>,
+    op: u16,
+    flags: u32,
+) -> Result<Guard<'a>, String> {
+    let outcome =
+        Guard::new(host, host.run(job.id(), doc.id(), op, flags).map_err(describe)?, Held::Outcome);
+    match host.outcome_status(outcome.id()).map_err(describe)? {
+        Status::Ok => Ok(outcome),
+        other => Err(describe(other)),
+    }
 }
 
 /// Runs the self-test and returns its JSON report:
@@ -77,12 +128,10 @@ pub fn run(host: &Host) -> Vec<u8> {
     if !bytes.is_empty()
         && let Ok(doc) = load(host, &bytes)
     {
-        let job = host.job_new();
-        steps.push(scan(host, job, doc));
-        steps.push(preview(host, job, doc));
-        steps.push(sanitize(host, job, doc));
-        host.job_free(job);
-        host.doc_free(doc);
+        let job = Guard::new(host, host.job_new(), Held::Job);
+        steps.push(scan(host, &job, &doc));
+        steps.push(preview(host, &job, &doc));
+        steps.push(sanitize(host, &job, &doc));
     }
     let ok = steps.iter().all(|s| s.ok);
     let mut w = JsonWriter::new();
@@ -118,16 +167,10 @@ fn describe(status: Status) -> String {
     format!("status {status:?}")
 }
 
-fn scan(host: &Host, job: Handle, doc: Handle) -> Step {
+fn scan(host: &Host, job: &Guard<'_>, doc: &Guard<'_>) -> Step {
     timed("scan", || {
-        let outcome = host.run(job, doc, op::SCAN, 0).map_err(describe)?;
-        let status = host.outcome_status(outcome).map_err(describe)?;
-        if status != Status::Ok {
-            host.outcome_free(outcome);
-            return Err(describe(status));
-        }
-        let json = host.report_json(outcome).map_err(describe)?;
-        host.outcome_free(outcome);
+        let outcome = run_ok(host, job, doc, op::SCAN, 0)?;
+        let json = host.report_json(outcome.id()).map_err(describe)?;
         let text = String::from_utf8_lossy(&json);
         let found = text.contains(ThreatKind::ExternalImage.id())
             && text.contains(&format!("\"verdict\":\"{:?}\"", Verdict::HiddenTrackers));
@@ -139,16 +182,10 @@ fn scan(host: &Host, job: Handle, doc: Handle) -> Step {
     })
 }
 
-fn preview(host: &Host, job: Handle, doc: Handle) -> Step {
+fn preview(host: &Host, job: &Guard<'_>, doc: &Guard<'_>) -> Step {
     timed("preview", || {
-        let outcome = host.run(job, doc, op::PREVIEW, flags::REVEAL_HIDDEN).map_err(describe)?;
-        let status = host.outcome_status(outcome).map_err(describe)?;
-        if status != Status::Ok {
-            host.outcome_free(outcome);
-            return Err(describe(status));
-        }
-        let items = host.preview_items_json(outcome, 0, 0, 16).map_err(describe)?;
-        host.outcome_free(outcome);
+        let outcome = run_ok(host, job, doc, op::PREVIEW, flags::REVEAL_HIDDEN)?;
+        let items = host.preview_items_json(outcome.id(), 0, 0, 16).map_err(describe)?;
         let text = String::from_utf8_lossy(&items);
         if text.contains("Arca self-test") && text.contains("hidden line") {
             Ok("visible and hidden text extracted".into())
@@ -158,27 +195,17 @@ fn preview(host: &Host, job: Handle, doc: Handle) -> Step {
     })
 }
 
-fn sanitize(host: &Host, job: Handle, doc: Handle) -> Step {
+fn sanitize(host: &Host, job: &Guard<'_>, doc: &Guard<'_>) -> Step {
     timed("sanitize", || {
-        let outcome = host.run(job, doc, op::SANITIZE, flags::SANITIZE_ALL).map_err(describe)?;
-        let status = host.outcome_status(outcome).map_err(describe)?;
-        if status != Status::Ok {
-            host.outcome_free(outcome);
-            return Err(describe(status));
-        }
+        let outcome = run_ok(host, job, doc, op::SANITIZE, flags::SANITIZE_ALL)?;
         let mut sterile = Vec::new();
-        host.sanitized_write_to(outcome, &mut sterile).map_err(describe)?;
-        host.outcome_free(outcome);
+        host.sanitized_write_to(outcome.id(), &mut sterile).map_err(describe)?;
+        drop(outcome);
         // Re-scan the sterile copy independently of the sanitizer's own verification.
         let again = load(host, &sterile).map_err(describe)?;
-        let job2 = host.job_new();
-        let rescan = host.run(job2, again, op::SCAN, 0).map_err(describe);
-        host.job_free(job2);
-        host.doc_free(again);
-        let rescan = rescan?;
-        let json = host.report_json(rescan).map_err(describe);
-        host.outcome_free(rescan);
-        let json = json?;
+        let job2 = Guard::new(host, host.job_new(), Held::Job);
+        let rescan = run_ok(host, &job2, &again, op::SCAN, 0)?;
+        let json = host.report_json(rescan.id()).map_err(describe)?;
         let text = String::from_utf8_lossy(&json);
         if text.contains(&format!("\"verdict\":\"{:?}\"", Verdict::Clean)) {
             Ok(format!("sterile copy of {} bytes verified clean", sterile.len()))
@@ -186,4 +213,34 @@ fn sanitize(host: &Host, job: Handle, doc: Handle) -> Step {
             Err("the sterile copy is not clean".into())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Engine, EngineConfig};
+
+    #[test]
+    fn a_step_that_leaves_early_still_releases_what_it_held() {
+        let host = Host::new(Engine::new(vec![0u8; 8], EngineConfig::default()));
+        // `?` out of the middle of a step: the guards go with the stack frame.
+        let leaving = |host: &Host| -> Result<(), Status> {
+            let doc = load(host, b"abc")?;
+            let _job = Guard::new(host, host.job_new(), Held::Job);
+            // A handle that does not exist: the call fails, the step returns.
+            host.doc_append(doc.id() + 1000, b"x")?;
+            Ok(())
+        };
+        assert_eq!(leaving(&host), Err(Status::BadHandle));
+        assert_eq!(host.live_objects(), (0, 0, 0));
+    }
+
+    #[test]
+    fn the_self_test_leaves_nothing_behind_even_when_every_step_fails() {
+        // Over a module that is not a guest every run ends in a fault: the steps fail.
+        let host = Host::new(Engine::new(vec![0u8; 8], EngineConfig::default()));
+        let report = String::from_utf8(run(&host)).unwrap();
+        assert!(report.contains("\"ok\":false"), "{report}");
+        assert_eq!(host.live_objects(), (0, 0, 0));
+    }
 }

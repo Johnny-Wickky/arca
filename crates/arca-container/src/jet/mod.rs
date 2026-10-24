@@ -81,9 +81,11 @@ const MAX_OVERFLOW_DEPTH: usize = 8;
 const MAX_LONG_VALUE: usize = 4 << 20;
 /// Most rows examined in one table.
 const MAX_ROWS_SCANNED: u64 = 4_000_000;
-/// Work units one scan of a table may spend following memo and OLE chains: one per chunk
-/// followed, plus one per [`WORK_BYTES_PER_UNIT`] bytes copied. Cycles and huge chains in a
-/// hostile file cannot make the cost grow with the number of rows times the number of pages.
+/// Work units one scan of a table may spend: one per memo or OLE chunk followed, plus one per
+/// [`WORK_BYTES_PER_UNIT`] bytes of every value read or copied. Cycles and huge chains in a
+/// hostile file cannot make the cost grow with the number of rows times the number of pages, and
+/// neither can columns that all point at the same bytes of a row (a fixed-length column may start
+/// anywhere: a hundred of them make a hundred-fold read of the row).
 const MAX_SCAN_WORK: u64 = 1_000_000;
 /// Most catalog objects collected.
 const MAX_CATALOG_OBJECTS: usize = 100_000;
@@ -292,6 +294,8 @@ pub struct Db<'a> {
     code_page: CodePage,
     /// What is left of the work budget of the scan in progress (see [`MAX_SCAN_WORK`]).
     work: Cell<u64>,
+    /// The budget every scan starts with.
+    work_limit: u64,
 }
 
 /// Reads the three-byte little-endian page number at `at`.
@@ -363,7 +367,23 @@ impl<'a> Db<'a> {
         if pages <= usize::try_from(CATALOG_PAGE).unwrap_or(usize::MAX) {
             return Err(OpenError::Malformed("the file is too short to hold a catalog"));
         }
-        Ok(Self { data, lay, pages, code_page, work: Cell::new(MAX_SCAN_WORK) })
+        Ok(Self {
+            data,
+            lay,
+            pages,
+            code_page,
+            work: Cell::new(MAX_SCAN_WORK),
+            work_limit: MAX_SCAN_WORK,
+        })
+    }
+
+    /// Lowers the work one scan of a table may spend (a unit is a chunk followed or 256 bytes
+    /// read). A larger figure than the built-in one is ignored: the limit exists to be tightened.
+    #[must_use]
+    pub fn with_work_limit(mut self, units: u64) -> Self {
+        self.work_limit = units.min(MAX_SCAN_WORK);
+        self.work.set(self.work_limit);
+        self
     }
 
     /// The bytes of page `n`, or `None` if it lies outside the file.
@@ -562,7 +582,7 @@ impl<'a> Db<'a> {
     /// `false`.
     pub fn rows(&self, table: &Table, mut f: impl FnMut(&[Value]) -> bool) -> RowStats {
         let mut stats = RowStats::default();
-        self.work.set(MAX_SCAN_WORK);
+        self.work.set(self.work_limit);
         let mut scanned = 0u64;
         let mut followed = 0u64;
         'pages: for &p in &table.owned {
@@ -700,7 +720,15 @@ impl<'a> Db<'a> {
                 let start = lay.row_cols_size + usize::from(c.fixed_offset);
                 row.get(start..start + fixed_size(c))
             };
-            out.push(bytes.map_or(Value::Null, |b| self.value(c, b)));
+            let value = bytes.map_or(Value::Null, |b| {
+                if self.spend(u64::try_from(b.len()).unwrap_or(u64::MAX) / WORK_BYTES_PER_UNIT) {
+                    self.value(c, b)
+                } else {
+                    // Out of work: the scan ends after this row (see `Db::rows`).
+                    Value::Null
+                }
+            });
+            out.push(value);
         }
         out
     }
@@ -791,13 +819,17 @@ impl<'a> Db<'a> {
             // The value follows the 12-byte header.
             2 => {
                 let rest = def.get(12..)?;
-                Some(rest.get(..len.min(rest.len()))?.to_vec())
+                let part = rest.get(..len.min(rest.len()))?;
+                self.spend(u64::try_from(part.len()).unwrap_or(u64::MAX) / WORK_BYTES_PER_UNIT)
+                    .then(|| part.to_vec())
             }
             // The value is one row of another page.
             1 => {
                 let (row, page) = (usize::from(*def.get(4)?), page3(def, 5)?);
                 let (_, bytes) = self.row_at(page, row)?;
-                Some(bytes.get(..len.min(bytes.len()))?.to_vec())
+                let part = bytes.get(..len.min(bytes.len()))?;
+                self.spend(u64::try_from(part.len()).unwrap_or(u64::MAX) / WORK_BYTES_PER_UNIT)
+                    .then(|| part.to_vec())
             }
             // The value is a chain of rows, each starting with a pointer to the next.
             0 => {
@@ -1001,6 +1033,111 @@ mod tests {
             link("#https://example.org/#"),
             Value::Link("https://example.org/".into(), "https://example.org/".into())
         );
+    }
+
+    /// A Jet 4 database whose catalog table has `cols` fixed-length text columns that all start
+    /// at the same place of a row, and `rows` rows of about a page each (one per data page).
+    fn hostile_database(rows: usize, cols: usize) -> Vec<u8> {
+        const PAGE: usize = 4096;
+        let row_len = 4000usize;
+        let col_len = 3900u16;
+        let mut db = vec![0u8; PAGE * (4 + rows)];
+        // Page 0: the header, with its mask applied to all-zero contents (no key, no password).
+        db[4..19].copy_from_slice(b"Standard Jet DB");
+        db[0x14] = 1;
+        for (i, m) in HEADER_MASK.iter().enumerate() {
+            db[24 + i] = *m;
+        }
+        // Page 2: the table definition.
+        let def = &mut db[2 * PAGE..3 * PAGE];
+        def[0] = PAGE_TABLE_DEF;
+        def[16..20].copy_from_slice(&u32::try_from(rows).unwrap().to_le_bytes());
+        def[45..47].copy_from_slice(&u16::try_from(cols).unwrap().to_le_bytes());
+        def[55] = 0; // usage map: row 0 of page 3
+        def[56..59].copy_from_slice(&[3, 0, 0]);
+        let mut names_at = 63 + cols * 25;
+        for i in 0..cols {
+            let h = 63 + i * 25;
+            def[h] = ty::TEXT;
+            def[h + 5..h + 7].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+            def[h + 15] = FLAG_FIXED;
+            def[h + 23..h + 25].copy_from_slice(&col_len.to_le_bytes());
+            let name: Vec<u8> = format!("c{i}").encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let len = u16::try_from(name.len()).unwrap();
+            def[names_at..names_at + 2].copy_from_slice(&len.to_le_bytes());
+            def[names_at + 2..names_at + 2 + name.len()].copy_from_slice(&name);
+            names_at += 2 + name.len();
+        }
+        // Page 3: one row, the usage map: pages 4.. hold the table.
+        let mut map = vec![0u8; 5 + (4 + rows).div_ceil(8)];
+        for page in 4..4 + rows {
+            map[5 + page / 8] |= 1 << (page % 8);
+        }
+        let page3 = &mut db[3 * PAGE..4 * PAGE];
+        page3[0] = PAGE_DATA;
+        page3[12..14].copy_from_slice(&1u16.to_le_bytes());
+        let at = PAGE - map.len();
+        page3[14..16].copy_from_slice(&u16::try_from(at).unwrap().to_le_bytes());
+        page3[at..].copy_from_slice(&map);
+        // Pages 4..: one row each, every column present.
+        for n in 0..rows {
+            let page = &mut db[(4 + n) * PAGE..(5 + n) * PAGE];
+            page[0] = PAGE_DATA;
+            page[12..14].copy_from_slice(&1u16.to_le_bytes());
+            let at = PAGE - row_len;
+            page[14..16].copy_from_slice(&u16::try_from(at).unwrap().to_le_bytes());
+            let row = &mut page[at..];
+            row[0..2].copy_from_slice(&u16::try_from(cols).unwrap().to_le_bytes());
+            for b in &mut row[2..2 + usize::from(col_len)] {
+                *b = b'a';
+            }
+            let mask_at = row_len - cols.div_ceil(8);
+            row[mask_at..].fill(0xFF);
+        }
+        db
+    }
+
+    #[test]
+    fn the_synthetic_database_reads_back() {
+        let bytes = hostile_database(3, 20);
+        let db = Db::open(&bytes).unwrap();
+        let table = db.table(CATALOG_PAGE).unwrap();
+        assert_eq!(table.columns.len(), 20);
+        let mut seen = Vec::new();
+        let stats = db.rows(&table, |vals| {
+            seen.push(vals.len());
+            true
+        });
+        assert_eq!(seen, [20, 20, 20]);
+        assert!(!stats.stopped);
+    }
+
+    #[test]
+    fn columns_that_read_the_same_bytes_cannot_multiply_the_work_of_a_scan() {
+        // 90 columns each reading 3 900 bytes of a 4 000-byte row: 90 times the bytes of the row,
+        // on every one of 1 500 rows. The scan has a budget and stops when it is spent (a small
+        // one here, to keep the test quick: 5 MB read in all).
+        let rows = 1_500;
+        let bytes = hostile_database(rows, 90);
+        let db = Db::open(&bytes).unwrap().with_work_limit(20_000);
+        let table = db.table(CATALOG_PAGE).unwrap();
+        let mut seen = 0usize;
+        let stats = db.rows(&table, |_| {
+            seen += 1;
+            true
+        });
+        assert!(stats.stopped, "the scan must report that it stopped early");
+        assert!(seen > 0 && seen < rows, "{seen} of {rows} rows were decoded");
+        // A fresh scan has a fresh budget.
+        let mut again = 0usize;
+        db.rows(&table, |_| {
+            again += 1;
+            true
+        });
+        assert_eq!(again, seen);
+        // The budget can only be lowered.
+        let db = Db::open(&bytes).unwrap().with_work_limit(u64::MAX);
+        assert_eq!(db.work_limit, MAX_SCAN_WORK);
     }
 
     #[test]

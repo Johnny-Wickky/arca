@@ -273,3 +273,49 @@ fn default_fuel_policy_matches_the_documented_calibration() {
     assert!(f.for_input(1 << 20) > 20 * (1 << 20) * 1_400);
     assert_eq!(f.for_input(usize::MAX), f.max, "the ceiling always applies");
 }
+
+/// 32 MiB of initial memory: one bulk operation touches all of it.
+const BULK_PAGES: u32 = 512;
+const BULK_BYTES: i32 = 512 * 65_536;
+
+#[test]
+fn bulk_memory_operations_do_not_step_over_the_deadline() {
+    for body in [RunBody::BulkFill(BULK_BYTES), RunBody::BulkCopyOverlap(BULK_BYTES)] {
+        let m = GuestModule::new("bulk", guest(body, ABI, None, BULK_PAGES));
+        let sb = Sandbox::new(SandboxPolicy { fuel: ENDLESS, ..policy(1_000_000) }, [m.pin()]);
+        let options = RunOptions::new().deadline(Duration::from_millis(300));
+        let started = Instant::now();
+        let result = sb.run_with(&m, b"x", &options);
+        assert!(
+            matches!(result, Err(SandboxError::DeadlineExceeded { .. })),
+            "a bulk loop must end at the deadline, got {result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(30), "the deadline must be prompt");
+    }
+}
+
+#[test]
+fn bulk_memory_operations_are_charged_fuel() {
+    // With a small budget the same loops run dry long before any wall-clock limit.
+    for body in [RunBody::BulkFill(BULK_BYTES), RunBody::BulkCopyOverlap(BULK_BYTES)] {
+        let m = GuestModule::new("bulk", guest(body, ABI, None, BULK_PAGES));
+        let fuel = FuelPolicy { base: 20_000_000, per_input_byte: 0, max: 20_000_000 };
+        let sb = Sandbox::new(SandboxPolicy { fuel, ..policy(1_000_000) }, [m.pin()]);
+        let started = Instant::now();
+        let result = sb.run_with(&m, b"x", &RunOptions::new());
+        assert!(
+            matches!(result, Err(SandboxError::FuelExhausted { .. })),
+            "a bulk loop must run out of fuel, got {result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(60));
+    }
+}
+
+#[test]
+fn table_growth_is_capped() {
+    // 40 000 elements at a time: the third step passes the 100 000 allowed by the policy.
+    let m = GuestModule::new("table", guest(RunBody::TableHog(40_000), ABI, None, 2));
+    let sb = Sandbox::new(SandboxPolicy { fuel: ENDLESS, ..policy(1_000_000) }, [m.pin()]);
+    let result = sb.run_with(&m, b"x", &RunOptions::new());
+    assert_eq!(result.unwrap_err(), SandboxError::MemoryLimitExceeded);
+}

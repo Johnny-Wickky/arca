@@ -72,8 +72,12 @@ impl FuelPolicy {
     /// up to roughly 20:1 and still stops a runaway guest after seconds, not
     /// minutes; the wall-clock deadline ([`SandboxPolicy::max_wall_time`]) and
     /// the cancel token bound the *time* regardless of the device speed.
+    ///
+    /// The ceiling is `4e11`, which `32 000` per byte reaches at about 12 MB of input. A caller
+    /// that knows a document needs more (the engine does, from what a scan unpacked) raises it
+    /// itself, up to a ceiling of its own; the default never grants that on its own.
     pub const DEFAULT: Self =
-        Self { base: 2_000_000_000, per_input_byte: 32_000, max: 2_000_000_000_000 };
+        Self { base: 2_000_000_000, per_input_byte: 32_000, max: 400_000_000_000 };
 
     /// Fuel granted for an input of `len` bytes.
     #[must_use]
@@ -331,7 +335,6 @@ pub struct ExecutionStats {
 }
 
 /// A successful run.
-#[derive(Debug)]
 pub struct GuestOutput {
     /// Status returned by `arca_run` (0 = OK).
     pub status: i32,
@@ -341,6 +344,18 @@ pub struct GuestOutput {
     pub payload: Zeroizing<Vec<u8>>,
     /// Resource accounting.
     pub stats: ExecutionStats,
+}
+
+impl fmt::Debug for GuestOutput {
+    /// The size of the payload, not the payload: it is the document's content.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GuestOutput")
+            .field("status", &self.status)
+            .field("kind", &self.kind)
+            .field("payload_len", &self.payload.len())
+            .field("stats", &self.stats)
+            .finish()
+    }
 }
 
 /// A cloneable flag that abandons a run from another thread.
@@ -436,6 +451,10 @@ impl RunOptions {
     }
 }
 
+/// The longest wall-clock limit that is honoured as given. A larger one (`Duration::MAX` is
+/// what "no limit" tends to be written as) is clamped to this instead of being dropped.
+const MAX_WALL_LIMIT: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// Hands the fuel budget to the guest slice by slice and watches the clock.
 ///
 /// Invariants: `consumed + (slice_grant - remaining)` is the exact fuel the
@@ -469,7 +488,12 @@ impl<'a> Meter<'a> {
             slice: policy.slice_fuel.max(MIN_SLICE_FUEL),
             slices: 0,
             started,
-            deadline: limit.and_then(|d| started.checked_add(d).map(|at| (at, d))),
+            // A limit that cannot be added to the clock must not turn into "no limit": it is
+            // clamped, and if even that does not fit the deadline is already over.
+            deadline: limit.map(|d| {
+                let d = d.min(MAX_WALL_LIMIT);
+                (started.checked_add(d).unwrap_or(started), d)
+            }),
             cancel: options.cancel.as_ref(),
             progress: options.progress.as_ref(),
         }
@@ -884,14 +908,22 @@ fn protocol(
     if end > memory.data_size(&*store) {
         return Err(SandboxError::OutputInvalid("output region outside guest memory"));
     }
-    let mut out = Zeroizing::new(vec![0u8; olen]);
+    // The length is the guest's claim (bounded by the policy above, but still tens of megabytes
+    // on a phone): the allocation may fail, and then the run fails, not the app.
+    let mut out: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::new());
+    out.try_reserve_exact(olen).map_err(|_| SandboxError::OutputTooLarge(olen))?;
+    out.resize(olen, 0);
     memory
         .read(&*store, optr, &mut out)
         .map_err(|_| SandboxError::OutputInvalid("unreadable output region"))?;
 
-    let (kind, payload) = envelope::open(&out)
+    let (kind, payload_len) = envelope::open(&out)
+        .map(|(kind, payload)| (kind, payload.len()))
         .map_err(|_| SandboxError::OutputInvalid("malformed result envelope"))?;
-    let payload = Zeroizing::new(payload.to_vec());
+    // The payload is the tail of the envelope: drop the header in place instead of copying the
+    // payload into a second buffer (the vacated bytes are wiped with the buffer).
+    out.drain(..olen.saturating_sub(payload_len));
+    let payload = out;
     if !arca_abi::status::is_success(status) && kind != PayloadKind::Error {
         return Err(SandboxError::GuestStatus(status));
     }
@@ -904,4 +936,58 @@ fn protocol(
         wall_time: meter.started.elapsed(),
     };
     Ok(GuestOutput { status, kind, payload, stats })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wall_limit_that_does_not_fit_the_clock_is_clamped_not_dropped() {
+        let started = Instant::now();
+        for limit in [Duration::MAX, Duration::from_secs(u64::MAX / 2)] {
+            let policy = SandboxPolicy { max_wall_time: Some(limit), ..SandboxPolicy::default() };
+            for options in [RunOptions::new(), RunOptions::new().deadline(limit)] {
+                let meter = Meter::new(&policy, &options, 1, started);
+                let (_, effective) = meter.deadline.expect("a limit stays a limit");
+                assert_eq!(effective, MAX_WALL_LIMIT);
+            }
+        }
+        // Only a tighter option narrows the policy's limit.
+        let policy = SandboxPolicy {
+            max_wall_time: Some(Duration::from_secs(5)),
+            ..SandboxPolicy::default()
+        };
+        let loose = RunOptions::new().deadline(Duration::MAX);
+        let meter = Meter::new(&policy, &loose, 1, started);
+        assert_eq!(meter.deadline.map(|d| d.1), Some(Duration::from_secs(5)));
+        // No limit at all stays none.
+        let open = SandboxPolicy { max_wall_time: None, ..SandboxPolicy::default() };
+        assert!(Meter::new(&open, &RunOptions::new(), 1, started).deadline.is_none());
+    }
+
+    #[test]
+    fn the_default_fuel_ceiling_stays_conservative() {
+        assert_eq!(FuelPolicy::DEFAULT.max, 400_000_000_000);
+        assert!(SandboxPolicy::default().fuel.for_input(usize::MAX) <= 400_000_000_000);
+    }
+
+    #[test]
+    fn debug_output_of_a_result_shows_no_content() {
+        let out = GuestOutput {
+            status: 0,
+            kind: PayloadKind::Preview,
+            payload: Zeroizing::new(b"TOP-SECRET-TEXT".to_vec()),
+            stats: ExecutionStats {
+                fuel_limit: 1,
+                fuel_consumed: 1,
+                peak_memory_bytes: 1,
+                slices: 1,
+                wall_time: Duration::ZERO,
+            },
+        };
+        let shown = format!("{out:?}");
+        assert!(shown.contains("payload_len: 15"), "{shown}");
+        assert!(!shown.contains("TOP-SECRET") && !shown.contains("84, 79, 80"), "{shown}");
+    }
 }

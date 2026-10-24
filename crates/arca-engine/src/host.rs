@@ -126,7 +126,6 @@ pub struct Engine {
 }
 
 /// A decoded, typed guest result or the reason there is none.
-#[derive(Debug)]
 pub struct RunOutput {
     /// Classification of the outcome.
     pub status: Status,
@@ -150,6 +149,27 @@ pub enum Unlock {
     Password = 1,
     /// It was locked but needed no password (a PDF that only restricts editing).
     NoPassword = 2,
+}
+
+impl core::fmt::Debug for RunOutput {
+    /// Names the kind of the result and its accounting; the content (text of a preview, bytes
+    /// of a sterile copy, pixels) never reaches a log through `{:?}`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let data = self.data.as_ref().map(|d| match d {
+            Output::Report(_) => "Report",
+            Output::Sanitized(_) => "Sanitized",
+            Output::Preview(_) => "Preview",
+            Output::Page(_) => "Page",
+            Output::Image(_) => "Image",
+        });
+        f.debug_struct("RunOutput")
+            .field("status", &self.status)
+            .field("unlock", &self.unlock)
+            .field("message", &self.message)
+            .field("data", &data)
+            .field("stats", &self.stats)
+            .finish()
+    }
 }
 
 impl RunOutput {
@@ -203,6 +223,29 @@ impl Engine {
         Self { module: GuestModule::new("arca-guest-xray", wasm), config: config.clamped() }
     }
 
+    /// As [`Engine::new`], for a module that must be the one the build recorded: `expected_sha256`
+    /// (lowercase hex) comes from a build-time constant, not from the bytes being loaded.
+    ///
+    /// [`Engine::new`] pins the module to its *own* digest, which keeps a module from changing
+    /// between runs but says nothing about which module it is. Whoever can replace the module
+    /// can replace its digest too, unless the digest was fixed somewhere else; this is the
+    /// constructor that checks it.
+    ///
+    /// # Errors
+    /// [`Status::Fault`] if the module's digest is not `expected_sha256`.
+    pub fn pinned(
+        wasm: impl Into<Arc<[u8]>>,
+        expected_sha256: &str,
+        config: EngineConfig,
+    ) -> Result<Self, Status> {
+        let engine = Self::new(wasm, config);
+        if engine.module.digest().to_string() == expected_sha256 {
+            Ok(engine)
+        } else {
+            Err(Status::Fault)
+        }
+    }
+
     /// SHA-256 of the guest module, lowercase hex.
     #[must_use]
     pub fn guest_sha256(&self) -> String {
@@ -234,8 +277,14 @@ impl Engine {
                 Op::Scan | Op::Sanitize => c.scan_timeout,
                 Op::Preview | Op::Render | Op::Image => c.preview_timeout,
             }),
-            // A sterile copy is about as large as the original.
-            max_output_bytes: (64usize << 20).saturating_add(len),
+            max_output_bytes: match op {
+                // A sterile copy is about as large as the original.
+                Op::Sanitize => MAX_RESULT_BYTES.saturating_add(len),
+                // A picture is reduced to 4 megapixels (16 MiB of pixels) for display.
+                Op::Image => MAX_IMAGE_RESULT_BYTES,
+                // Reports, previews and page drawings do not grow with the document.
+                Op::Scan | Op::Preview | Op::Render => MAX_RESULT_BYTES,
+            },
             ..SandboxPolicy::default()
         };
         if op == Op::Image {
@@ -342,7 +391,8 @@ impl Engine {
         self.size_for_picture_copy(&mut policy, op, op_flags, document);
         let sandbox = Sandbox::new(policy, [self.module.pin()]);
         let options = RunOptions::new().cancel_token(cancel.clone());
-        let Some(prefix) = request::prefix(op, op_flags, password) else {
+        // The prefix carries the password: wiped when this call returns.
+        let Some(prefix) = request::prefix(op, op_flags, password).map(Zeroizing::new) else {
             return RunOutput::failure(Status::BadArgument, "the password is too long");
         };
         let out = match sandbox.run_request(&self.module, &prefix, document, &options) {
@@ -439,13 +489,21 @@ impl<T> Table<T> {
 }
 
 /// A document being loaded, then sealed.
-#[derive(Debug)]
 enum DocState {
     Loading(Zeroizing<Vec<u8>>),
     Sealed(Arc<Zeroizing<Vec<u8>>>),
 }
 
-#[derive(Debug)]
+impl core::fmt::Debug for DocState {
+    /// Sizes only: a derived `Debug` would print the document.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Loading(b) => f.debug_tuple("Loading").field(&b.len()).finish(),
+            Self::Sealed(b) => f.debug_tuple("Sealed").field(&b.len()).finish(),
+        }
+    }
+}
+
 struct Document {
     limit: usize,
     state: Mutex<DocState>,
@@ -455,8 +513,17 @@ struct Document {
     inflated: AtomicU64,
 }
 
+impl core::fmt::Debug for Document {
+    /// Never the password or the content.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Document")
+            .field("limit", &self.limit)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What a finished run keeps for the app to query.
-#[derive(Debug)]
 enum Body {
     None,
     Report(Box<XRayReport>),
@@ -472,6 +539,22 @@ enum Body {
         info: Vec<u8>,
         pixels: Zeroizing<Vec<u8>>,
     },
+}
+
+impl core::fmt::Debug for Body {
+    /// The kind and the size of what is kept, never the content (text, sterile bytes, pixels).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Report(_) => f.write_str("Report"),
+            Self::Preview(_) => f.write_str("Preview"),
+            Self::Sanitized { bytes, .. } => {
+                f.debug_tuple("Sanitized").field(&bytes.len()).finish()
+            }
+            Self::Page(json) => f.debug_tuple("Page").field(&json.len()).finish(),
+            Self::Image { pixels, .. } => f.debug_tuple("Image").field(&pixels.len()).finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -493,6 +576,31 @@ pub struct Host {
     outcomes: Table<Outcome>,
 }
 
+/// Makes room for `extra` more bytes in `buf` without ever leaving document bytes behind in
+/// freed memory.
+///
+/// A `Vec` that grows is reallocated, and the allocator may hand the old block back unwiped. The
+/// buffer is grown by building the larger one beside it, copying, and dropping the old block as
+/// a [`Zeroizing`] (so it is wiped). Capacity doubles, but never past `limit`, so a document
+/// does not reserve more than the app allowed.
+pub(crate) fn grow_wiping(
+    buf: &mut Zeroizing<Vec<u8>>,
+    extra: usize,
+    limit: usize,
+) -> Result<(), Status> {
+    let needed = buf.len().checked_add(extra).ok_or(Status::TooLarge)?;
+    if needed <= buf.capacity() {
+        return Ok(());
+    }
+    let target = needed.max(buf.capacity().saturating_mul(2)).min(limit.max(needed));
+    let mut grown: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::new());
+    grown.try_reserve_exact(target).map_err(|_| Status::TooLarge)?;
+    grown.extend_from_slice(buf);
+    // `grown` now holds the old block and wipes it as it goes out of scope.
+    core::mem::swap(&mut **buf, &mut *grown);
+    Ok(())
+}
+
 /// Size of the chunks used when reading a file descriptor.
 const READ_CHUNK: usize = 1 << 20;
 
@@ -512,29 +620,56 @@ const MAX_INFLATED_HINT: u64 = 1 << 30;
 const FUEL_PER_INFLATED_SCAN: u64 = 1_500;
 /// Ratio up to which the standard per_input_byte budget (32 000) provides sufficient fuel.
 const DEFAULT_MAX_RATIO: u64 = 20;
-/// Absolute maximum fuel ceiling for any single run (8 trillion fuel ≈ 1 GiB inflated at 6 000 fuel/B).
-const MAX_FUEL_CEILING: u64 = 8_000_000_000_000;
+/// Absolute maximum fuel ceiling for any single run. A constant: nothing the document or an
+/// earlier scan reports can raise a run above it (they only move the budget up to it). Wall-clock
+/// limits, not fuel, are what end a slow run on a phone.
+const MAX_FUEL_CEILING: u64 = 1_000_000_000_000;
+/// The most a report, a preview or a page drawing may weigh (a sterile copy adds its own size).
+const MAX_RESULT_BYTES: usize = 64 << 20;
+/// The most a displayed picture may weigh.
+const MAX_IMAGE_RESULT_BYTES: usize = 40 << 20;
 
-/// Sniffs the declared uncompressed size of a container from its central directory without
-/// decompressing any data. Returns `None` if the input is not a recognized container.
+/// Entries of an archive the host reads the sizes of; a larger archive gets no hint at all.
+const SNIFF_MAX_ENTRIES: usize = 20_000;
+/// The compression ratio a declared size is believed up to (the budget's own aggregate limit).
+const SNIFF_MAX_RATIO: u64 = 100;
+/// What a single entry may add to the hint beyond its ratio, and the most it may add.
+const SNIFF_ENTRY_SLACK: u64 = 1 << 20;
+const SNIFF_ENTRY_MAX: u64 = 256 << 20;
+
+/// Sniffs how far a container expands from its central directory, without decompressing
+/// anything. Returns `None` if the input is not a recognised container.
+///
+/// This runs on the host, outside the sandbox, on the sizes the document *declares*. They only
+/// decide how much time and memory a later run is granted, so a document must not be able to buy
+/// a big budget with a lie: each entry counts for at most what its stored size could expand to
+/// (`compressed × 100 + 1 MiB`, never more than 256 MiB), the sum for at most 100 times the
+/// file and 1 GiB, and an archive with more than [`SNIFF_MAX_ENTRIES`] entries is not sniffed.
 pub(crate) fn sniff_inflated(data: &[u8]) -> Option<u64> {
     if !data.starts_with(b"PK\x03\x04") && !data.starts_with(b"PK\x05\x06") {
         return None;
     }
-    let zip =
-        arca_container::zip::ZipArchive::parse(data, arca_container::zip::ZipLimits::default())
-            .ok()?;
+    let limits =
+        arca_container::zip::ZipLimits { max_entries: SNIFF_MAX_ENTRIES, ..Default::default() };
+    let zip = arca_container::zip::ZipArchive::parse(data, limits).ok()?;
     let mut total: u64 = 0;
     for entry in zip.entries() {
-        if !entry.is_dir() {
-            total = total.saturating_add(entry.uncompressed_size());
+        if entry.is_dir() {
+            continue;
         }
+        let believable = entry
+            .compressed_size()
+            .saturating_mul(SNIFF_MAX_RATIO)
+            .saturating_add(SNIFF_ENTRY_SLACK)
+            .min(SNIFF_ENTRY_MAX);
+        total = total.saturating_add(entry.uncompressed_size().min(believable));
     }
-    // Bound the hint by 100:1 ratio and 1 GiB maximum, matching InflateBudget limits.
-    let max_allowed =
-        (u64::try_from(data.len()).unwrap_or(u64::MAX)).saturating_mul(100).min(MAX_INFLATED_HINT);
+    let max_allowed = (u64::try_from(data.len()).unwrap_or(u64::MAX))
+        .saturating_mul(SNIFF_MAX_RATIO)
+        .min(MAX_INFLATED_HINT);
     Some(total.min(max_allowed))
 }
+
 /// Fuel a picture may use before the size of its file adds to it.
 const IMAGE_FUEL_BASE: u64 = 20_000_000_000;
 /// Fuel a sterile copy of a picture may use (at most 4 megapixels).
@@ -597,7 +732,7 @@ impl Host {
         if buf.len().saturating_add(chunk.len()) > d.limit {
             return Err(Status::TooLarge);
         }
-        buf.try_reserve(chunk.len()).map_err(|_| Status::TooLarge)?;
+        grow_wiping(buf, chunk.len(), d.limit)?;
         buf.extend_from_slice(chunk);
         Ok(())
     }
@@ -607,7 +742,8 @@ impl Host {
     /// # Errors
     /// [`Status::Io`] if reading fails, [`Status::TooLarge`] past the limit.
     pub fn doc_read_from(&self, doc: Handle, reader: &mut dyn Read) -> Result<u64, Status> {
-        let mut chunk = vec![0u8; READ_CHUNK];
+        // The chunk holds document bytes on their way in: wiped when this returns.
+        let mut chunk = Zeroizing::new(vec![0u8; READ_CHUNK]);
         let mut total = 0u64;
         loop {
             let n = match reader.read(&mut chunk) {
@@ -701,6 +837,8 @@ impl Host {
             if stored > 0 { stored } else { sniff_inflated(&bytes).unwrap_or(0) }
         };
         let out = self.engine.run_scaled(op, op_flags, &password, &bytes, &token, hint);
+        let mut status = out.status;
+        let mut message = out.message;
         let body = match out.data {
             Some(Output::Report(r)) => {
                 if let Some(d) = self.docs.get(doc) {
@@ -711,10 +849,20 @@ impl Host {
             Some(Output::Preview(p)) => Body::Preview(Box::new(PreviewIndex::new(*p))),
             Some(Output::Sanitized(s)) => {
                 let mut s: SanitizedDocument = *s;
-                let info = render::sanitized_json(&s);
-                // Move the sterile copy into a buffer that is wiped when it is released.
-                let bytes = Zeroizing::new(core::mem::take(&mut s.bytes));
-                Body::Sanitized { info, bytes }
+                // The guest vouches for its own work; the host checks what it can cheaply.
+                match check_sterile(&s) {
+                    Ok(()) => {
+                        let info = render::sanitized_json(&s);
+                        // Move the sterile copy into a buffer that is wiped when it is released.
+                        let bytes = Zeroizing::new(core::mem::take(&mut s.bytes));
+                        Body::Sanitized { info, bytes }
+                    }
+                    Err(why) => {
+                        status = Status::Fault;
+                        message = why.to_owned();
+                        Body::None
+                    }
+                }
             }
             Some(Output::Page(p)) => Body::Page(render::page_json(&p)),
             Some(Output::Image(i)) => {
@@ -725,9 +873,9 @@ impl Host {
         };
         Ok(self.outcomes.insert(Outcome {
             op,
-            status: out.status,
+            status,
             unlock: out.unlock,
-            message: out.message,
+            message,
             stats: out.stats,
             body,
         }))
@@ -757,7 +905,7 @@ impl Host {
         w.field_name("statusName", &o.status);
         w.field_u64("op", u64::from(o.op.code()));
         w.field_u64("unlock", u64::from(o.unlock as u8));
-        w.field_str("message", &o.message);
+        w.field_label("message", &o.message, 2_048);
         if let Some(s) = &o.stats {
             w.key("stats");
             w.begin_object();
@@ -812,7 +960,8 @@ impl Host {
     /// [`Status::BadHandle`], or [`Status::BadArgument`] when the outcome holds no report.
     pub fn report_json(&self, outcome: Handle) -> Result<Vec<u8>, Status> {
         match &self.outcome(outcome)?.body {
-            Body::Report(r) => Ok(render::report_json(r)),
+            Body::Report(r) => render::report_json_within(r, render::MAX_REPORT_JSON_BYTES)
+                .ok_or(Status::ResourceLimit),
             _ => Err(Status::BadArgument),
         }
     }
@@ -844,7 +993,12 @@ impl Host {
                 let section = usize::try_from(section).map_err(|_| Status::BadArgument)?;
                 // A page is bounded whatever the app asks for.
                 let count = usize::try_from(count).unwrap_or(usize::MAX).min(512);
-                p.items_json(section, from, count).ok_or(Status::BadArgument)
+                p.items_json_within(section, from, count, render::MAX_PAGE_JSON_BYTES).map_err(
+                    |e| match e {
+                        render::PageError::NoSuchSection => Status::BadArgument,
+                        render::PageError::TooLarge => Status::ResourceLimit,
+                    },
+                )
             }
             _ => Err(Status::BadArgument),
         }
@@ -920,6 +1074,41 @@ impl Host {
         w.end_object();
         w.finish()
     }
+}
+
+/// Part names a sterile copy must not contain: what sterilisation exists to remove.
+const FORBIDDEN_PARTS: [&str; 5] =
+    ["vbaproject.bin", "activex", "oleobject", "embeddings/", "macrosheets/"];
+
+/// Cheap, independent checks of a sterile copy the (sandboxed, but possibly compromised) guest
+/// reports as verified.
+///
+/// * The digest the verification report names must be the digest of the bytes: otherwise the
+///   report describes some other file than the one the user is handed.
+/// * A ZIP-based copy must be a readable archive none of whose parts is a macro project, an
+///   ActiveX control, an OLE object or an embedding.
+///
+/// This is a tripwire, not a second sterilisation: it catches a guest that reports "clean" for
+/// bytes it did not check, or that forgot the most dangerous parts, and nothing subtler.
+pub(crate) fn check_sterile(s: &SanitizedDocument) -> Result<(), &'static str> {
+    if arca_digest::sha256(&s.bytes).to_string() != s.verification.sha256 {
+        return Err("the sterile copy does not match the digest in its verification report");
+    }
+    if s.bytes.starts_with(b"PK\x03\x04") {
+        let zip = arca_container::zip::ZipArchive::parse(
+            &s.bytes,
+            arca_container::zip::ZipLimits::default(),
+        )
+        .map_err(|_| "the sterile copy is not a readable archive")?;
+        let tainted = zip.entries().iter().any(|e| {
+            let name = e.name().to_ascii_lowercase();
+            FORBIDDEN_PARTS.iter().any(|p| name.contains(p))
+        });
+        if tainted {
+            return Err("the sterile copy still contains a part that sterilisation removes");
+        }
+    }
+    Ok(())
 }
 
 /// SHA-256 of a guest module, lowercase hex (the value the sandbox pins and the apps show).

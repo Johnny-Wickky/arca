@@ -70,6 +70,14 @@ pub mod op {
     pub const DROP: u8 = 0x1A;
     pub const UNREACHABLE: u8 = 0x00;
     pub const MEMORY_GROW: [u8; 2] = [0x40, 0x00];
+    /// `ref.null func`.
+    pub const REF_NULL_FUNC: [u8; 2] = [0xD0, 0x70];
+    /// `table.grow 0` (reference types proposal).
+    pub const TABLE_GROW: [u8; 3] = [0xFC, 0x0F, 0x00];
+    /// `memory.fill 0` (bulk memory proposal).
+    pub const MEMORY_FILL: [u8; 3] = [0xFC, 0x0B, 0x00];
+    /// `memory.copy 0 0` (bulk memory proposal).
+    pub const MEMORY_COPY: [u8; 4] = [0xFC, 0x0A, 0x00, 0x00];
     pub const LOOP_EMPTY: [u8; 2] = [0x03, 0x40];
     pub const IF_EMPTY: [u8; 2] = [0x04, 0x40];
     pub const BR0: [u8; 2] = [0x0C, 0x00];
@@ -90,6 +98,8 @@ pub struct ModuleBuilder {
     imports: Vec<(String, String, u32)>,
     funcs: Vec<Func>,
     memory: Option<(u32, Option<u32>)>,
+    /// Minimum size of the one `funcref` table, if the module has one.
+    table: Option<u32>,
     export_memory: bool,
     start: Option<u32>,
 }
@@ -117,6 +127,11 @@ impl ModuleBuilder {
     pub fn memory(&mut self, min_pages: u32, max_pages: Option<u32>, export: bool) {
         self.memory = Some((min_pages, max_pages));
         self.export_memory = export;
+    }
+
+    /// Gives the module one `funcref` table of `min` elements.
+    pub fn table(&mut self, min: u32) {
+        self.table = Some(min);
     }
 
     pub fn start(&mut self, f: u32) {
@@ -161,6 +176,12 @@ impl ModuleBuilder {
             uleb(u64::from(f.ty), &mut s);
         }
         Self::section(3, &s, &mut out);
+        // table
+        if let Some(min) = self.table {
+            let mut s = vec![1, 0x70, 0x00];
+            uleb(u64::from(min), &mut s);
+            Self::section(4, &s, &mut out);
+        }
         // memory
         if let Some((min, max)) = self.memory {
             let mut s = vec![1];
@@ -239,6 +260,13 @@ pub enum RunBody {
     Recurse,
     /// Returns the given status without touching memory.
     Status(i32),
+    /// Fills the whole of a memory of the given size in bytes, forever (`memory.fill`).
+    BulkFill(i32),
+    /// Copies a memory of the given size in bytes onto itself, shifted by one byte, forever
+    /// (`memory.copy` with overlapping regions).
+    BulkCopyOverlap(i32),
+    /// Grows its table by the given number of elements until refused.
+    TableHog(i32),
 }
 
 /// Memory layout of the test guests: the input is reserved at `INPUT`,
@@ -279,6 +307,9 @@ pub fn guest(
     let t_void_i32 = m.ty(&[], &[I32]);
     let t_i32_i32 = m.ty(&[I32], &[I32]);
     m.memory(memory_pages, None, true);
+    if matches!(run, RunBody::TableHog(_)) {
+        m.table(1);
+    }
 
     m.func(t_void_i32, op::i32_const(abi_version), Some("arca_abi_version"));
     // arca_input_reserve(len): if len > 60000 { return 0 } ; mem[LEN_SLOT] = len ; return INPUT
@@ -336,6 +367,36 @@ pub fn guest(
             code(&[&op::local_get(0), &op::call(run_idx), &[op::DROP], &op::i32_const(0)])
         }
         RunBody::Status(s) => op::i32_const(s),
+        RunBody::TableHog(step) => code(&[
+            &op::LOOP_EMPTY,
+            &op::REF_NULL_FUNC,
+            &op::i32_const(step),
+            &op::TABLE_GROW,
+            &[op::DROP],
+            &op::BR0,
+            &[op::END],
+            &op::i32_const(0),
+        ]),
+        RunBody::BulkFill(bytes) => code(&[
+            &op::LOOP_EMPTY,
+            &op::i32_const(0),
+            &op::i32_const(0xAA),
+            &op::i32_const(bytes),
+            &op::MEMORY_FILL,
+            &op::BR0,
+            &[op::END],
+            &op::i32_const(0),
+        ]),
+        RunBody::BulkCopyOverlap(bytes) => code(&[
+            &op::LOOP_EMPTY,
+            &op::i32_const(1),
+            &op::i32_const(0),
+            &op::i32_const(bytes - 1),
+            &op::MEMORY_COPY,
+            &op::BR0,
+            &[op::END],
+            &op::i32_const(0),
+        ]),
     };
     m.func(t_i32_i32, run_body, Some("arca_run"));
     let ptr_body = match output_ptr_override {

@@ -89,15 +89,26 @@ mod tables {
 
 use tables::{INV_SBOX, MUL2, MUL3, MUL9, MUL11, MUL13, MUL14, SBOX, xtime};
 
+use zeroize::Zeroizing;
+
 fn at(t: &[u8; 256], i: u8) -> u8 {
     t.get(usize::from(i)).copied().unwrap_or(0)
 }
 
 /// An expanded AES key.
-#[derive(Debug, Clone)]
+///
+/// The key schedule is key material: it is wiped when the value is dropped, it cannot be
+/// cloned (every copy would be one more place to wipe) and its `Debug` output shows nothing
+/// of it.
 pub struct Aes {
     /// Round keys, 16 bytes each.
-    round_keys: Vec<[u8; 16]>,
+    round_keys: Zeroizing<Vec<[u8; 16]>>,
+}
+
+impl core::fmt::Debug for Aes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Aes").field("rounds", &self.round_keys.len().saturating_sub(1)).finish()
+    }
 }
 
 impl Aes {
@@ -111,8 +122,9 @@ impl Aes {
             _ => return None,
         };
         let rounds = nk + 6;
-        let mut w: Vec<[u8; 4]> =
-            key.chunks_exact(4).filter_map(|c| <[u8; 4]>::try_from(c).ok()).collect();
+        let mut w: Zeroizing<Vec<[u8; 4]>> = Zeroizing::new(
+            key.chunks_exact(4).filter_map(|c| <[u8; 4]>::try_from(c).ok()).collect(),
+        );
         let mut rcon = 1u8;
         for i in nk..4 * (rounds + 1) {
             let mut t = *w.get(i - 1)?;
@@ -140,7 +152,7 @@ impl Aes {
                 k
             })
             .collect();
-        Some(Self { round_keys })
+        Some(Self { round_keys: Zeroizing::new(round_keys) })
     }
 
     fn xor_key(&self, state: &mut [u8; 16], round: usize) {
@@ -223,11 +235,16 @@ impl Aes {
         }
     }
 
-    /// CBC decryption of whole blocks; a trailing partial block is left out. `None` if the IV is
-    /// not 16 bytes.
+    /// CBC decryption of whole blocks. `None` if the IV is not 16 bytes or the data is not a
+    /// multiple of the block size: a partial block is a damaged (or truncated, or padded-by-
+    /// someone) ciphertext, and decrypting "what fits" would hand the caller a plaintext that
+    /// no reader would produce.
     #[must_use]
     pub fn cbc_decrypt(&self, iv: &[u8], data: &[u8]) -> Option<Vec<u8>> {
         let mut prev: [u8; 16] = iv.try_into().ok()?;
+        if !data.len().is_multiple_of(16) {
+            return None;
+        }
         let mut out = Vec::with_capacity(data.len() / 16 * 16);
         for chunk in data.chunks_exact(16) {
             let mut block: [u8; 16] = chunk.try_into().ok()?;
@@ -277,16 +294,22 @@ impl Aes {
 }
 
 /// Removes PKCS#7 padding; `None` if it is not valid.
+///
+/// Every one of the (up to) 16 trailing bytes is examined whatever the padding byte says, and
+/// all the ways padding can be wrong end in the same `None`: a caller that decrypts attacker-
+/// chosen data and reports "bad padding" must not tell the attacker which check failed.
 #[must_use]
 pub fn unpad_pkcs7(mut data: Vec<u8>) -> Option<Vec<u8>> {
-    let n = usize::from(*data.last()?);
-    if n == 0 || n > 16 || n > data.len() {
+    let last = *data.last()?;
+    let n = usize::from(last);
+    let mut bad = u8::from(n == 0 || n > 16 || n > data.len());
+    let tail = data.get(data.len().saturating_sub(16)..)?;
+    for (i, &b) in tail.iter().rev().enumerate() {
+        bad |= u8::from(i < n) & u8::from(b != last);
+    }
+    if bad != 0 {
         return None;
     }
-    let keep = data.len() - n;
-    if data.get(keep..)?.iter().any(|&b| usize::from(b) != n) {
-        return None;
-    }
-    data.truncate(keep);
+    data.truncate(data.len() - n);
     Some(data)
 }
