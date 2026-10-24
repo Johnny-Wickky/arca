@@ -49,6 +49,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arca-ffi"
+version = "0.2.0"
+dependencies = [
+ "arca-digest",
+ "arca-engine",
+ "zeroize",
+]
+
+[[package]]
 name = "arca-guest-xray"
 version = "0.2.0"
 dependencies = [

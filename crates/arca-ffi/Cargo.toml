@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Arca — paranoid, memory-safe document viewer core.
+# Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md.
+
+[package]
+name = "arca-ffi"
+description = "C ABI bridge: iOS, macOS and native clients talk to arca-engine through this library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+# staticlib: libarca_ffi.a linked into iOS apps and XCFrameworks.
+# cdylib:    libarca_ffi.dylib / libarca_ffi.so for dynamic linking if needed.
+# rlib:       the safe API layer, tested natively without C toolchains.
+[lib]
+name = "arca_ffi"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+arca-engine.workspace = true
+arca-digest.workspace = true
+zeroize.workspace = true
+
+[build-dependencies]
+arca-digest.workspace = true
+
+# C ABI exports need `#[unsafe(no_mangle)]` and raw-pointer handling, so this crate cannot
+# inherit `unsafe_code = "forbid"`. It uses `deny` and allows `unsafe` in exactly one file,
+# `src/ffi.rs`; `tools/check-unsafe.sh` enforces that (and that every other lint is the
+# workspace's).
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_must_use = "deny"
+unused_qualifications = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+mem_forget = "deny"
+exit = "deny"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+cast_lossless = "warn"
+string_slice = "warn"
+get_unwrap = "deny"

@@ -16,6 +16,7 @@ members = [
     "crates/arca-engine",
     "crates/arca-jni",
     "crates/arca-image",
+    "crates/arca-ffi",
 ]
 
 [workspace.package]
@@ -44,6 +45,7 @@ arca-attribution = { path = "crates/arca-attribution" }
 arca-guest-xray = { path = "crates/arca-guest-xray" }
 arca-engine = { path = "crates/arca-engine" }
 arca-image = { path = "crates/arca-image" }
+arca-ffi = { path = "crates/arca-ffi" }
 
 # Wasm interpreter (no JIT: iOS forbids W^X pages for third-party apps).
 wasmi = { version = "=2.0.0", default-features = false, features = ["std", "validate", "stable", "auto-dispatch"] }

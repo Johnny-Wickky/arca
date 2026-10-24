@@ -18,13 +18,15 @@ violation() { printf 'policy violation: %s\n' "$*" >&2; fail=1; }
 GUEST=crates/arca-guest-xray
 JNI=crates/arca-jni
 JNI_FFI=$JNI/src/ffi.rs
+FFI=crates/arca-ffi
+FFI_C=$FFI/src/ffi.rs
 
 # 1. Every crate root forbids unsafe code; the only exceptions are the Wasm guest and the
 #    JNI bridge, which must `deny` it (exports need #[unsafe(no_mangle)], see their manifests)
 #    and allow it in a single, named place each.
 for lib in crates/*/src/lib.rs; do
     crate=${lib%/src/lib.rs}
-    if [[ $crate == "$GUEST" || $crate == "$JNI" ]]; then
+    if [[ $crate == "$GUEST" || $crate == "$JNI" || $crate == "$FFI" ]]; then
         grep -q '^#!\[deny(unsafe_code)\]' "$lib" || violation "$lib must contain #![deny(unsafe_code)]"
     else
         grep -q '^#!\[forbid(unsafe_code)\]' "$lib" || violation "$lib must contain #![forbid(unsafe_code)]"
@@ -34,7 +36,7 @@ done
 # 2. Every crate inherits the workspace lint table (except the guest and the JNI bridge,
 #    whose own tables are compared line by line in step 4).
 for manifest in crates/*/Cargo.toml; do
-    [[ ${manifest%/Cargo.toml} == "$GUEST" || ${manifest%/Cargo.toml} == "$JNI" ]] && continue
+    [[ ${manifest%/Cargo.toml} == "$GUEST" || ${manifest%/Cargo.toml} == "$JNI" || ${manifest%/Cargo.toml} == "$FFI" ]] && continue
     awk '/^\[lints\]/{f=1;next} /^\[/{f=0} f && /^workspace *= *true/{ok=1} END{exit !ok}' "$manifest" \
         || violation "$manifest must contain [lints] workspace = true"
 done
@@ -42,7 +44,7 @@ done
 # 3. No unsafe blocks, functions, impls, traits or extern blocks anywhere, except in the
 #    JNI boundary file (the guest has none: its exports are safe functions).
 if grep -rnE '(^|[^[:alnum:]_])unsafe[[:space:]]*(\{|fn[[:space:]]|impl[[:space:]<]|trait[[:space:]]|extern[[:space:]])' \
-        --include='*.rs' crates | grep -v "^$JNI_FFI:"; then
+        --include='*.rs' crates | grep -v "^$JNI_FFI:" | grep -v "^$FFI_C:"; then
     violation "unsafe code found (lines above)"
 fi
 
@@ -52,7 +54,7 @@ allows=$(grep -c 'allow(unsafe_code' "$GUEST/src/lib.rs" || true)
 [[ $allows == 5 ]] || violation "$GUEST/src/lib.rs: expected 5 #[allow(unsafe_code)], found $allows"
 pairs=$(grep -A1 'allow(unsafe_code' "$GUEST/src/lib.rs" | grep -cE '^[[:space:]]*#\[unsafe\(no_mangle\)\][[:space:]]*$' || true)
 [[ $pairs == 5 ]] || violation "$GUEST/src/lib.rs: every #[allow(unsafe_code)] must precede #[unsafe(no_mangle)]"
-if grep -rn 'allow(unsafe_code' --include='*.rs' crates | grep -v "^$GUEST/src/lib.rs:" | grep -v "^$JNI_FFI:"; then
+if grep -rn 'allow(unsafe_code' --include='*.rs' crates | grep -v "^$GUEST/src/lib.rs:" | grep -v "^$JNI_FFI:" | grep -v "^$FFI_C:"; then
     violation "allow(unsafe_code) outside the guest export table and the JNI boundary file"
 fi
 table() { awk -v h="$2" '$0==h{f=1;next} /^\[/{f=0} f && NF' "$1" | sed 's/[[:space:]]*#.*//' | grep -v '^$' | sort; }
@@ -72,6 +74,17 @@ diff <(table Cargo.toml '[workspace.lints.clippy]') <(table "$JNI/Cargo.toml" '[
 diff <(table Cargo.toml '[workspace.lints.rust]' | sed 's/^unsafe_code = "forbid"$/unsafe_code = "deny"/') \
      <(table "$JNI/Cargo.toml" '[lints.rust]') >/dev/null \
     || violation "$JNI/Cargo.toml [lints.rust] differs from [workspace.lints.rust] (other than unsafe_code)"
+
+# 4c. The C/iOS FFI bridge: unsafe is allowed by exactly one inner attribute, at the top of
+#    ffi.rs; its manifest differs from the workspace tables in unsafe_code only.
+inner=$(grep -c '^#!\[allow(unsafe_code' "$FFI_C" || true)
+[[ $inner == 1 ]] || violation "$FFI_C: expected exactly one #![allow(unsafe_code, ...)], found $inner"
+grep -q '^mod ffi;' "$FFI/src/lib.rs" || violation "$FFI/src/lib.rs must declare 'mod ffi;' (private)"
+diff <(table Cargo.toml '[workspace.lints.clippy]') <(table "$FFI/Cargo.toml" '[lints.clippy]') >/dev/null \
+    || violation "$FFI/Cargo.toml [lints.clippy] differs from [workspace.lints.clippy]"
+diff <(table Cargo.toml '[workspace.lints.rust]' | sed 's/^unsafe_code = "forbid"$/unsafe_code = "deny"/') \
+     <(table "$FFI/Cargo.toml" '[lints.rust]') >/dev/null \
+    || violation "$FFI/Cargo.toml [lints.rust] differs from [workspace.lints.rust] (other than unsafe_code)"
 
 # 5. No placeholders in production code.
 if grep -rnE '\b(todo|unimplemented)!|\bTODO\b|\bFIXME\b|\bXXX\b' --include='*.rs' crates; then
