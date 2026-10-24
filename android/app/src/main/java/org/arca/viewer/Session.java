@@ -570,6 +570,11 @@ public final class Session {
             if (next != null && next.length == 36) {
                 Prefs.setPassport(app, next);
             }
+            Prefs.incrementDocCount(app);
+            int threats = (int) Math.min(r.trackers + r.active, Integer.MAX_VALUE);
+            if (threats > 0) {
+                Prefs.addThreats(app, threats);
+            }
         } catch (RuntimeException ignored) {
             // statistics are a courtesy; never let them break a scan
         }

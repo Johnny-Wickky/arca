@@ -83,6 +83,24 @@ public final class Compat {
     /** Opts the window out of autofill and content capture: no document text leaves via them. */
     public static void noAutofill(Activity a) {
         a.getWindow().getDecorView().setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        if (Build.VERSION.SDK_INT >= 29) {
+            Api29.noContentCapture(a.getWindow());
+        }
+    }
+
+    public static boolean hasNotificationPermission(android.content.Context c) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            return Api33.hasNotificationPermission(c);
+        }
+        android.app.NotificationManager nm =
+            (android.app.NotificationManager) c.getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+        return nm != null && nm.areNotificationsEnabled();
+    }
+
+    public static void requestNotificationPermission(Activity a, int reqCode) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            Api33.requestNotificationPermission(a, reqCode);
+        }
     }
 
     /** A registered predictive-back callback; {@link #unregister()} removes it. */
@@ -175,6 +193,10 @@ public final class Compat {
             w.setNavigationBarContrastEnforced(false);
             w.setStatusBarContrastEnforced(false);
         }
+
+        static void noContentCapture(Window w) {
+            w.getDecorView().setImportantForContentCapture(View.IMPORTANT_FOR_CONTENT_CAPTURE_NO_EXCLUDE_DESCENDANTS);
+        }
     }
 
     /** API 30+ calls, isolated so that older devices never load them. */
@@ -249,6 +271,15 @@ public final class Compat {
 
         static void unregister(Activity a, Object cb) {
             a.getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((OnBackInvokedCallback) cb);
+        }
+
+        static boolean hasNotificationPermission(android.content.Context context) {
+            return context.checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        }
+
+        static void requestNotificationPermission(Activity a, int reqCode) {
+            a.requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, reqCode);
         }
     }
 }

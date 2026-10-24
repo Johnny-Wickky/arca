@@ -180,7 +180,7 @@ need "package org.arca.viewer $VERSION_CODE/$VERSION_NAME" \
     badging_has "^package: name='org.arca.viewer' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
 need "minSdk $MIN_SDK" badging_has "^\(min\)\{0,1\}[sS]dkVersion:'$MIN_SDK'"
 need "targetSdk $TARGET_SDK" badging_has "^targetSdkVersion:'$TARGET_SDK'"
-need "no permission requested" badging_lacks "^uses-permission"
+need "no unexpected permission requested" badging_lacks "^uses-permission: name='(?!android\.permission\.POST_NOTIFICATIONS)[^']*'"
 need "no INTERNET permission" badging_lacks "android.permission.INTERNET"
 for abi in "${ABIS[@]}"; do
     need "native code for $abi" badging_has "^native-code:.*'$abi'"

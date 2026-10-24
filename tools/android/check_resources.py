@@ -42,7 +42,7 @@ NEWER_ATTRS = {
 # Name prefixes that Labels.java builds at run time (so those strings are not dead).
 DYNAMIC_PREFIXES = (
     "threat_", "format_", "cat_", "sev_", "meta_", "ref_kind_", "ref_class_", "emb_kind_",
-    "macro_lang_", "action_", "notice_",
+    "macro_lang_", "action_", "notice_", "push_",
 )
 
 problems = []
@@ -362,9 +362,10 @@ def main():
                 if attr not in known and attr not in NEWER_ATTRS:
                     fail(f"android:{attr} (in {sorted(where)[0]}) does not exist in the minimum SDK and is not in NEWER_ATTRS")
 
-    # 6. manifest sanity: no permissions, no network
-    if re.search(r"<uses-permission", manifest):
-        fail("AndroidManifest.xml declares a permission; Arca must not (see docs/ANDROID.md)")
+    # 6. manifest sanity: no network, no storage; only local POST_NOTIFICATIONS allowed
+    for p in re.findall(r'<uses-permission\s+android:name="([^"]+)"', manifest):
+        if p != "android.permission.POST_NOTIFICATIONS":
+            fail(f"AndroidManifest.xml declares unexpected permission '{p}'; Arca only allows local POST_NOTIFICATIONS")
     if "INTERNET" in manifest:
         fail("AndroidManifest.xml mentions INTERNET")
     if 'android:exported' not in manifest:

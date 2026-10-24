@@ -7,13 +7,17 @@
      there is nothing to ask for and no network channel for a malicious document to use. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.arca.viewer"
-    android:versionCode="1003"
-    android:versionName="0.1.3">
+    android:versionCode="1004"
+    android:versionName="0.1.4">
 
     <!-- The supported API range is stated explicitly: aapt2 (build-tools 36) no longer writes a
          default sdkVersion into the package when <uses-sdk> is absent, so the built APK would carry
          no minSdk at all and fail verification. minSdk 26 matches tools/android/build-apk.sh. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+
+    <!-- Offline local push notification reminders to support student developers (Lava.top).
+         Deliberately absent: INTERNET, STORAGE and any tracking permission. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Works with or without a touch screen (Chromebooks, desktop modes) and in any orientation. -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -31,6 +35,7 @@
         android:supportsRtl="true"
         android:extractNativeLibs="false"
         android:localeConfig="@xml/locales_config"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:enableOnBackInvokedCallback="true"
         android:resizeableActivity="true"
         android:largeHeap="false"
@@ -141,6 +146,9 @@
                 <data android:pathPattern=".*\\.[vV][sS][dD][xX]" />
                 <data android:pathPattern=".*\\.[vV][sS][dD][mM]" />
                 <data android:pathPattern=".*\\.[mM][sS][gG]" />
+                <data android:pathPattern=".*\\.[vV][sS][dD]" />
+                <data android:pathPattern=".*\\.[aA][cC][cC][dD][bB]" />
+                <data android:pathPattern=".*\\.[mM][dD][bB]" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -190,5 +198,10 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <!-- Local offline reminder receiver (non-exported, Zero-Trust) -->
+        <receiver
+            android:name=".RemindReceiver"
+            android:exported="false" />
     </application>
 </manifest>

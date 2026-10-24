@@ -21,3 +21,11 @@
 # IDE
 .idea/
 *.iml
+
+# Keystores & Signing Keys (Zero-Trust: NEVER commit secrets!)
+*.keystore
+*.jks
+*.p12
+*.key
+*.pem
+/signing/

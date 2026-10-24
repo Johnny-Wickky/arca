@@ -97,6 +97,30 @@ public final class SettingsScreen extends Screen {
         col.addView(privacy, ui.fillWidth());
         col.addView(ui.space(12));
 
+        // ---- reminders ----
+        LinearLayout notif = ui.card();
+        notif.addView(ui.heading(ui.str(R.string.settings_reminders_title), Ui.LABEL));
+        notif.addView(ui.space(4));
+        notif.addView(toggle(R.string.settings_reminders, R.string.settings_reminders_desc, Prefs.reminders(act),
+            new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton b, boolean on) {
+                    if (on) {
+                        if (!Compat.hasNotificationPermission(act)) {
+                            Compat.requestNotificationPermission(act, MainActivity.REQ_NOTIF_PERMISSION);
+                        } else {
+                            Prefs.setReminders(act, true);
+                            org.arca.viewer.Reminders.schedule(act);
+                        }
+                    } else {
+                        Prefs.setReminders(act, false);
+                        org.arca.viewer.Reminders.cancel(act);
+                    }
+                }
+            }));
+        col.addView(notif, ui.fillWidth());
+        col.addView(ui.space(12));
+
         TextView net = ui.text(R.string.home_no_network, Ui.CAPTION);
         col.addView(net, ui.fillWidth());
         return page(header(ui.str(R.string.settings), true), scrollColumn(col, 640, Adaptive.padding(act)));

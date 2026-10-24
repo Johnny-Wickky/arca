@@ -35,6 +35,12 @@ public final class Prefs {
     private static final String K_IMAGES = "auto_images";
     private static final String K_SECURE = "secure_screen";
     private static final String K_PASSPORT = "passport";
+    private static final String K_REMINDERS = "reminders";
+    private static final String K_LAST_REMINDER = "last_reminder";
+    private static final String K_NEXT_REMINDER = "next_reminder";
+    private static final String K_REMINDER_INDEX = "reminder_idx";
+    private static final String K_DOC_COUNT = "doc_count";
+    private static final String K_THREAT_COUNT = "threat_count";
 
     private static SharedPreferences sp(Context c) {
         return c.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
@@ -166,6 +172,56 @@ public final class Prefs {
             conf.setLocales(new android.os.LocaleList(l));
         }
         return base.createConfigurationContext(conf);
+    }
+
+    public static boolean reminders(Context c) {
+        return sp(c).getBoolean(K_REMINDERS, true);
+    }
+
+    public static void setReminders(Context c, boolean on) {
+        sp(c).edit().putBoolean(K_REMINDERS, on).apply();
+    }
+
+    public static long lastReminder(Context c) {
+        return sp(c).getLong(K_LAST_REMINDER, 0L);
+    }
+
+    public static void setLastReminder(Context c, long time) {
+        sp(c).edit().putLong(K_LAST_REMINDER, time).apply();
+    }
+
+    public static long nextReminder(Context c) {
+        return sp(c).getLong(K_NEXT_REMINDER, 0L);
+    }
+
+    public static void setNextReminder(Context c, long time) {
+        sp(c).edit().putLong(K_NEXT_REMINDER, time).apply();
+    }
+
+    public static int reminderIndex(Context c) {
+        return sp(c).getInt(K_REMINDER_INDEX, 0);
+    }
+
+    public static void setReminderIndex(Context c, int idx) {
+        sp(c).edit().putInt(K_REMINDER_INDEX, idx).apply();
+    }
+
+    public static int docCount(Context c) {
+        return sp(c).getInt(K_DOC_COUNT, 0);
+    }
+
+    public static void incrementDocCount(Context c) {
+        sp(c).edit().putInt(K_DOC_COUNT, docCount(c) + 1).apply();
+    }
+
+    public static int threatCount(Context c) {
+        return sp(c).getInt(K_THREAT_COUNT, 0);
+    }
+
+    public static void addThreats(Context c, int n) {
+        if (n > 0) {
+            sp(c).edit().putInt(K_THREAT_COUNT, threatCount(c) + n).apply();
+        }
     }
 
     private static int clamp(int v, int lo, int hi) {
