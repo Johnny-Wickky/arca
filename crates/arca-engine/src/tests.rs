@@ -610,10 +610,15 @@ fn the_budget_of_a_preview_or_a_sterile_copy_grows_with_what_the_scan_unpacked()
     // A sterile copy of such a workbook measured 4 700 fuel per expanded byte: it now fits.
     assert!(sanitize.fuel.for_input(len) > 4_700 * inflated);
     assert!(sanitize.memory_limit_for(len) > none_sanitize.memory_limit_for(len));
-    // A scan has no earlier figure to go by and keeps its budget whatever is passed.
+    // A scan within 20:1 ratio keeps its base budget; above 20:1 it receives adaptive excess fuel.
     assert_eq!(
         engine.policy_for(Op::Scan, len, inflated).fuel,
         engine.policy_for(Op::Scan, len, 0).fuel
+    );
+    let highly_compressed = 100 << 20; // > 20:1 for a 3 MB file
+    assert!(
+        engine.policy_for(Op::Scan, len, highly_compressed).fuel.for_input(len)
+            > engine.policy_for(Op::Scan, len, 0).fuel.for_input(len)
     );
     // The fixed ceilings stay: fuel, the device's memory limit and the wall-clock limits.
     let huge = engine.policy_for(Op::Sanitize, len, u64::MAX);

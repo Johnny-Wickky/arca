@@ -165,7 +165,7 @@ impl Handler for PageHandler {
             "Text" if !self.stack.is_empty() && self.section.is_empty() => self.in_text = true,
             "Section" if !self.stack.is_empty() => {
                 let n = tag.attr("N").unwrap_or_default();
-                if matches!(&*n, "Property" | "Hyperlink") {
+                if matches!(&*n, "Property" | "Hyperlink" | "User") {
                     self.section = n.into_owned();
                 } else {
                     // Geometry, layers, user cells: rows and rows of numbers.
@@ -225,11 +225,19 @@ impl Handler for PageHandler {
                 let Some(row) = self.row.take() else { return };
                 let max_href = self.max_href;
                 let Some(s) = self.stack.last_mut() else { return };
-                if self.section == "Property" {
-                    let label = if row.get("Label").is_empty() {
-                        row.name.as_str()
+                if self.section == "Property" || self.section == "User" {
+                    let label = if self.section == "User" {
+                        if row.get("Prompt").is_empty() {
+                            row.name.as_str()
+                        } else {
+                            row.get("Prompt")
+                        }
                     } else {
-                        row.get("Label")
+                        if row.get("Label").is_empty() {
+                            row.name.as_str()
+                        } else {
+                            row.get("Label")
+                        }
                     };
                     let value = row.get("Value");
                     if !(label.is_empty() && value.is_empty()) && s.data.len() < MAX_DATA {

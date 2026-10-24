@@ -18,7 +18,7 @@
 mod db;
 
 use crate::PreviewError;
-use crate::model::{Block, CellKind, FileFormat, NoticeKind, SectionKind};
+use crate::model::{Block, CellKind, FileFormat, NoticeKind, Paragraph, Run, SectionKind, style};
 use crate::numfmt;
 use crate::sink::{GridBuilder, Sink};
 use db::{Db, Object, OpenError, Table, Value};
@@ -118,6 +118,70 @@ pub(crate) fn extract(
             break;
         }
     }
+
+    // Extract SQL queries from MSysQueries if present (Issue #47)
+    let msys_queries_obj = objects.iter().find(|o| o.name == "MSysQueries");
+    let msys_queries_table = msys_queries_obj.and_then(|o| db.table(o.page));
+    let mut queries_map: std::collections::BTreeMap<i64, Vec<QueryRow>> = std::collections::BTreeMap::new();
+    if let Some(q_table) = &msys_queries_table {
+        let col = |name: &str| q_table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(name));
+        let (c_obj, c_attr, c_expr, c_n1, c_n2, c_ord, c_flag) = (
+            col("ObjectId"),
+            col("Attribute"),
+            col("Expression"),
+            col("Name1"),
+            col("Name2"),
+            col("Order"),
+            col("Flag"),
+        );
+        let int_val = |vals: &[Value], i: Option<usize>| -> i64 {
+            i.and_then(|idx| vals.get(idx)).and_then(|v| match v {
+                Value::Int(n) => Some(*n),
+                _ => None,
+            }).unwrap_or(0)
+        };
+        let str_val = |vals: &[Value], i: Option<usize>| -> String {
+            i.and_then(|idx| vals.get(idx)).and_then(|v| match v {
+                Value::Text(s) => Some(s.clone()),
+                _ => None,
+            }).unwrap_or_default()
+        };
+        db.rows(q_table, |vals| {
+            let object_id = int_val(vals, c_obj);
+            let attribute = int_val(vals, c_attr);
+            let expression = str_val(vals, c_expr);
+            let name1 = str_val(vals, c_n1);
+            let name2 = str_val(vals, c_n2);
+            let order = int_val(vals, c_ord);
+            let flag = int_val(vals, c_flag);
+            queries_map.entry(object_id).or_default().push(QueryRow {
+                attribute,
+                expression,
+                name1,
+                name2,
+                order,
+                flag,
+            });
+            true
+        });
+    }
+
+    for o in shown.iter().filter(|o| o.kind == kind::QUERY) {
+        if sink.is_full() {
+            break;
+        }
+        let hidden = o.flags & HIDDEN_FLAG != 0;
+        let Some(sec) = sink.open_section(SectionKind::Sheet, &format!("Query: {}", o.name), hidden) else { break };
+        let sql_text = if let Some(mut rows) = queries_map.remove(&o.id) {
+            format_query(&mut rows)
+        } else {
+            String::from("-- (query definition not found in MSysQueries)")
+        };
+        let mut p = Paragraph::default();
+        p.runs.push(Run { text: sql_text, style: style::PLAIN });
+        sink.push(sec, Block::Para(p));
+    }
+
     if deleted_total > 0 {
         sink.count(NoticeKind::DeletedRecords, "", deleted_total);
     }
@@ -128,6 +192,133 @@ pub(crate) fn extract(
 const OTHER: u8 = 8;
 
 /// Position of a kind of object in the overview.
+
+#[derive(Debug, Clone, Default)]
+struct QueryRow {
+    attribute: i64,
+    expression: String,
+    name1: String,
+    name2: String,
+    order: i64,
+    flag: i64,
+}
+
+fn format_query(rows: &mut [QueryRow]) -> String {
+    rows.sort_by_key(|r| (r.attribute, r.order));
+    let mut select_parts = Vec::new();
+    let mut from_parts = Vec::new();
+    let mut where_parts = Vec::new();
+    let mut group_parts = Vec::new();
+    let mut having_parts = Vec::new();
+    let mut order_parts = Vec::new();
+
+    for r in rows.iter() {
+        match r.attribute {
+            // 1: SELECT
+            1 => {
+                let part = if !r.expression.is_empty() {
+                    if !r.name1.is_empty() && r.name1 != r.expression {
+                        format!("{} AS [{}]", r.expression, r.name1)
+                    } else {
+                        r.expression.clone()
+                    }
+                } else if !r.name1.is_empty() {
+                    format!("[{}]", r.name1)
+                } else {
+                    String::new()
+                };
+                if !part.is_empty() {
+                    select_parts.push(part);
+                }
+            }
+            // 3: FROM / tables
+            3 => {
+                let part = if !r.name1.is_empty() {
+                    if !r.name2.is_empty() {
+                        format!("[{}].[{}]", r.name2, r.name1)
+                    } else {
+                        format!("[{}]", r.name1)
+                    }
+                } else if !r.expression.is_empty() {
+                    r.expression.clone()
+                } else {
+                    String::new()
+                };
+                if !part.is_empty() {
+                    from_parts.push(part);
+                }
+            }
+            // 5: WHERE
+            5 => {
+                if !r.expression.is_empty() {
+                    where_parts.push(r.expression.clone());
+                }
+            }
+            // 6: GROUP BY
+            6 => {
+                if !r.expression.is_empty() {
+                    group_parts.push(r.expression.clone());
+                }
+            }
+            // 7: HAVING
+            7 => {
+                if !r.expression.is_empty() {
+                    having_parts.push(r.expression.clone());
+                }
+            }
+            // 8: ORDER BY
+            8 => {
+                let part = if !r.expression.is_empty() {
+                    if r.flag & 1 != 0 {
+                        format!("{} DESC", r.expression)
+                    } else {
+                        r.expression.clone()
+                    }
+                } else {
+                    String::new()
+                };
+                if !part.is_empty() {
+                    order_parts.push(part);
+                }
+            }
+            _ => {
+                if !r.expression.is_empty() && select_parts.is_empty() && from_parts.is_empty() {
+                    return r.expression.clone();
+                }
+            }
+        }
+    }
+
+    if select_parts.is_empty() && from_parts.is_empty() {
+        return String::from("-- (empty or binary query definition)");
+    }
+
+    let mut sql = String::from("SELECT ");
+    sql.push_str(&select_parts.join(", "));
+    if !from_parts.is_empty() {
+        sql.push_str("\nFROM ");
+        sql.push_str(&from_parts.join(", "));
+    }
+    if !where_parts.is_empty() {
+        sql.push_str("\nWHERE ");
+        sql.push_str(&where_parts.join(" AND "));
+    }
+    if !group_parts.is_empty() {
+        sql.push_str("\nGROUP BY ");
+        sql.push_str(&group_parts.join(", "));
+    }
+    if !having_parts.is_empty() {
+        sql.push_str("\nHAVING ");
+        sql.push_str(&having_parts.join(" AND "));
+    }
+    if !order_parts.is_empty() {
+        sql.push_str("\nORDER BY ");
+        sql.push_str(&order_parts.join(", "));
+    }
+    sql.push(';');
+    sql
+}
+
 const fn order(kind: i64) -> u8 {
     match kind {
         kind::TABLE => 0,
@@ -201,7 +392,7 @@ fn overview(sink: &mut Sink<'_>, objects: &[&Object], tables: &[(&Object, Option
     sink.push(sec, Block::Grid(grid));
     sink.note(
         NoticeKind::Unsupported,
-        "queries, forms, reports, macros and modules are listed, not shown or run",
+        "forms, reports, macros and modules are listed, not shown or run; queries are displayed as safe read-only SQL text",
     );
     if code {
         sink.note(NoticeKind::Unsupported, "macros and modules are code and are never run");

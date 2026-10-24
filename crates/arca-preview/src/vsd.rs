@@ -60,8 +60,15 @@ const CHUNK_SHAPE: u32 = 0x48;
 const CHUNK_GUIDE: u32 = 0x4d;
 const CHUNK_FOREIGN: u32 = 0x4e;
 const CHUNK_SHAPE_LIST: u32 = 0x65;
+const CHUNK_CONNECTION_LIST: u32 = 0x71;
 const CHUNK_SHAPE_ID: u32 = 0x83;
+const CHUNK_CONNECTION: u32 = 0x99;
 const CHUNK_XFORM: u32 = 0x9b;
+const CHUNK_USER: u32 = 0xb4;
+const CHUNK_CUSTOM_PROP: u32 = 0xb6;
+const CHUNK_HYPERLINK: u32 = 0xc4;
+
+const POINTER_MASTERS: i32 = 0x28;
 
 /// A pointer to a stream.
 #[derive(Debug, Clone, Copy)]
@@ -196,7 +203,7 @@ fn separator(ty: u32, unknown2: u16, unknown3: u8, has_trailer: bool) -> bool {
     match ty {
         0x1f | 0xc9 => return false,
         0x69 => return true,
-        0xa9 | 0xaa | 0xb4 | 0xb6 if unknown2 == 2 && unknown3 == 0x54 => return true,
+        0xa9 | 0xaa | 0xb4 | 0xb6 | 0xc4 if unknown2 == 2 && unknown3 == 0x54 => return true,
         _ => {}
     }
     (unknown2 == 2 && unknown3 == 0x55) || (unknown2 == 3 && unknown3 != 0x50) || has_trailer
@@ -267,12 +274,71 @@ impl Visio<'_> {
     }
 }
 
+fn extract_chunk_strings(body: &[u8], version: u16) -> Vec<String> {
+    let mut strings = Vec::new();
+    if version > 6 {
+        let mut cur = Vec::new();
+        let mut i = 0;
+        while i + 1 < body.len() {
+            let ch = u16::from_le_bytes([body[i], body[i + 1]]);
+            if ch >= 0x20 && ch != 0x7F && ch < 0xFFFE {
+                if let Some(c) = char::from_u32(u32::from(ch)) {
+                    cur.push(c);
+                }
+            } else if !cur.is_empty() {
+                if cur.len() >= 2 {
+                    let s: String = cur.into_iter().collect();
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
+                        strings.push(trimmed.to_string());
+                    }
+                }
+                cur = Vec::new();
+            }
+            i += 2;
+        }
+        if cur.len() >= 2 {
+            let s: String = cur.into_iter().collect();
+            let trimmed = s.trim();
+            if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
+                strings.push(trimmed.to_string());
+            }
+        }
+    } else {
+        let mut cur = Vec::new();
+        for &b in body {
+            if (0x20..=0x7E).contains(&b) {
+                cur.push(b as char);
+            } else if !cur.is_empty() {
+                if cur.len() >= 2 {
+                    let s: String = cur.into_iter().collect();
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
+                        strings.push(trimmed.to_string());
+                    }
+                }
+                cur = Vec::new();
+            }
+        }
+        if cur.len() >= 2 {
+            let s: String = cur.into_iter().collect();
+            let trimmed = s.trim();
+            if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
+                strings.push(trimmed.to_string());
+            }
+        }
+    }
+    strings
+}
+
 /// A shape read from a page.
 #[derive(Default)]
 struct Shape {
     ty: u32,
     pin: Option<(f64, f64)>,
     text: String,
+    props: Vec<(String, String)>,
+    links: Vec<String>,
     /// Ids of the shapes a group holds.
     kids: Vec<u32>,
 }
@@ -285,6 +351,7 @@ struct Page {
     roots: Vec<u32>,
     /// Shapes in the order they appear.
     order: Vec<u32>,
+    connects: Vec<(u32, u32)>,
 }
 
 /// Where the shape ids that follow a shape list belong.
@@ -344,6 +411,39 @@ fn read_page(data: &[u8], version: u16) -> Page {
             CHUNK_TEXT => {
                 if let Some(shape) = current.and_then(|id| page.shapes.get_mut(&id)) {
                     shape.text = text(c.body, version);
+                }
+            }
+            CHUNK_CUSTOM_PROP | CHUNK_USER => {
+                if let Some(shape) = current.and_then(|id| page.shapes.get_mut(&id)) {
+                    let strs = extract_chunk_strings(c.body, version);
+                    let mut it = strs.into_iter();
+                    while let Some(k) = it.next() {
+                        let v = it.next().unwrap_or_default();
+                        if shape.props.len() < 64 {
+                            shape.props.push((k, v));
+                        }
+                    }
+                }
+            }
+            CHUNK_HYPERLINK => {
+                if let Some(shape) = current.and_then(|id| page.shapes.get_mut(&id)) {
+                    let strs = extract_chunk_strings(c.body, version);
+                    for s in strs {
+                        if shape.links.len() < 16 && !shape.links.contains(&s) {
+                            shape.links.push(s);
+                        }
+                    }
+                }
+            }
+            CHUNK_CONNECTION_LIST | CHUNK_CONNECTION => {
+                let mut i = 0;
+                while i + 8 <= c.body.len() {
+                    if let (Some(from), Some(to)) = (u32_le(c.body, i), u32_le(c.body, i + 4)) {
+                        if from > 0 && to > 0 && from != to && page.connects.len() < 10_000 {
+                            page.connects.push((from, to));
+                        }
+                    }
+                    i += 4;
                 }
             }
             _ => {}
@@ -443,6 +543,29 @@ fn emit(
             let p = Paragraph {
                 level,
                 runs: vec![Run { text: line.to_owned(), style: 0, href: String::new() }],
+                ..Paragraph::default()
+            };
+            if !sink.para(sec, p) {
+                return false;
+            }
+        }
+        let prop_level = u8::try_from(depth.saturating_add(1).min(6)).unwrap_or(6);
+        for (k, v) in &shape.props {
+            let text = if v.is_empty() { k.clone() } else { format!("{k}: {v}") };
+            let p = Paragraph {
+                level: prop_level,
+                runs: vec![Run { text, style: 0, href: String::new() }],
+                ..Paragraph::default()
+            };
+            if !sink.para(sec, p) {
+                return false;
+            }
+        }
+        for link in &shape.links {
+            let text = format!("[внешняя ссылка] {link}");
+            let p = Paragraph {
+                level: prop_level,
+                runs: vec![Run { text, style: 0, href: link.clone() }],
                 ..Paragraph::default()
             };
             if !sink.para(sec, p) {
@@ -550,18 +673,64 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
                 emit(&page, &rest, sec, sink, 0, &mut seen, false)
             }
         };
+        for &(from, to) in &page.connects {
+            if page.shapes.contains_key(&from) && page.shapes.contains_key(&to) {
+                let from_name = page.shapes.get(&from).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
+                let to_name = page.shapes.get(&to).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
+                let text = format!("Связь: {from_name} → {to_name}");
+                let p = Paragraph {
+                    level: 0,
+                    runs: vec![Run { text, style: 0, href: String::new() }],
+                    ..Paragraph::default()
+                };
+                let _ = sink.para(sec, p);
+            }
+        }
         sink.drop_if_empty(sec);
         if !ok {
             break;
         }
     }
+    // Masters / Stencils (Issue #48)
+    let masters_ptrs: Vec<_> = top
+        .iter()
+        .filter(|p| (p.ty == POINTER_MASTERS || p.ty == 0x16) && p.has_pointers())
+        .collect();
+    let mut master_names = Vec::new();
+    for mp in masters_ptrs {
+        if let Some(c) = v.open(*mp) {
+            for child in v.children(c.body()) {
+                if let Some(content) = v.open(child) {
+                    let m_page = read_page(&content.data, version);
+                    for shape in m_page.shapes.values() {
+                        let name = shape.text.lines().next().unwrap_or("").trim();
+                        if !name.is_empty()
+                            && !master_names.contains(&name.to_string())
+                            && master_names.len() < 128
+                        {
+                            master_names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !master_names.is_empty() {
+        if let Some(sec) = sink.open_section(SectionKind::Body, "Мастера и трафареты", false) {
+            let text = format!("Мастера: {}", master_names.join(", "));
+            let p = Paragraph {
+                level: 0,
+                runs: vec![Run { text, style: 0, href: String::new() }],
+                ..Paragraph::default()
+            };
+            let _ = sink.para(sec, p);
+        }
+    }
+
     if pictures {
         sink.note(NoticeKind::Unsupported, "pictures and embedded objects");
     }
-    sink.note(
-        NoticeKind::Unsupported,
-        "drawing geometry, connections, shape data, hyperlinks and masters",
-    );
+    sink.note(NoticeKind::Unsupported, "drawing geometry");
     sink.note(NoticeKind::BestEffort, "binary Visio");
     Ok(())
 }

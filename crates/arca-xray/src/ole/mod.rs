@@ -599,18 +599,48 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) {
         _ => FileFormat::AccessAce,
     };
     ctx.identified(fmt);
-    // System object names are stored as UTF-16 in Jet 4 / ACE catalog pages.
-    let autoexec_utf16: Vec<u8> = "AutoExec".encode_utf16().flat_map(u16::to_le_bytes).collect();
-    if memfind(data, &autoexec_utf16).is_some() || memfind(data, b"AutoExec").is_some() {
-        ctx.report.add_with(ThreatKind::MacroAutoExec, Severity::High, location, "database contains an object named AutoExec (Access runs this macro on open; Arca never does)");
-    }
-    let vba_utf16: Vec<u8> = "VBAProject".encode_utf16().flat_map(u16::to_le_bytes).collect();
-    if memfind(data, &vba_utf16).is_some() {
-        ctx.report.add(
-            ThreatKind::VbaMacros,
-            location,
-            "database contains a VBA project (ignored by design)",
-        );
+    // Structured catalog parsing via MSysObjects (eliminates F-2 false positives)
+    match arca_container::jet::Db::open(data) {
+        Ok(db) => {
+            if let Some(objects) = db.catalog() {
+                for o in &objects {
+                    // Macro AutoExec: object of kind -32766 named "AutoExec"
+                    if o.kind == -32766 && o.name.eq_ignore_ascii_case("AutoExec") {
+                        ctx.report.add_with(
+                            ThreatKind::MacroAutoExec,
+                            Severity::High,
+                            location,
+                            "database contains an AutoExec macro object (Access executes this on open; Arca never does)",
+                        );
+                    }
+                    // VBA modules: kind -32761, or MSysAccessStorage/MSysAccessObjects
+                    if o.kind == -32761
+                        || o.name == "MSysAccessStorage"
+                        || o.name == "MSysAccessObjects"
+                    {
+                        ctx.report.add(
+                            ThreatKind::VbaMacros,
+                            location,
+                            format!("database contains a VBA module or storage {:?}", o.name),
+                        );
+                    }
+                }
+            }
+        }
+        Err(arca_container::jet::OpenError::Encrypted) => {
+            ctx.report.add(
+                ThreatKind::EncryptedDocument,
+                location,
+                "database is encrypted or password-protected",
+            );
+        }
+        Err(arca_container::jet::OpenError::Malformed(_)) => {
+            // Malformed or truncated header: fallback to conservative UTF-16 check
+            let autoexec_utf16: Vec<u8> = "AutoExec".encode_utf16().flat_map(u16::to_le_bytes).collect();
+            if memfind(data, &autoexec_utf16).is_some() {
+                ctx.report.add_with(ThreatKind::MacroAutoExec, Severity::High, location, "database contains an AutoExec string signature");
+            }
+        }
     }
     let mut ole_blobs = 0usize;
     let mut from = 0usize;

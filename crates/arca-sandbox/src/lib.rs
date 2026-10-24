@@ -73,7 +73,7 @@ impl FuelPolicy {
     /// minutes; the wall-clock deadline ([`SandboxPolicy::max_wall_time`]) and
     /// the cancel token bound the *time* regardless of the device speed.
     pub const DEFAULT: Self =
-        Self { base: 2_000_000_000, per_input_byte: 32_000, max: 400_000_000_000 };
+        Self { base: 2_000_000_000, per_input_byte: 32_000, max: 2_000_000_000_000 };
 
     /// Fuel granted for an input of `len` bytes.
     #[must_use]
@@ -739,13 +739,29 @@ impl Sandbox {
             .get_memory(&store, exports::MEMORY)
             .ok_or(SandboxError::MissingExport(exports::MEMORY))?;
 
-        let result =
-            protocol(&mut store, &instance, memory, (prefix, input), input_len, p, &mut meter);
-
-        // Wipe the guest memory (input copy, intermediate parse state) before
-        // the store is dropped, whatever the outcome.
-        memory.data_mut(&mut store).zeroize();
+        let mut guard = MemoryZeroizeGuard { memory, store: &mut store };
+        let result = protocol(
+            guard.store,
+            &instance,
+            guard.memory,
+            (prefix, input),
+            input_len,
+            p,
+            &mut meter,
+        );
+        drop(guard);
         result
+    }
+}
+
+struct MemoryZeroizeGuard<'a> {
+    memory: Memory,
+    store: &'a mut Store<Guard>,
+}
+
+impl Drop for MemoryZeroizeGuard<'_> {
+    fn drop(&mut self) {
+        self.memory.data_mut(self.store).zeroize();
     }
 }
 

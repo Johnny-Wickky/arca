@@ -33,6 +33,7 @@ pub mod cfb;
 pub mod codepages;
 pub mod crypto;
 pub mod inflate;
+pub mod jet;
 pub mod text;
 pub mod xml;
 pub mod zip;

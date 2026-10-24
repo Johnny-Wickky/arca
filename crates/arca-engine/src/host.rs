@@ -244,7 +244,20 @@ impl Engine {
             policy.memory_base_bytes = 256 << 20;
             policy.fuel.base = policy.fuel.base.max(IMAGE_FUEL_BASE);
         }
-        if matches!(op, Op::Preview | Op::Sanitize | Op::Render) {
+        let len_u64 = u64::try_from(len).unwrap_or(u64::MAX);
+        let inflated = inflated.min(MAX_INFLATED_HINT);
+
+        if op == Op::Scan {
+            // If the document is highly compressed (> 20:1 ratio), scale fuel and memory for the
+            // excess uncompressed content that the XML parser must process.
+            let covered_by_base_ratio = len_u64.saturating_mul(DEFAULT_MAX_RATIO);
+            if inflated > covered_by_base_ratio {
+                let excess = inflated.saturating_sub(covered_by_base_ratio);
+                policy.fuel.base = policy.fuel.base.saturating_add(excess.saturating_mul(FUEL_PER_INFLATED_SCAN));
+                let excess_mem = usize::try_from(excess.min(256 << 20)).unwrap_or(usize::MAX);
+                policy.memory_base_bytes = policy.memory_base_bytes.saturating_add(excess_mem);
+            }
+        } else if matches!(op, Op::Preview | Op::Sanitize | Op::Render) {
             // Extraction and rebuilding keep the decompressed parts next to the result.
             policy.memory_base_bytes = 192 << 20;
             policy.memory_per_input_byte = 8;
@@ -252,12 +265,18 @@ impl Engine {
                 Op::Sanitize => (FUEL_PER_INFLATED_SANITIZE, MEMORY_PER_INFLATED_SANITIZE),
                 _ => (FUEL_PER_INFLATED_PREVIEW, MEMORY_PER_INFLATED_PREVIEW),
             };
-            let inflated = inflated.min(MAX_INFLATED_HINT);
             policy.fuel.base = policy.fuel.base.saturating_add(inflated.saturating_mul(fuel));
             policy.memory_base_bytes = policy.memory_base_bytes.saturating_add(
                 usize::try_from(inflated).unwrap_or(usize::MAX).saturating_mul(memory),
             );
         }
+
+        // Dynamically scale policy.fuel.max so that large documents (10-30 MB) and high-inflation
+        // documents are not clamped to a static ceiling.
+        let expected_fuel = policy.fuel.base.saturating_add(policy.fuel.per_input_byte.saturating_mul(len_u64));
+        let adaptive_max = expected_fuel.saturating_mul(12) / 10;
+        policy.fuel.max = policy.fuel.max.max(adaptive_max).min(MAX_FUEL_CEILING);
+
         policy
     }
 
@@ -486,6 +505,33 @@ const MEMORY_PER_INFLATED_PREVIEW: usize = 2;
 const MEMORY_PER_INFLATED_SANITIZE: usize = 4;
 /// The scan's figure is used up to this much (the engine's own ceilings apply on top).
 const MAX_INFLATED_HINT: u64 = 1 << 30;
+/// Fuel an X-ray scan needs per byte of excess decompressed content above 20:1 compression ratio
+/// (measured ≈ 1 060 - 1 400 on XML; with safety margin).
+const FUEL_PER_INFLATED_SCAN: u64 = 1_500;
+/// Ratio up to which the standard per_input_byte budget (32 000) provides sufficient fuel.
+const DEFAULT_MAX_RATIO: u64 = 20;
+/// Absolute maximum fuel ceiling for any single run (8 trillion fuel ≈ 1 GiB inflated at 6 000 fuel/B).
+const MAX_FUEL_CEILING: u64 = 8_000_000_000_000;
+
+/// Sniffs the declared uncompressed size of a container from its central directory without
+/// decompressing any data. Returns `None` if the input is not a recognized container.
+pub(crate) fn sniff_inflated(data: &[u8]) -> Option<u64> {
+    if !data.starts_with(b"PK\x03\x04") && !data.starts_with(b"PK\x05\x06") {
+        return None;
+    }
+    let zip = arca_container::zip::ZipArchive::parse(data, arca_container::zip::ZipLimits::default()).ok()?;
+    let mut total: u64 = 0;
+    for entry in zip.entries() {
+        if !entry.is_dir() {
+            total = total.saturating_add(entry.uncompressed_size());
+        }
+    }
+    // Bound the hint by 100:1 ratio and 1 GiB maximum, matching InflateBudget limits.
+    let max_allowed = (u64::try_from(data.len()).unwrap_or(u64::MAX))
+        .saturating_mul(100)
+        .min(MAX_INFLATED_HINT);
+    Some(total.min(max_allowed))
+}
 /// Fuel a picture may use before the size of its file adds to it.
 const IMAGE_FUEL_BASE: u64 = 20_000_000_000;
 /// Fuel a sterile copy of a picture may use (at most 4 megapixels).
@@ -647,7 +693,14 @@ impl Host {
             let p = d.password.lock().unwrap_or_else(PoisonError::into_inner);
             Zeroizing::new(p.to_vec())
         };
-        let hint = self.docs.get(doc).map_or(0, |d| d.inflated.load(Ordering::Relaxed));
+        let hint = {
+            let stored = self.docs.get(doc).map_or(0, |d| d.inflated.load(Ordering::Relaxed));
+            if stored > 0 {
+                stored
+            } else {
+                sniff_inflated(&bytes).unwrap_or(0)
+            }
+        };
         let out = self.engine.run_scaled(op, op_flags, &password, &bytes, &token, hint);
         let body = match out.data {
             Some(Output::Report(r)) => {
