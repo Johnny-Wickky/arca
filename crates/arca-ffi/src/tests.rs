@@ -7,10 +7,6 @@ use arca_engine::Status;
 
 use crate::api::*;
 
-fn text(bytes: Option<Vec<u8>>) -> String {
-    String::from_utf8(bytes.expect("bytes")).expect("valid utf-8")
-}
-
 #[test]
 fn uninitialized_state_returns_not_ready() {
     if !is_init() && !has_guest() {
@@ -68,7 +64,7 @@ fn document_and_job_lifecycle() {
         assert!(doc > 0);
         let chunk = b"Hello, Arca!";
         assert_eq!(doc_append(doc, chunk), Status::Ok.code());
-        assert_eq!(doc_len(doc), chunk.len() as i64);
+        assert_eq!(doc_len(doc), i64::try_from(chunk.len()).unwrap_or(-1));
 
         let job = job_new();
         assert!(job > 0);

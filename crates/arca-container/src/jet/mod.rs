@@ -15,62 +15,98 @@
 
 use crate::bytes::{u16_le, u32_le};
 use crate::text::{CodePage, decode_codepage, utf16le_lossy};
+use std::cell::Cell;
 
 /// Column types (the byte in the column definition).
 pub mod ty {
+    /// Yes/No, stored as a single bit in the row's null mask.
     pub const BOOL: u8 = 0x01;
+    /// Unsigned 8-bit integer.
     pub const BYTE: u8 = 0x02;
+    /// Signed 16-bit integer.
     pub const INT: u8 = 0x03;
+    /// Signed 32-bit integer.
     pub const LONG: u8 = 0x04;
+    /// Currency: signed 64-bit integer in ten-thousandths.
     pub const MONEY: u8 = 0x05;
+    /// 32-bit IEEE floating point.
     pub const FLOAT: u8 = 0x06;
+    /// 64-bit IEEE floating point.
     pub const DOUBLE: u8 = 0x07;
+    /// Date/time: a 64-bit float counting days since 1899-12-30.
     pub const DATE: u8 = 0x08;
+    /// Short text (up to 255 characters), variable length.
     pub const TEXT: u8 = 0x0A;
+    /// Embedded OLE object or binary blob, variable length.
     pub const OLE: u8 = 0x0B;
+    /// Long text (memo), possibly stored on separate pages.
     pub const MEMO: u8 = 0x0C;
+    /// 128-bit globally unique identifier.
     pub const GUID: u8 = 0x0F;
+    /// Fixed-point decimal number.
     pub const NUMERIC: u8 = 0x10;
+    /// Complex field (attachment or multi-value), stored in a hidden table.
     pub const COMPLEX: u8 = 0x12;
+    /// Signed 64-bit integer.
     pub const BIGINT: u8 = 0x13;
-    pub const EXT_DATE: u8 = 0x17;
+    /// Extended date/time with a wider range, stored as fixed-width ASCII digits.
+    pub const EXT_DATE: u8 = 0x14;
 }
 
-const PAGE_DATA: u8 = 0x01;
-const PAGE_TABLE: u8 = 0x02;
-
-const ROW_OFFSET: u16 = 0x0FFF;
-const ROW_DELETED: u16 = 0x4000;
-const ROW_OVERFLOW: u16 = 0x2000;
-
+/// Column flag: the column holds a fixed-length value.
 const FLAG_FIXED: u8 = 0x01;
+/// Column flag: a memo column that holds hyperlinks.
+const FLAG_HYPERLINK: u8 = 0x80;
 
-/// The page holding the catalog table definition is always page 2.
+/// Row-location flags.
+const ROW_DELETED: u16 = 0x8000;
+const ROW_OVERFLOW: u16 = 0x4000;
+const ROW_OFFSET: u16 = 0x1FFF;
+
+/// Page types.
+const PAGE_DATA: u8 = 0x01;
+const PAGE_TABLE_DEF: u8 = 0x02;
+const PAGE_USAGE_MAP: u8 = 0x05;
+
+/// Page that holds the definition of `MSysObjects`.
 const CATALOG_PAGE: u32 = 2;
 
-/// Most rows scanned across all pages of one table (protection against hostile files that loop
-/// or declare immense sparse allocations).
-const MAX_ROWS_SCANNED: u64 = 1_000_000;
+/// Most pages of one table definition (it continues in further pages when it is long).
+const MAX_TDEF_PAGES: usize = 64;
+/// Most columns of a table (Access allows 255).
+const MAX_COLUMNS: usize = 255;
+/// Longest chain of overflow pointers followed for one row.
+const MAX_OVERFLOW_DEPTH: usize = 8;
+/// Most bytes of one memo or binary value that are read.
+const MAX_LONG_VALUE: usize = 4 << 20;
+/// Most rows examined in one table.
+const MAX_ROWS_SCANNED: u64 = 4_000_000;
+/// Work units one scan of a table may spend following memo and OLE chains: one per chunk
+/// followed, plus one per [`WORK_BYTES_PER_UNIT`] bytes copied. Cycles and huge chains in a
+/// hostile file cannot make the cost grow with the number of rows times the number of pages.
+const MAX_SCAN_WORK: u64 = 1_000_000;
+/// Most catalog objects collected.
+const MAX_CATALOG_OBJECTS: usize = 100_000;
+/// Bytes of copied long-value data that cost one work unit.
+const WORK_BYTES_PER_UNIT: u64 = 256;
 
-/// Header obfuscation mask applied to bytes 24..150 of page 0.
-#[rustfmt::skip]
+/// The obfuscation mask of the header: bytes `24..` of page 0 are XORed with it.
 const HEADER_MASK: [u8; 128] = [
-    0x86, 0xFB, 0xEC, 0x37, 0x5D, 0x44, 0x9C, 0xFA, 0xC6, 0x5E, 0x28, 0xE6, 0x13, 0xB6, 0x8A, 0x60,
-    0x54, 0x94, 0x7B, 0x36, 0xF5, 0x72, 0xDF, 0xF1, 0xB7, 0x63, 0x2D, 0x4B, 0x83, 0x01, 0x21, 0x80,
-    0x4F, 0x61, 0x77, 0x7E, 0xAF, 0x24, 0x8A, 0x3A, 0x09, 0x0C, 0xA1, 0xBF, 0xA8, 0x0C, 0xDE, 0xF8,
-    0xA3, 0x29, 0x2D, 0xD4, 0x96, 0x9F, 0x82, 0x91, 0x9F, 0x37, 0xFA, 0x95, 0xCE, 0x53, 0x27, 0x47,
-    0x95, 0xAE, 0xD5, 0xE3, 0xAE, 0x56, 0x18, 0x75, 0x3C, 0x5B, 0x02, 0x7E, 0x02, 0x49, 0x7B, 0x22,
-    0x71, 0xB9, 0x02, 0x5F, 0x59, 0x47, 0x04, 0x64, 0xA1, 0x6B, 0xB2, 0xD7, 0x0C, 0x70, 0x89, 0x11,
-    0x39, 0x75, 0x3A, 0xB7, 0x45, 0x24, 0xB8, 0xEE, 0x62, 0x7E, 0x9A, 0x56, 0x84, 0x30, 0xAA, 0x6B,
-    0x40, 0xA7, 0x3E, 0xD3, 0x03, 0x20, 0x26, 0x00, 0x5E, 0xAA, 0xF6, 0x99, 0x04, 0xA9, 0x56, 0xD5,
+    0xB5, 0x6F, 0x03, 0x62, 0x61, 0x08, 0xC2, 0x55, 0xEB, 0xA9, 0x67, 0x72, 0x43, 0x3F, 0x00, 0x9C,
+    0x7A, 0x9F, 0x90, 0xFF, 0x80, 0x9A, 0x31, 0xC5, 0x79, 0xBA, 0xED, 0x30, 0xBC, 0xDF, 0xCC, 0x9D,
+    0x63, 0xD9, 0xE4, 0xC3, 0x7B, 0x42, 0xFB, 0x8A, 0xBC, 0x4E, 0x86, 0xFB, 0xEC, 0x37, 0x5D, 0x44,
+    0x9C, 0xFA, 0xC6, 0x5E, 0x28, 0xE6, 0x13, 0xB6, 0x8A, 0x60, 0x54, 0x94, 0x7B, 0x36, 0xF5, 0x72,
+    0xDF, 0xB1, 0x77, 0xF4, 0x13, 0x43, 0xCF, 0xAF, 0xB1, 0x33, 0x34, 0x61, 0x79, 0x5B, 0x92, 0xB5,
+    0x7C, 0x2A, 0x05, 0xF1, 0x7C, 0x99, 0x01, 0x1B, 0x98, 0xFD, 0x12, 0x4F, 0x4A, 0x94, 0x6C, 0x3E,
+    0x60, 0x26, 0x5F, 0x95, 0xF8, 0xD0, 0x89, 0x24, 0x85, 0x67, 0xC6, 0x1F, 0x27, 0x44, 0xD2, 0xEE,
+    0xCF, 0x65, 0xED, 0xFF, 0x07, 0xC7, 0x46, 0xA1, 0x78, 0x16, 0x0C, 0xED, 0xE9, 0x2D, 0x62, 0xD4,
 ];
 
-/// Offsets that differ between Jet 3 (Access 97) and Jet 4 / ACE (2000 and later).
-#[derive(Clone, Copy)]
+/// Byte offsets of the structures of one generation of the format.
 struct Layout {
     jet3: bool,
     page_size: usize,
-    // Header.
+    /// Length of the obfuscated part of the header.
     mask_len: usize,
     password_len: usize,
     // Table definition.
@@ -156,15 +192,21 @@ pub enum OpenError {
 /// One value of a row.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// No value (the column's null bit is set).
     Null,
+    /// A Yes/No value.
     Bool(bool),
+    /// Any of the integer column types, widened.
     Int(i64),
+    /// A 32-bit floating point number.
     Single(f32),
+    /// A 64-bit floating point number.
     Double(f64),
     /// Currency in ten-thousandths.
     Money(i64),
     /// Days since 1899-12-30 (the fraction is the time of day).
     Date(f64),
+    /// Text, already decoded to UTF-8.
     Text(String),
     /// A hyperlink: the text shown and the address.
     Link(String, String),
@@ -172,6 +214,7 @@ pub enum Value {
     Binary(usize),
     /// An embedded object of this many bytes (not read).
     Ole(usize),
+    /// A globally unique identifier written in the usual braced form.
     Guid(String),
     /// A decimal number, already written out.
     Numeric(String),
@@ -184,48 +227,77 @@ pub enum Value {
 /// A column of a table.
 #[derive(Debug, Clone)]
 pub struct Column {
+    /// The column name.
     pub name: String,
-    pub number: u16,
+    number: u16,
+    /// The column type, one of the constants in [`ty`].
     pub ty: u8,
-    pub variable: bool,
-    pub var_index: u16,
-    pub fixed_offset: u16,
-    pub length: u16,
-    pub scale: u8,
-    pub flags: u8,
+    variable: bool,
+    var_index: u16,
+    fixed_offset: u16,
+    length: u16,
+    scale: u8,
+    flags: u8,
 }
 
 /// A table definition.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Table {
+    /// Columns in the order of their numbers.
     pub columns: Vec<Column>,
+    /// Rows the definition says the table has.
     pub row_count: u32,
-    pub owned: Vec<u32>,
+    /// Pages that hold the table's rows.
+    owned: Vec<u32>,
+    /// `true` if the usage map of the table leads outside the file, so some of its rows are
+    /// missing and [`Db::rows`] reports the scan as stopped early.
+    pub truncated: bool,
 }
 
-/// An entry in the system catalog `MSysObjects`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An entry of the system catalog.
+#[derive(Debug, Clone)]
 pub struct Object {
+    /// The raw catalog identifier; other system tables (for example `MSysQueries`) refer to an
+    /// object by this value.
     pub id: i64,
+    /// The object kind code (1 is a local table, 5 a query, and so on).
     pub kind: i64,
+    /// The object name.
     pub name: String,
+    /// The object flags; some bits mark system and hidden objects.
     pub flags: u32,
+    /// The page of the table definition, for a table.
     pub page: u32,
+    /// For a linked table, the connection string (for example an ODBC source); otherwise empty.
+    pub connect: String,
+    /// For a linked table, the path of the database that holds the data; otherwise empty.
+    pub database: String,
 }
 
-/// Statistics of scanning rows of a table.
-#[derive(Debug, Default, Clone, Copy)]
+/// What reading the rows of a table found besides the rows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RowStats {
+    /// Rows marked deleted (their bytes are still in the file), not counting the places where
+    /// a long row continues.
     pub deleted: u64,
+    /// Whether reading stopped before the end because the caller asked or a limit was reached.
     pub stopped: bool,
 }
 
-/// The database reader.
+/// An opened database.
 pub struct Db<'a> {
     data: &'a [u8],
-    lay: Layout,
+    lay: &'static Layout,
     pages: usize,
     code_page: CodePage,
+    /// What is left of the work budget of the scan in progress (see [`MAX_SCAN_WORK`]).
+    work: Cell<u64>,
+}
+
+/// Reads the three-byte little-endian page number at `at`.
+fn page3(b: &[u8], at: usize) -> Option<u32> {
+    let s = b.get(at..at.checked_add(3)?)?;
+    Some(u32::from(*s.first()?) | (u32::from(*s.get(1)?) << 8) | (u32::from(*s.get(2)?) << 16))
 }
 
 impl<'a> Db<'a> {
@@ -235,15 +307,15 @@ impl<'a> Db<'a> {
     /// [`OpenError::Encrypted`] if the file has a password or a non-zero encryption key;
     /// [`OpenError::Malformed`] for truncation or an unrecognised format.
     pub fn open(data: &'a [u8]) -> Result<Self, OpenError> {
-        let magic = data.get(..20).ok_or(OpenError::Malformed("the file is too short"))?;
-        if magic.get(4..19) != Some(b"Standard Jet DB")
-            && magic.get(4..19) != Some(b"Standard ACE DB")
+        if data.get(4..19) != Some(&b"Standard Jet DB"[..])
+            && data.get(4..19) != Some(&b"Standard ACE DB"[..])
         {
             return Err(OpenError::Malformed("not an Access database"));
         }
-        let lay = match data.get(0x14).copied() {
-            Some(0) => JET3,
-            Some(1 | 2 | 3) => JET4,
+        let version = *data.get(0x14).ok_or(OpenError::Malformed("truncated header"))?;
+        let lay: &'static Layout = match version {
+            0 => &JET3,
+            1..=6 => &JET4,
             _ => return Err(OpenError::Malformed("an Access version this reader does not know")),
         };
         let mut head =
@@ -291,9 +363,10 @@ impl<'a> Db<'a> {
         if pages <= usize::try_from(CATALOG_PAGE).unwrap_or(usize::MAX) {
             return Err(OpenError::Malformed("the file is too short to hold a catalog"));
         }
-        Ok(Self { data, lay, pages, code_page })
+        Ok(Self { data, lay, pages, code_page, work: Cell::new(MAX_SCAN_WORK) })
     }
 
+    /// The bytes of page `n`, or `None` if it lies outside the file.
     pub fn page(&self, n: u32) -> Option<&'a [u8]> {
         let n = usize::try_from(n).ok()?;
         if n >= self.pages {
@@ -317,81 +390,98 @@ impl<'a> Db<'a> {
         Some((raw, page.get(start..end)?))
     }
 
-    /// Row `row` of page `page`.
-    fn row_at(&self, page: u32, row: usize) -> Option<(u16, &'a [u8])> {
-        let page = self.page(page)?;
-        self.row_in_page(page, row)
+    /// Row `row` of page `page_no` by location (without following overflow pointers).
+    fn row_at(&self, page_no: u32, row: usize) -> Option<(u16, &'a [u8])> {
+        self.row_in_page(self.page(page_no)?, row)
     }
 
-    /// Follows an overflow row pointer (a row stored on another page because it outgrew its slot).
-    fn follow_overflow(&self, def: &'a [u8]) -> Option<&'a [u8]> {
-        let row = usize::from(*def.first()?);
-        let page = page3(def, 1)?;
-        let (raw, bytes) = self.row_at(page, row)?;
-        if raw & (ROW_DELETED | ROW_OVERFLOW) != 0 {
-            return None;
-        }
-        Some(bytes)
-    }
-
-    /// Reads the pages a table owns from its usage map.
-    fn usage_pages(&self, def: &[u8]) -> Vec<u32> {
-        let Some(raw) = u32_le(def, 0) else { return Vec::new() };
-        let page = raw & 0x00FF_FFFF;
-        if raw & 0x8000_0000 != 0 {
-            // An inline bitmap: bytes 1..4 of the definition are 32 bits of page presence,
-            // starting at `page`.
-            let mut out = Vec::new();
-            for byte in 1..4 {
-                let Some(b) = def.get(byte) else { break };
-                for bit in 0..8 {
-                    if (b >> bit) & 1 == 1 {
-                        out.push(page + u32::try_from((byte - 1) * 8 + bit).unwrap_or(0));
-                    }
-                }
-            }
-            return out;
-        }
-        // A single-page map on page `page`: the map has a 4-byte header, then a 32-bit start
-        // page, then the bit-per-page map.
-        let Some(p) = self.page(page) else { return Vec::new() };
-        let lay = self.lay;
-        let at = if lay.jet3 { 4 } else { 8 };
-        let Some(start) = u32_le(p, at) else { return Vec::new() };
-        let map_at = at + 4;
+    /// The pages marked in the usage map that the four bytes `ptr` (row, then page) point to.
+    ///
+    /// The flag is `true` when the map leads outside the file (the file is truncated or the
+    /// map is damaged), so the list of pages is known to be incomplete.
+    fn usage_pages(&self, ptr: &[u8]) -> (Vec<u32>, bool) {
         let mut out = Vec::new();
-        for (i, b) in p.get(map_at..).unwrap_or(&[]).iter().enumerate() {
-            if *b == 0 {
-                continue;
-            }
-            for bit in 0..8 {
-                if (b >> bit) & 1 == 1 {
-                    let off = u32::try_from(i * 8 + bit).unwrap_or(0);
-                    if let Some(n) = start.checked_add(off) {
-                        out.push(n);
+        let missing = Cell::new(false);
+        let (Some(&row), Some(page)) = (ptr.first(), page3(ptr, 1)) else {
+            return (out, true);
+        };
+        let Some((_, map)) = self.row_at(page, usize::from(row)) else { return (out, true) };
+        let mark = |out: &mut Vec<u32>, base: usize, bits: &[u8]| {
+            for (i, byte) in bits.iter().enumerate() {
+                if *byte == 0 {
+                    continue;
+                }
+                for bit in 0..8usize {
+                    if (byte >> bit) & 1 == 1 {
+                        let n = base.saturating_add(i.saturating_mul(8)).saturating_add(bit);
+                        if n < self.pages
+                            && let Ok(n) = u32::try_from(n)
+                        {
+                            out.push(n);
+                        } else {
+                            missing.set(true);
+                        }
                     }
                 }
             }
+        };
+        match map.first() {
+            Some(0) => {
+                let start = usize::try_from(u32_le(map, 1).unwrap_or(u32::MAX)).unwrap_or(0);
+                mark(&mut out, start, map.get(5..).unwrap_or(&[]));
+            }
+            Some(1) => {
+                let per_page = (self.lay.page_size - 4) * 8;
+                for k in 0..map.len().saturating_sub(1) / 4 {
+                    let Some(mp) = u32_le(map, 1 + 4 * k) else { break };
+                    if mp == 0 {
+                        continue;
+                    }
+                    let Some(p) = self.page(mp) else {
+                        missing.set(true);
+                        continue;
+                    };
+                    if p.first() != Some(&PAGE_USAGE_MAP) {
+                        continue;
+                    }
+                    mark(&mut out, k * per_page, p.get(4..).unwrap_or(&[]));
+                }
+            }
+            _ => {}
         }
-        out
+        out.sort_unstable();
+        out.dedup();
+        (out, missing.get())
     }
 
-    /// Reads a table definition.
-    pub fn table(&self, page: u32) -> Option<Table> {
-        let p = self.page(page)?;
-        if p.first() != Some(&PAGE_TABLE) {
-            return None;
-        }
+    /// Reads the definition of the table whose definition starts at page `page_no`.
+    pub fn table(&self, page_no: u32) -> Option<Table> {
         let lay = self.lay;
-        let def_len = usize::from(u16_le(p, 2)?);
-        let def = p.get(..def_len.min(lay.page_size))?;
-        let row_count = u32_le(def, lay.num_rows)?;
-        let ncols = usize::from(u16_le(def, lay.num_cols)?);
-        let nidx = usize::from(u16_le(def, lay.num_indexes)?);
-        if ncols > 1000 {
+        let first = self.page(page_no)?;
+        if first.first() != Some(&PAGE_TABLE_DEF) {
             return None;
         }
-        let owned = self.usage_pages(def.get(lay.owned_pages..lay.owned_pages + 4)?);
+        // A long definition continues in further pages, each contributing all but its 8-byte
+        // header.
+        let mut def = first.to_vec();
+        let mut next = u32_le(first, 4)?;
+        let mut guard = 0;
+        while next != 0 {
+            guard += 1;
+            if guard > MAX_TDEF_PAGES {
+                return None;
+            }
+            let p = self.page(next)?;
+            def.extend_from_slice(p.get(8..)?);
+            next = u32_le(p, 4)?;
+        }
+        let row_count = u32_le(&def, lay.num_rows)?;
+        let ncols = usize::from(u16_le(&def, lay.num_cols)?);
+        let nidx = usize::try_from(u32_le(&def, lay.num_indexes)?).ok()?;
+        if ncols > MAX_COLUMNS || nidx > 1000 {
+            return None;
+        }
+        let (owned, truncated) = self.usage_pages(def.get(lay.owned_pages..lay.owned_pages + 4)?);
 
         let headers = lay.index_def_block.checked_add(nidx.checked_mul(lay.index_def_size)?)?;
         let mut names_at = headers.checked_add(ncols.checked_mul(lay.column_header_size)?)?;
@@ -401,7 +491,7 @@ impl<'a> Db<'a> {
             let len = if lay.name_len_size == 1 {
                 usize::from(*def.get(names_at)?)
             } else {
-                usize::from(u16_le(def, names_at)?)
+                usize::from(u16_le(&def, names_at)?)
             };
             let start = names_at + lay.name_len_size;
             let raw = def.get(start..start.checked_add(len)?)?;
@@ -411,28 +501,41 @@ impl<'a> Db<'a> {
             let flags = *def.get(h + lay.col_flags)?;
             columns.push(Column {
                 name,
-                number: u16_le(def, h + lay.col_number)?,
+                number: u16_le(&def, h + lay.col_number)?,
                 ty: *def.get(h)?,
                 variable: flags & FLAG_FIXED == 0,
-                var_index: u16_le(def, h + lay.col_var_index)?,
-                fixed_offset: u16_le(def, h + lay.col_fixed_offset)?,
-                length: u16_le(def, h + lay.col_length)?,
+                var_index: u16_le(&def, h + lay.col_var_index)?,
+                fixed_offset: u16_le(&def, h + lay.col_fixed_offset)?,
+                length: u16_le(&def, h + lay.col_length)?,
                 scale: *def.get(h + lay.col_scale)?,
                 flags,
             });
         }
         columns.sort_by_key(|c| c.number);
-        Some(Table { columns, row_count, owned })
+        Some(Table { columns, row_count, owned, truncated })
     }
 
     /// The objects of the database (tables, queries, forms, ...).
     pub fn catalog(&self) -> Option<Vec<Object>> {
+        self.catalog_checked().map(|(objects, _)| objects)
+    }
+
+    /// Like [`Db::catalog`], and also says how the scan of the catalog ended: when
+    /// [`RowStats::stopped`] is set the list is incomplete (a limit was reached or the file is
+    /// truncated), so a caller that must not miss an object has to treat the database as not
+    /// fully read.
+    pub fn catalog_checked(&self) -> Option<(Vec<Object>, RowStats)> {
         let table = self.table(CATALOG_PAGE)?;
         let col = |name: &str| table.columns.iter().position(|c| c.name == name);
         let (at_id, at_name, at_kind, at_flags) =
             (col("Id")?, col("Name")?, col("Type")?, col("Flags"));
+        let (at_connect, at_database) = (col("Connect"), col("Database"));
         let mut out = Vec::new();
-        self.rows(&table, |vals| {
+        let stats = self.rows(&table, |vals| {
+            let text = |i: Option<usize>| match i.and_then(|i| vals.get(i)) {
+                Some(Value::Text(s)) => s.clone(),
+                _ => String::new(),
+            };
             let int = |i: usize| match vals.get(i) {
                 Some(Value::Int(v)) => Some(*v),
                 _ => None,
@@ -447,16 +550,19 @@ impl<'a> Db<'a> {
                 // The flags are a signed 32-bit number whose top bit marks a system object.
                 flags: u32::try_from(flags & 0xFFFF_FFFF).unwrap_or(0),
                 page: u32::try_from(id & 0x00FF_FFFF).unwrap_or(0),
+                connect: text(at_connect),
+                database: text(at_database),
             });
-            out.len() < 100_000
+            out.len() < MAX_CATALOG_OBJECTS
         });
-        Some(out)
+        Some((out, stats))
     }
 
     /// Calls `f` with the values of every live row of `table`, in file order, until it returns
     /// `false`.
     pub fn rows(&self, table: &Table, mut f: impl FnMut(&[Value]) -> bool) -> RowStats {
         let mut stats = RowStats::default();
+        self.work.set(MAX_SCAN_WORK);
         let mut scanned = 0u64;
         let mut followed = 0u64;
         'pages: for &p in &table.owned {
@@ -487,38 +593,59 @@ impl<'a> Db<'a> {
                     bytes
                 };
                 let values = self.decode_row(table, bytes);
-                if !f(&values) {
+                if !f(&values) || self.work.get() == 0 {
                     stats.stopped = true;
                     break 'pages;
                 }
             }
+        }
+        if table.truncated {
+            stats.stopped = true;
         }
         // The row a pointer leads to is itself marked deleted; it is not a deleted row.
         stats.deleted = stats.deleted.saturating_sub(followed);
         stats
     }
 
-    /// The byte offsets of each variable column within a row.
+    /// The row an overflow pointer (row number, then page) leads to.
+    fn follow_overflow(&self, mut ptr: &'a [u8]) -> Option<&'a [u8]> {
+        for _ in 0..MAX_OVERFLOW_DEPTH {
+            let row = usize::from(*ptr.first()?);
+            let page = page3(ptr, 1)?;
+            let (raw, bytes) = self.row_at(page, row)?;
+            if raw & ROW_OVERFLOW == 0 {
+                return Some(bytes);
+            }
+            ptr = bytes;
+        }
+        None
+    }
+
+    /// The offsets of the variable-length values of a row: value `i` is `offsets[i]..offsets[i+1]`.
     fn var_offsets(&self, row: &[u8], mask_len: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let Some(mask_at) = row.len().checked_sub(mask_len) else { return out };
         if self.lay.jet3 {
-            let Some(at) = mask_at.checked_sub(1) else { return out };
-            let Some(count) = row.get(at) else { return out };
-            for i in 0..=usize::from(*count) {
-                let Some(at) = mask_at.checked_sub(2 + i) else { return Vec::new() };
-                let Some(b) = row.get(at) else { return Vec::new() };
-                out.push(usize::from(*b));
+            // One byte per offset, with "jump" entries for rows longer than 255 bytes.
+            let Some(end) = row.len().checked_sub(1) else { return out };
+            let Some(count_at) = end.checked_sub(mask_len) else { return out };
+            let count = usize::from(row.get(count_at).copied().unwrap_or(0));
+            let mut jumps = end / 256;
+            let Some(offsets_at) = count_at.checked_sub(jumps + 1) else { return out };
+            if offsets_at.saturating_sub(count) / 256 < jumps {
+                jumps = jumps.saturating_sub(1);
             }
-        } else if row.len() > 256 {
-            let Some(count) = mask_at.checked_sub(2).and_then(|at| u16_le(row, at)) else {
-                return out;
-            };
-            let jumbos = mask_at.checked_sub(2).and_then(|at| row.get(at..at + 2)).unwrap_or(&[]);
-            let jumps = usize::from(jumbos.first().copied().unwrap_or(0));
-            for i in 0..=usize::from(count).min(4096) {
-                let used = (0..jumps).filter(|&j| i > j * 256).count();
-                let Some(at) = mask_at.checked_sub(3 + 2 * jumps + i) else { return Vec::new() };
+            let mut used = 0usize;
+            for i in 0..=count {
+                while used < jumps {
+                    let Some(at) = count_at.checked_sub(used + 1) else { break };
+                    if row.get(at).map(|b| usize::from(*b)) == Some(i) {
+                        used += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let Some(at) = offsets_at.checked_sub(i) else { return Vec::new() };
                 let Some(b) = row.get(at) else { return Vec::new() };
                 out.push(usize::from(*b) + used * 256);
             }
@@ -603,70 +730,96 @@ impl<'a> Db<'a> {
             ty::DATE => arr(8)
                 .and_then(|b| <[u8; 8]>::try_from(b).ok())
                 .map_or(Value::Null, |b| Value::Date(f64::from_le_bytes(b))),
-            ty::TEXT => {
-                let s = if self.lay.jet3 {
-                    decode_codepage(d, self.code_page)
-                } else if let Some(b) = d.strip_prefix(&[0xFF, 0xFE]) {
-                    // Compressed Unicode: ASCII characters packed one byte each.
-                    decode_codepage(b, CodePage::Windows1252)
-                } else {
-                    utf16le_lossy(d)
-                };
-                if c.flags & 0x80 != 0 { link(&s) } else { Value::Text(s) }
-            }
-            ty::OLE => match self.long_value(d) {
-                Some(b) => Value::Ole(b.len()),
-                None => Value::Ole(long_value_len(d)),
-            },
+            ty::TEXT => Value::Text(self.text(d)),
             ty::MEMO => {
-                let raw = match self.long_value(d) {
-                    Some(b) => b,
-                    None => return Value::Null,
-                };
-                let s = if self.lay.jet3 {
-                    decode_codepage(&raw, self.code_page)
-                } else if let Some(b) = raw.strip_prefix(&[0xFF, 0xFE]) {
-                    decode_codepage(b, CodePage::Windows1252)
-                } else {
-                    utf16le_lossy(&raw)
-                };
-                if c.flags & 0x80 != 0 { link(&s) } else { Value::Text(s) }
+                let text = self.long_value(d).map(|b| self.text(&b)).unwrap_or_default();
+                if c.flags & FLAG_HYPERLINK != 0 { link(&text) } else { Value::Text(text) }
             }
+            ty::OLE => Value::Ole(long_value_len(d)),
             ty::GUID => guid(d).map_or(Value::Null, Value::Guid),
             ty::NUMERIC => numeric(d, c.scale).map_or(Value::Null, Value::Numeric),
-            ty::EXT_DATE => ext_date(d).map_or(Value::Null, Value::ExtDate),
             ty::COMPLEX => Value::Complex,
+            ty::EXT_DATE => ext_date(d).map_or(Value::Null, Value::ExtDate),
             _ => Value::Binary(d.len()),
         }
     }
 
-    /// Reads a memo or OLE value that outgrew the row itself.
-    fn long_value(&self, def: &[u8]) -> Option<Vec<u8>> {
-        let len = long_value_len(def);
-        let flag = u16_le(def, 2)?;
-        if flag & 0x8000 != 0 {
-            // Stored in the row itself, after the length/flags header.
-            return Some(def.get(12..12 + len)?.to_vec());
+    /// Decodes the text of a value.
+    fn text(&self, d: &[u8]) -> String {
+        if self.lay.jet3 {
+            return decode_codepage(d, self.code_page);
         }
-        match *def.get(3)? {
-            // A single page chunk, pointer at bytes 4..8.
-            1 => {
-                let row = usize::from(*def.get(4)?);
-                let page = page3(def, 5)?;
-                let (_, bytes) = self.row_at(page, row)?;
-                Some(bytes.get(..len)?.to_vec())
+        // Jet 4 stores short text compressed: after the marker FF FE, bytes are Latin-1
+        // characters, and a zero byte switches between that and plain UTF-16.
+        if d.starts_with(&[0xFF, 0xFE]) {
+            let mut out = String::with_capacity(d.len());
+            let mut compressed = true;
+            let mut seg_start = 2;
+            for i in 2..=d.len() {
+                if i == d.len() || d.get(i) == Some(&0) {
+                    let seg = d.get(seg_start..i).unwrap_or(&[]);
+                    if compressed {
+                        out.extend(seg.iter().map(|b| char::from(*b)));
+                    } else {
+                        out.push_str(&utf16le_lossy(seg));
+                    }
+                    compressed = !compressed;
+                    seg_start = i + 1;
+                }
             }
-            // A chain of data chunks: first page at 4..8, each chunk starts with the pointer to the next.
+            return out;
+        }
+        utf16le_lossy(d)
+    }
+
+    /// Takes `units` from the work budget of the current scan; `false` once it is used up.
+    fn spend(&self, units: u64) -> bool {
+        let left = self.work.get();
+        if left < units {
+            self.work.set(0);
+            return false;
+        }
+        self.work.set(left - units);
+        true
+    }
+
+    /// The bytes a memo or OLE value points to (or holds).
+    fn long_value(&self, def: &[u8]) -> Option<Vec<u8>> {
+        let word = u32_le(def, 0)?;
+        let len = usize::try_from(word & 0x3FFF_FFFF).ok()?.min(MAX_LONG_VALUE);
+        match word >> 30 {
+            // The value follows the 12-byte header.
+            2 => {
+                let rest = def.get(12..)?;
+                Some(rest.get(..len.min(rest.len()))?.to_vec())
+            }
+            // The value is one row of another page.
+            1 => {
+                let (row, page) = (usize::from(*def.get(4)?), page3(def, 5)?);
+                let (_, bytes) = self.row_at(page, row)?;
+                Some(bytes.get(..len.min(bytes.len()))?.to_vec())
+            }
+            // The value is a chain of rows, each starting with a pointer to the next.
             0 => {
                 let mut out = Vec::new();
                 let (mut row, mut page) = (usize::from(*def.get(4)?), page3(def, 5)?);
+                // A genuine chain never visits the same row twice; a cycle is damage or an
+                // attack, and is cut instead of followed until the page count runs out.
+                let mut visited = std::collections::BTreeSet::new();
                 for _ in 0..self.pages {
                     if out.len() >= len || page == 0 {
                         break;
                     }
+                    if !visited.insert((page, row)) || !self.spend(1) {
+                        return None;
+                    }
                     let (_, bytes) = self.row_at(page, row)?;
                     let chunk = bytes.get(4..)?;
                     let take = chunk.len().min(len - out.len());
+                    let bytes_cost = u64::try_from(take).unwrap_or(u64::MAX) / WORK_BYTES_PER_UNIT;
+                    if !self.spend(bytes_cost) {
+                        return None;
+                    }
                     out.extend_from_slice(chunk.get(..take)?);
                     row = usize::from(*bytes.first()?);
                     page = page3(bytes, 1)?;
@@ -676,12 +829,6 @@ impl<'a> Db<'a> {
             _ => None,
         }
     }
-}
-
-/// A 3-byte little-endian page pointer (Jet stores page numbers as 24 bits in many places).
-fn page3(d: &[u8], at: usize) -> Option<u32> {
-    let b = d.get(at..at + 3)?;
-    Some(u32::from(b[0]) | (u32::from(b[1]) << 8) | (u32::from(b[2]) << 16))
 }
 
 /// The size in bytes of a fixed-length value.
@@ -774,12 +921,14 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = (yoe as i64) + era * 400;
+/// The inverse of [`days_from_civil`]. The caller bounds `z` (see [`ext_date`]), so none of the
+/// arithmetic below can overflow; everything is `i64`, which also avoids signed/unsigned casts.
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
@@ -798,6 +947,11 @@ fn ext_date(d: &[u8]) -> Option<String> {
     let frac = num(32, 7)?;
     let epoch = days_from_civil(1, 1, 1);
     let day = days.checked_add(epoch)?.checked_add(secs.div_euclid(86_400))?;
+    // Access dates span the years 100..=9999; anything else is a damaged value, not a date to
+    // print, and the bound keeps the calendar arithmetic far from overflow.
+    if !(days_from_civil(100, 1, 1)..=days_from_civil(9999, 12, 31)).contains(&day) {
+        return None;
+    }
     let (y, m, dd) = civil_from_days(day);
     let s = secs.rem_euclid(86_400);
     Some(format!(

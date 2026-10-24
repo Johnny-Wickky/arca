@@ -22,6 +22,9 @@ Copyright © 2026 Pharos and contributors
 
 - Pharos
 
+### Support the developers · Поддержка разработчиков
+
+- Lava.top: <https://app.lava.top/pharosteam>
 
 ## License
 

@@ -253,7 +253,8 @@ impl Engine {
             let covered_by_base_ratio = len_u64.saturating_mul(DEFAULT_MAX_RATIO);
             if inflated > covered_by_base_ratio {
                 let excess = inflated.saturating_sub(covered_by_base_ratio);
-                policy.fuel.base = policy.fuel.base.saturating_add(excess.saturating_mul(FUEL_PER_INFLATED_SCAN));
+                policy.fuel.base =
+                    policy.fuel.base.saturating_add(excess.saturating_mul(FUEL_PER_INFLATED_SCAN));
                 let excess_mem = usize::try_from(excess.min(256 << 20)).unwrap_or(usize::MAX);
                 policy.memory_base_bytes = policy.memory_base_bytes.saturating_add(excess_mem);
             }
@@ -273,7 +274,8 @@ impl Engine {
 
         // Dynamically scale policy.fuel.max so that large documents (10-30 MB) and high-inflation
         // documents are not clamped to a static ceiling.
-        let expected_fuel = policy.fuel.base.saturating_add(policy.fuel.per_input_byte.saturating_mul(len_u64));
+        let expected_fuel =
+            policy.fuel.base.saturating_add(policy.fuel.per_input_byte.saturating_mul(len_u64));
         let adaptive_max = expected_fuel.saturating_mul(12) / 10;
         policy.fuel.max = policy.fuel.max.max(adaptive_max).min(MAX_FUEL_CEILING);
 
@@ -519,7 +521,9 @@ pub(crate) fn sniff_inflated(data: &[u8]) -> Option<u64> {
     if !data.starts_with(b"PK\x03\x04") && !data.starts_with(b"PK\x05\x06") {
         return None;
     }
-    let zip = arca_container::zip::ZipArchive::parse(data, arca_container::zip::ZipLimits::default()).ok()?;
+    let zip =
+        arca_container::zip::ZipArchive::parse(data, arca_container::zip::ZipLimits::default())
+            .ok()?;
     let mut total: u64 = 0;
     for entry in zip.entries() {
         if !entry.is_dir() {
@@ -527,9 +531,8 @@ pub(crate) fn sniff_inflated(data: &[u8]) -> Option<u64> {
         }
     }
     // Bound the hint by 100:1 ratio and 1 GiB maximum, matching InflateBudget limits.
-    let max_allowed = (u64::try_from(data.len()).unwrap_or(u64::MAX))
-        .saturating_mul(100)
-        .min(MAX_INFLATED_HINT);
+    let max_allowed =
+        (u64::try_from(data.len()).unwrap_or(u64::MAX)).saturating_mul(100).min(MAX_INFLATED_HINT);
     Some(total.min(max_allowed))
 }
 /// Fuel a picture may use before the size of its file adds to it.
@@ -695,11 +698,7 @@ impl Host {
         };
         let hint = {
             let stored = self.docs.get(doc).map_or(0, |d| d.inflated.load(Ordering::Relaxed));
-            if stored > 0 {
-                stored
-            } else {
-                sniff_inflated(&bytes).unwrap_or(0)
-            }
+            if stored > 0 { stored } else { sniff_inflated(&bytes).unwrap_or(0) }
         };
         let out = self.engine.run_scaled(op, op_flags, &password, &bytes, &token, hint);
         let body = match out.data {

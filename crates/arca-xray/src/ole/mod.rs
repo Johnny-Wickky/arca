@@ -599,34 +599,61 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) {
         _ => FileFormat::AccessAce,
     };
     ctx.identified(fmt);
-    // Structured catalog parsing via MSysObjects (eliminates F-2 false positives)
+    // Pass 1, independent of whether the structure parses: a byte search for the names that
+    // matter, in ASCII (which is also how Jet 4 "compressed Unicode" stores them) and in
+    // UTF-16LE. A damaged or hostile file can hide its catalog, never its bytes.
+    let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+    let mut autoexec =
+        memfind(data, b"AutoExec").is_some() || memfind(data, &utf16("AutoExec")).is_some();
+    let vba_project =
+        memfind(data, b"VBAProject").is_some() || memfind(data, &utf16("VBAProject")).is_some();
+    // Pass 2: the catalog. Anything short of a complete, successful read is reported as a
+    // coverage gap, so the file can never come out Clean on the strength of a failed parse.
+    let mut vba_object = false;
     match arca_container::jet::Db::open(data) {
-        Ok(db) => {
-            if let Some(objects) = db.catalog() {
+        Ok(db) => match db.catalog_checked() {
+            Some((objects, stats)) => {
+                if stats.stopped {
+                    ctx.report.add(
+                        ThreatKind::ScanLimitReached,
+                        location,
+                        "the object catalog of the database was only partly read",
+                    );
+                }
                 for o in &objects {
-                    // Macro AutoExec: object of kind -32766 named "AutoExec"
+                    // A macro is a catalog object of kind -32766; Access runs the one named
+                    // AutoExec when the database opens (the name is case-insensitive).
                     if o.kind == -32766 && o.name.eq_ignore_ascii_case("AutoExec") {
-                        ctx.report.add_with(
-                            ThreatKind::MacroAutoExec,
-                            Severity::High,
-                            location,
-                            "database contains an AutoExec macro object (Access executes this on open; Arca never does)",
-                        );
+                        autoexec = true;
                     }
-                    // VBA modules: kind -32761, or MSysAccessStorage/MSysAccessObjects
-                    if o.kind == -32761
-                        || o.name == "MSysAccessStorage"
-                        || o.name == "MSysAccessObjects"
-                    {
-                        ctx.report.add(
-                            ThreatKind::VbaMacros,
+                    // Modules are objects of kind -32761.
+                    if o.kind == -32761 {
+                        vba_object = true;
+                    }
+                    // Linked tables (4: ODBC, 6: another Jet/ACE file or file-based source)
+                    // fetch their rows from elsewhere when opened.
+                    if matches!(o.kind, 4 | 6) {
+                        let target = if o.database.is_empty() {
+                            o.connect.as_str()
+                        } else {
+                            o.database.as_str()
+                        };
+                        ooxml::record_external(
+                            ctx,
+                            target,
+                            RefKind::DataConnection,
+                            false,
                             location,
-                            format!("database contains a VBA module or storage {:?}", o.name),
                         );
                     }
                 }
             }
-        }
+            None => ctx.report.add(
+                ThreatKind::MalformedContainer,
+                location,
+                "the object catalog of the database could not be read",
+            ),
+        },
         Err(arca_container::jet::OpenError::Encrypted) => {
             ctx.report.add(
                 ThreatKind::EncryptedDocument,
@@ -634,13 +661,28 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) {
                 "database is encrypted or password-protected",
             );
         }
-        Err(arca_container::jet::OpenError::Malformed(_)) => {
-            // Malformed or truncated header: fallback to conservative UTF-16 check
-            let autoexec_utf16: Vec<u8> = "AutoExec".encode_utf16().flat_map(u16::to_le_bytes).collect();
-            if memfind(data, &autoexec_utf16).is_some() {
-                ctx.report.add_with(ThreatKind::MacroAutoExec, Severity::High, location, "database contains an AutoExec string signature");
-            }
+        Err(arca_container::jet::OpenError::Malformed(why)) => {
+            ctx.report.add(
+                ThreatKind::MalformedContainer,
+                location,
+                format!("database structure could not be read: {why}"),
+            );
         }
+    }
+    if autoexec {
+        ctx.report.add_with(
+            ThreatKind::MacroAutoExec,
+            Severity::High,
+            location,
+            "database contains an object named AutoExec (Access runs this macro on open; Arca never does)",
+        );
+    }
+    if vba_project || vba_object {
+        ctx.report.add(
+            ThreatKind::VbaMacros,
+            location,
+            "database contains a VBA project or module (ignored by design)",
+        );
     }
     let mut ole_blobs = 0usize;
     let mut from = 0usize;

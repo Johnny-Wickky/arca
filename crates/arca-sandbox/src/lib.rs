@@ -739,7 +739,7 @@ impl Sandbox {
             .get_memory(&store, exports::MEMORY)
             .ok_or(SandboxError::MissingExport(exports::MEMORY))?;
 
-        let mut guard = MemoryZeroizeGuard { memory, store: &mut store };
+        let guard = MemoryZeroizeGuard { memory, store: &mut store };
         let result = protocol(
             guard.store,
             &instance,
@@ -761,7 +761,7 @@ struct MemoryZeroizeGuard<'a> {
 
 impl Drop for MemoryZeroizeGuard<'_> {
     fn drop(&mut self) {
-        self.memory.data_mut(self.store).zeroize();
+        self.memory.data_mut(&mut *self.store).zeroize();
     }
 }
 

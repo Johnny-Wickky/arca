@@ -274,63 +274,55 @@ impl Visio<'_> {
     }
 }
 
+/// Most master pages read.
+const MAX_MASTERS_READ: usize = 512;
+/// Most connections kept per page.
+const MAX_CONNECTS: usize = 10_000;
+/// Most strings taken from one chunk.
+const MAX_CHUNK_STRINGS: usize = 256;
+
+/// Printable text runs of at least two characters in a chunk body: UTF-16LE for Visio 2000 and
+/// later, single bytes before. A heuristic (the chunk layouts are not parsed), bounded in the
+/// number and the length of the strings.
 fn extract_chunk_strings(body: &[u8], version: u16) -> Vec<String> {
-    let mut strings = Vec::new();
+    let mut strings: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let flush = |cur: &mut String, strings: &mut Vec<String>| {
+        let trimmed = cur.trim();
+        if cur.chars().count() >= 2
+            && !trimmed.is_empty()
+            && trimmed.len() <= MAX_NAME
+            && strings.len() < MAX_CHUNK_STRINGS
+        {
+            strings.push(trimmed.to_owned());
+        }
+        cur.clear();
+    };
     if version > 6 {
-        let mut cur = Vec::new();
-        let mut i = 0;
-        while i + 1 < body.len() {
-            let ch = u16::from_le_bytes([body[i], body[i + 1]]);
-            if ch >= 0x20 && ch != 0x7F && ch < 0xFFFE {
-                if let Some(c) = char::from_u32(u32::from(ch)) {
+        for pair in body.chunks_exact(2) {
+            let ch = u16::from_le_bytes([
+                pair.first().copied().unwrap_or(0),
+                pair.get(1).copied().unwrap_or(0),
+            ]);
+            match char::from_u32(u32::from(ch)) {
+                Some(c) if ch >= 0x20 && ch != 0x7F && ch < 0xFFFE && cur.len() <= MAX_NAME => {
                     cur.push(c);
                 }
-            } else if !cur.is_empty() {
-                if cur.len() >= 2 {
-                    let s: String = cur.into_iter().collect();
-                    let trimmed = s.trim();
-                    if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
-                        strings.push(trimmed.to_string());
-                    }
-                }
-                cur = Vec::new();
-            }
-            i += 2;
-        }
-        if cur.len() >= 2 {
-            let s: String = cur.into_iter().collect();
-            let trimmed = s.trim();
-            if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
-                strings.push(trimmed.to_string());
+                _ => flush(&mut cur, &mut strings),
             }
         }
     } else {
-        let mut cur = Vec::new();
         for &b in body {
-            if (0x20..=0x7E).contains(&b) {
-                cur.push(b as char);
-            } else if !cur.is_empty() {
-                if cur.len() >= 2 {
-                    let s: String = cur.into_iter().collect();
-                    let trimmed = s.trim();
-                    if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
-                        strings.push(trimmed.to_string());
-                    }
-                }
-                cur = Vec::new();
-            }
-        }
-        if cur.len() >= 2 {
-            let s: String = cur.into_iter().collect();
-            let trimmed = s.trim();
-            if !trimmed.is_empty() && trimmed.len() <= MAX_NAME {
-                strings.push(trimmed.to_string());
+            if (0x20..=0x7E).contains(&b) && cur.len() <= MAX_NAME {
+                cur.push(char::from(b));
+            } else {
+                flush(&mut cur, &mut strings);
             }
         }
     }
+    flush(&mut cur, &mut strings);
     strings
 }
-
 /// A shape read from a page.
 #[derive(Default)]
 struct Shape {
@@ -436,14 +428,19 @@ fn read_page(data: &[u8], version: u16) -> Page {
                 }
             }
             CHUNK_CONNECTION_LIST | CHUNK_CONNECTION => {
-                let mut i = 0;
-                while i + 8 <= c.body.len() {
-                    if let (Some(from), Some(to)) = (u32_le(c.body, i), u32_le(c.body, i + 4)) {
-                        if from > 0 && to > 0 && from != to && page.connects.len() < 10_000 {
-                            page.connects.push((from, to));
-                        }
+                // Best effort: the body is read as consecutive (from, to) shape-id pairs, which
+                // are shown only when both ids name shapes of the page.
+                for pair in c.body.chunks_exact(8) {
+                    if page.connects.len() >= MAX_CONNECTS {
+                        break;
                     }
-                    i += 4;
+                    if let (Some(from), Some(to)) = (u32_le(pair, 0), u32_le(pair, 4))
+                        && from > 0
+                        && to > 0
+                        && from != to
+                    {
+                        page.connects.push((from, to));
+                    }
                 }
             }
             _ => {}
@@ -675,8 +672,10 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         };
         for &(from, to) in &page.connects {
             if page.shapes.contains_key(&from) && page.shapes.contains_key(&to) {
-                let from_name = page.shapes.get(&from).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
-                let to_name = page.shapes.get(&to).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
+                let from_name =
+                    page.shapes.get(&from).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
+                let to_name =
+                    page.shapes.get(&to).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
                 let text = format!("Связь: {from_name} → {to_name}");
                 let p = Paragraph {
                     level: 0,
@@ -699,7 +698,7 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
     let mut master_names = Vec::new();
     for mp in masters_ptrs {
         if let Some(c) = v.open(*mp) {
-            for child in v.children(c.body()) {
+            for child in v.children(c.body()).into_iter().take(MAX_MASTERS_READ) {
                 if let Some(content) = v.open(child) {
                     let m_page = read_page(&content.data, version);
                     for shape in m_page.shapes.values() {
@@ -715,16 +714,16 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
             }
         }
     }
-    if !master_names.is_empty() {
-        if let Some(sec) = sink.open_section(SectionKind::Body, "Мастера и трафареты", false) {
-            let text = format!("Мастера: {}", master_names.join(", "));
-            let p = Paragraph {
-                level: 0,
-                runs: vec![Run { text, style: 0, href: String::new() }],
-                ..Paragraph::default()
-            };
-            let _ = sink.para(sec, p);
-        }
+    if !master_names.is_empty()
+        && let Some(sec) = sink.open_section(SectionKind::Body, "Мастера и трафареты", false)
+    {
+        let text = format!("Мастера: {}", master_names.join(", "));
+        let p = Paragraph {
+            level: 0,
+            runs: vec![Run { text, style: 0, href: String::new() }],
+            ..Paragraph::default()
+        };
+        let _ = sink.para(sec, p);
     }
 
     if pictures {

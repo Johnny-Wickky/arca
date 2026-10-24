@@ -15,9 +15,9 @@
 
 #![allow(unsafe_code, reason = "this file is the C ABI boundary")]
 
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::fs::File;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::null_mut;
 
 use arca_engine::Status;
@@ -533,23 +533,14 @@ mod tests {
             assert_eq!(arca_info(null_mut()), Status::BadArgument.code());
             assert_eq!(arca_self_test(null_mut()), Status::BadArgument.code());
             assert_eq!(arca_doc_append(1, null_mut(), 10), Status::BadArgument.code());
-            assert_eq!(
-                arca_doc_read_file(1, null_mut()),
-                -i64::from(Status::BadArgument.code())
-            );
+            assert_eq!(arca_doc_read_file(1, null_mut()), -i64::from(Status::BadArgument.code()));
             assert_eq!(
                 arca_outcome_sanitized_write_file(1, null_mut()),
                 -i64::from(Status::BadArgument.code())
             );
-            assert_eq!(
-                arca_doc_set_password(1, null_mut(), 10),
-                Status::BadArgument.code()
-            );
+            assert_eq!(arca_doc_set_password(1, null_mut(), 10), Status::BadArgument.code());
             assert_eq!(arca_about(1, null_mut()), Status::BadArgument.code());
-            assert_eq!(
-                arca_passport(1, null_mut(), 10, 0, null_mut()),
-                Status::BadArgument.code()
-            );
+            assert_eq!(arca_passport(1, null_mut(), 10, 0, null_mut()), Status::BadArgument.code());
         }
     }
 }

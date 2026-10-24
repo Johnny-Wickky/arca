@@ -43,6 +43,14 @@ const HIDDEN_FLAG: u32 = 0x08;
 
 /// Most objects listed.
 const MAX_OBJECTS: usize = 4096;
+/// Most rows of `MSysQueries` read.
+const MAX_QUERY_ROWS: usize = 200_000;
+/// Most rows kept for one query.
+const MAX_QUERY_ROWS_PER_OBJECT: usize = 4096;
+/// Most bytes of query text kept in all.
+const MAX_QUERY_BYTES: usize = 4 << 20;
+/// Most characters kept of one text field of a query row.
+const MAX_QUERY_FIELD_CHARS: usize = 16 * 1024;
 
 /// Shows the database in `data`.
 pub(crate) fn extract(
@@ -122,9 +130,18 @@ pub(crate) fn extract(
     // Extract SQL queries from MSysQueries if present (Issue #47)
     let msys_queries_obj = objects.iter().find(|o| o.name == "MSysQueries");
     let msys_queries_table = msys_queries_obj.and_then(|o| db.table(o.page));
-    let mut queries_map: std::collections::BTreeMap<i64, Vec<QueryRow>> = std::collections::BTreeMap::new();
-    if let Some(q_table) = &msys_queries_table {
-        let col = |name: &str| q_table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(name));
+    let mut queries_map: std::collections::BTreeMap<i64, Vec<QueryRow>> =
+        std::collections::BTreeMap::new();
+    // Only the queries that will be shown are collected, and the collection is bounded in rows
+    // and in bytes, so a hostile `MSysQueries` cannot grow the map without limit.
+    let wanted: std::collections::BTreeSet<i64> =
+        shown.iter().filter(|o| o.kind == kind::QUERY).map(|o| o.id).collect();
+    if let Some(q_table) = msys_queries_table.as_ref().filter(|_| !wanted.is_empty()) {
+        let mut seen_rows = 0usize;
+        let mut kept_bytes = 0usize;
+        let mut query_limit_hit = false;
+        let col =
+            |name: &str| q_table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(name));
         let (c_obj, c_attr, c_expr, c_n1, c_n2, c_ord, c_flag) = (
             col("ObjectId"),
             col("Attribute"),
@@ -135,35 +152,56 @@ pub(crate) fn extract(
             col("Flag"),
         );
         let int_val = |vals: &[Value], i: Option<usize>| -> i64 {
-            i.and_then(|idx| vals.get(idx)).and_then(|v| match v {
-                Value::Int(n) => Some(*n),
-                _ => None,
-            }).unwrap_or(0)
+            i.and_then(|idx| vals.get(idx))
+                .and_then(|v| match v {
+                    Value::Int(n) => Some(*n),
+                    _ => None,
+                })
+                .unwrap_or(0)
         };
         let str_val = |vals: &[Value], i: Option<usize>| -> String {
-            i.and_then(|idx| vals.get(idx)).and_then(|v| match v {
-                Value::Text(s) => Some(s.clone()),
-                _ => None,
-            }).unwrap_or_default()
+            i.and_then(|idx| vals.get(idx))
+                .and_then(|v| match v {
+                    Value::Text(s) => Some(s.chars().take(MAX_QUERY_FIELD_CHARS).collect()),
+                    _ => None,
+                })
+                .unwrap_or_default()
         };
-        db.rows(q_table, |vals| {
+        let stats = db.rows(q_table, |vals| {
+            seen_rows += 1;
+            if seen_rows > MAX_QUERY_ROWS {
+                query_limit_hit = true;
+                return false;
+            }
             let object_id = int_val(vals, c_obj);
+            if !wanted.contains(&object_id) {
+                return true;
+            }
             let attribute = int_val(vals, c_attr);
             let expression = str_val(vals, c_expr);
             let name1 = str_val(vals, c_n1);
             let name2 = str_val(vals, c_n2);
             let order = int_val(vals, c_ord);
             let flag = int_val(vals, c_flag);
-            queries_map.entry(object_id).or_default().push(QueryRow {
-                attribute,
-                expression,
-                name1,
-                name2,
-                order,
-                flag,
-            });
+            kept_bytes = kept_bytes
+                .saturating_add(expression.len())
+                .saturating_add(name1.len())
+                .saturating_add(name2.len());
+            if kept_bytes > MAX_QUERY_BYTES {
+                query_limit_hit = true;
+                return false;
+            }
+            let rows = queries_map.entry(object_id).or_default();
+            if rows.len() >= MAX_QUERY_ROWS_PER_OBJECT {
+                query_limit_hit = true;
+                return true;
+            }
+            rows.push(QueryRow { attribute, expression, name1, name2, order, flag });
             true
         });
+        if query_limit_hit || stats.stopped {
+            sink.truncated("queries");
+        }
     }
 
     for o in shown.iter().filter(|o| o.kind == kind::QUERY) {
@@ -171,14 +209,18 @@ pub(crate) fn extract(
             break;
         }
         let hidden = o.flags & HIDDEN_FLAG != 0;
-        let Some(sec) = sink.open_section(SectionKind::Sheet, &format!("Query: {}", o.name), hidden) else { break };
+        let Some(sec) =
+            sink.open_section(SectionKind::Sheet, &format!("Query: {}", o.name), hidden)
+        else {
+            break;
+        };
         let sql_text = if let Some(mut rows) = queries_map.remove(&o.id) {
             format_query(&mut rows)
         } else {
             String::from("-- (query definition not found in MSysQueries)")
         };
         let mut p = Paragraph::default();
-        p.runs.push(Run { text: sql_text, style: style::PLAIN });
+        p.runs.push(Run { text: sql_text, style: style::MONO, href: String::new() });
         sink.push(sec, Block::Para(p));
     }
 

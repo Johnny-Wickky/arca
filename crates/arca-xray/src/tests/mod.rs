@@ -2,13 +2,14 @@
 
 //! End-to-end X-ray tests over synthetic hostile documents.
 
+mod access;
+mod adversarial;
 mod corpus;
 pub(crate) mod fixtures;
 mod images;
 mod mutation;
 mod references;
 mod verdict;
-mod adversarial;
 
 use arca_abi::wire::{self, DecodeLimits};
 use arca_container::cfb::writer::CfbBuilder;
