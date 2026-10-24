@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# iOS: policy checks, Rust FFI core, XCFramework build, and Swift unit tests.
+#
+#   push to main / pull request  checks + framework build + tests (artifact uploaded)
+#   tag v*                       same + ready for release packaging
+#   workflow_dispatch            manual trigger
+#
+# Runs on macos-14 (Apple Silicon M-series runners).
+# Third-party actions are pinned to full commit SHAs.
+name: ios
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "app/**"
+      - "crates/arca-ffi/**"
+      - "crates/arca-engine/**"
+      - "crates/arca-sandbox/**"
+      - "crates/arca-guest-xray/**"
+      - "include/**"
+      - "tools/ios/**"
+      - "tools/build-guest.sh"
+      - "tools/check-unsafe.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "crates/arca-ffi/**"
+      - "crates/arca-engine/**"
+      - "crates/arca-sandbox/**"
+      - "crates/arca-guest-xray/**"
+      - "include/**"
+      - "tools/ios/**"
+      - "tools/build-guest.sh"
+      - "tools/check-unsafe.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+  LOCKED: --locked
+
+jobs:
+  ios-suite:
+    name: xcframework · swift tests · invariants
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify repository security policies (no unsafe leaks, no placeholders)
+        run: bash tools/check-unsafe.sh
+
+      - name: Install pinned Rust toolchain and iOS targets
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+
+      - name: Build WebAssembly isolated guest
+        run: bash tools/build-guest.sh
+
+      - name: Build XCFramework, compile Swift SDK and run unit tests
+        run: bash tools/ios/check-ios.sh
+
+      - name: Compress ArcaCore.xcframework
+        run: |
+          cd target
+          zip -r -y ArcaCore.xcframework.zip ArcaCore.xcframework
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ArcaCore.xcframework.zip
+          path: target/ArcaCore.xcframework.zip
