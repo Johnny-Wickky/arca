@@ -269,6 +269,7 @@ public final class Fmt {
             case "Csv": return "csv";
             case "Tsv": return "tsv";
             case "Markdown": return "md";
+            case "Png": case "Jpeg": case "Gif": case "Bmp": return "png";
             default: return "";
         }
     }
@@ -284,6 +285,7 @@ public final class Fmt {
             case "Ppsx": case "Ppsm": return "application/vnd.openxmlformats-officedocument.presentationml.slideshow";
             case "Potx": case "Potm": return "application/vnd.openxmlformats-officedocument.presentationml.template";
             case "Vsdx": case "Vsdm": return "application/vnd.ms-visio.drawing";
+            case "Png": case "Jpeg": case "Gif": case "Bmp": return "image/png";
             default: return "application/octet-stream";
         }
     }

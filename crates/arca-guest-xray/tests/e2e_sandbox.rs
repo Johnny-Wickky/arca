@@ -520,3 +520,37 @@ fn guest_pictures_equal_native_pictures() {
     let out = run_op(&sandbox, &m, Op::Image, 0, &bomb, &RunOptions::new()).unwrap();
     assert_eq!(out.status, arca_abi::status::DOCUMENT_REJECTED);
 }
+
+#[test]
+fn guest_picture_copy_equals_native_picture_copy() {
+    let Some(m) = guest() else {
+        eprintln!("skipped: ARCA_GUEST_XRAY_WASM not set");
+        return;
+    };
+    // What the engine gives a picture (see `Engine::policy_for`).
+    let mut policy = SandboxPolicy { memory_base_bytes: 256 << 20, ..SandboxPolicy::default() };
+    policy.fuel.base = policy.fuel.base.max(100_000_000_000);
+    let sandbox = Sandbox::new(policy, [m.pin()]);
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/arca-image/tests/fixtures/");
+    for name in ["img-420.ref.png", "img-420.jpg", "img-java-prog.jpg"] {
+        let mut file = std::fs::read(format!("{fixtures}{name}")).unwrap();
+        file.extend_from_slice(b"trailing bytes");
+        let out =
+            run_op(&sandbox, &m, Op::Sanitize, flags::SANITIZE_ALL, &file, &RunOptions::new())
+                .unwrap();
+        assert_eq!(out.status, arca_abi::status::OK, "{name}");
+        let copy = decode_sanitized(out.kind, &out.payload).unwrap();
+        let (native, actions) = arca_preview::sanitize_picture(&file, false).unwrap();
+        assert!(copy.bytes == native, "{name}: the sandbox writes what the host would");
+        assert_eq!(copy.actions.len(), actions.len(), "{name}");
+        assert_eq!(copy.verification.verdict, Verdict::Clean, "{name}");
+    }
+    // A pixel bomb is refused from its header, as for viewing.
+    let mut bomb = std::fs::read(format!("{fixtures}img-420.ref.png")).unwrap();
+    let ihdr = bomb.windows(4).position(|w| w == b"IHDR").unwrap() + 4;
+    bomb[ihdr..ihdr + 4].copy_from_slice(&40_000u32.to_be_bytes());
+    bomb[ihdr + 4..ihdr + 8].copy_from_slice(&40_000u32.to_be_bytes());
+    let out =
+        run_op(&sandbox, &m, Op::Sanitize, flags::SANITIZE_ALL, &bomb, &RunOptions::new()).unwrap();
+    assert_ne!(out.status, arca_abi::status::OK);
+}

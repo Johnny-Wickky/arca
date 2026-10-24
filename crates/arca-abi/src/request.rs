@@ -75,7 +75,7 @@ impl Op {
     pub const fn known_flags(self) -> u32 {
         match self {
             Self::Scan => 0,
-            Self::Sanitize => flags::SANITIZE_ALL,
+            Self::Sanitize => flags::SANITIZE_ALL | flags::FULL_SIZE,
             Self::Preview => flags::PREVIEW_ALL,
             Self::Render => flags::PAGE_MASK,
             Self::Image => u32::MAX,
@@ -96,6 +96,9 @@ pub mod flags {
     /// Every sanitize flag.
     pub const SANITIZE_ALL: u32 =
         ACCEPT_REVISIONS | REMOVE_COMMENTS | STRIP_METADATA | REMOVE_CUSTOM_XML;
+    /// Sanitize: a picture keeps up to 16 megapixels instead of 4 (and costs about four times as
+    /// much). Not part of [`SANITIZE_ALL`]: it chooses a size, it removes nothing.
+    pub const FULL_SIZE: u32 = 16;
     /// Preview: also extract text that the document hides (hidden runs,
     /// hidden sheets and slides, tiny or invisible text), flagged as hidden.
     pub const REVEAL_HIDDEN: u32 = 1;

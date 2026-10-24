@@ -68,7 +68,7 @@ use arca_container::zip::ZipLimits;
 pub use decrypt::{DecryptError, Decrypted, decrypt, is_encrypted_package};
 pub use export::{LegacyOptions, sanitize_legacy};
 pub use model::{FileFormat, Preview};
-pub use picture::{PictureError, picture};
+pub use picture::{PictureError, picture, sanitize_picture};
 
 /// Resource limits for one preview.
 ///

@@ -182,6 +182,9 @@ public final class CoreTest {
         eq("", Fmt.extensionOf("Executable"), "unknown format has no extension");
         check(Fmt.mimeOf("Docx").endsWith("wordprocessingml.document"), "docx MIME");
         eq("application/octet-stream", Fmt.mimeOf("Pdf"), "generic MIME");
+        eq("png", Fmt.extensionOf("Jpeg"), "the copy of a picture is a PNG");
+        eq("image/png", Fmt.mimeOf("Gif"), "PNG MIME");
+        check(Capabilities.isPicture("Bmp") && !Capabilities.isPicture("Pdf") && !Capabilities.isPicture(""), "picture formats");
     }
 
     static void names() {
@@ -556,7 +559,7 @@ public final class CoreTest {
             check(!Capabilities.canPreview(f), "no preview of " + f);
         }
         String[] sterile = {"Docx", "Xlsx", "Pptx", "Docm", "Potx", "Vsdx", "Odt", "Ods", "Odp", "Pdf",
-            "Doc", "Xls", "Ppt", "Rtf"};
+            "Doc", "Xls", "Ppt", "Rtf", "Png", "Jpeg", "Gif", "Bmp"};
         for (String f : sterile) {
             check(Capabilities.canSanitize(f), "sterile copy of " + f);
         }

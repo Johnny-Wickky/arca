@@ -34,10 +34,12 @@ mod jpeg;
 mod jpegdct;
 mod orient;
 mod png;
+mod pngenc;
 mod raw;
 mod scale;
 
 pub use exif::ExifFacts;
+pub use pngenc::{EncodeError, EncodeNotes, encode_png, pixels_fingerprint};
 pub use raw::RowReducer;
 
 /// A raster format this crate reads.
@@ -366,6 +368,9 @@ mod testkit_img;
 
 #[cfg(test)]
 mod tests_gif_bmp;
+
+#[cfg(test)]
+mod tests_enc;
 
 #[cfg(test)]
 mod tests_reduced;

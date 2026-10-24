@@ -54,6 +54,8 @@ public final class Native {
     public static final int SANITIZE_STRIP_METADATA = 4;
     public static final int SANITIZE_REMOVE_CUSTOM_XML = 8;
     public static final int SANITIZE_ALL = 15;
+    /** A picture keeps up to 16 megapixels instead of 4 (slower). */
+    public static final int SANITIZE_FULL_SIZE = 16;
     public static final int PREVIEW_REVEAL_HIDDEN = 1;
 
     // ---- licence texts ----------------------------------------------------------------------

@@ -166,6 +166,12 @@ fn sanitize(document: &[u8], request_flags: u32) -> (i32, Vec<u8>) {
         )) => {
             return sanitize_legacy(document, &options);
         }
+        // A picture is written anew from the pixels it decodes to (a plain PNG, nothing else).
+        Err(SanitizeError::Unsupported(
+            FileFormat::Png | FileFormat::Jpeg | FileFormat::Gif | FileFormat::Bmp,
+        )) => {
+            return sanitize_picture(document, request_flags & flags::FULL_SIZE != 0);
+        }
         other => other,
     };
     sanitize_result(result)
@@ -188,6 +194,15 @@ fn sanitize_pdf(document: &[u8], options: &SanitizeOptions) -> (i32, Vec<u8>) {
     if encrypted {
         return (status::ENCRYPTED, error_envelope("the document is password protected"));
     }
+    sanitize_result(result)
+}
+
+fn sanitize_picture(document: &[u8], full_size: bool) -> (i32, Vec<u8>) {
+    let result = arca_xray::sanitize::sanitize_with(document, &ScanPolicy::default(), |data| {
+        arca_preview::sanitize_picture(data, full_size)
+            .map(|(bytes, actions)| (bytes, FileFormat::Png, actions))
+            .map_err(|e| SanitizeError::Rebuild(e.to_string()))
+    });
     sanitize_result(result)
 }
 

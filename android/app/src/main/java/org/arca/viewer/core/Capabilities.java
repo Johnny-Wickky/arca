@@ -55,7 +55,14 @@ public final class Capabilities {
         "Pdf",
         // the binary Office formats and RTF come out as .docx / .xlsx / .pptx written from what
         // the viewer reads of them
-        "Doc", "Xls", "Ppt", "Rtf");
+        "Doc", "Xls", "Ppt", "Rtf",
+        // a picture file comes out as a new PNG written from the decoded pixels
+        "Png", "Jpeg", "Gif", "Bmp");
+
+    /** Whether {@code format} is a picture file (PNG, JPEG, GIF, BMP). */
+    public static boolean isPicture(String format) {
+        return "Png".equals(format) || "Jpeg".equals(format) || "Gif".equals(format) || "Bmp".equals(format);
+    }
 
     /** Whether the engine can build a safe preview of {@code format}. */
     public static boolean canPreview(String format) {

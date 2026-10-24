@@ -261,6 +261,34 @@ impl Engine {
         policy
     }
 
+    /// A sterile copy of a picture decodes it, writes it again and reads that back, all of it
+    /// interpreted: the cost is in its pixels, not in the bytes of its file, and a full-size copy
+    /// of a photograph takes minutes on a phone. Only a file that is a picture by its first bytes
+    /// gets the larger budget, and the time limit still bounds it.
+    pub(crate) fn size_for_picture_copy(
+        &self,
+        policy: &mut SandboxPolicy,
+        op: Op,
+        op_flags: u32,
+        document: &[u8],
+    ) {
+        if op != Op::Sanitize || arca_image::sniff(document).is_none() {
+            return;
+        }
+        let full = op_flags & request::flags::FULL_SIZE != 0;
+        policy.memory_base_bytes = policy.memory_base_bytes.max(256 << 20);
+        let (fuel, time) = if full {
+            (
+                FULL_COPY_FUEL,
+                self.config.preview_timeout.saturating_mul(3).min(Duration::from_secs(900)),
+            )
+        } else {
+            (COPY_FUEL, self.config.preview_timeout)
+        };
+        policy.fuel.base = policy.fuel.base.max(fuel);
+        policy.max_wall_time = Some(time);
+    }
+
     /// Runs `op` over `document` in the sandbox and decodes the result.
     #[must_use]
     pub fn run(
@@ -289,8 +317,9 @@ impl Engine {
         if op_flags & !op.known_flags() != 0 {
             return RunOutput::failure(Status::BadArgument, "unknown flag bits");
         }
-        let sandbox =
-            Sandbox::new(self.policy_for(op, document.len(), inflated), [self.module.pin()]);
+        let mut policy = self.policy_for(op, document.len(), inflated);
+        self.size_for_picture_copy(&mut policy, op, op_flags, document);
+        let sandbox = Sandbox::new(policy, [self.module.pin()]);
         let options = RunOptions::new().cancel_token(cancel.clone());
         let Some(prefix) = request::prefix(op, op_flags, password) else {
             return RunOutput::failure(Status::BadArgument, "the password is too long");
@@ -459,6 +488,10 @@ const MEMORY_PER_INFLATED_SANITIZE: usize = 4;
 const MAX_INFLATED_HINT: u64 = 1 << 30;
 /// Fuel a picture may use before the size of its file adds to it.
 const IMAGE_FUEL_BASE: u64 = 20_000_000_000;
+/// Fuel a sterile copy of a picture may use (at most 4 megapixels).
+const COPY_FUEL: u64 = 100_000_000_000;
+/// Fuel a full-size sterile copy may use (at most 16 megapixels).
+const FULL_COPY_FUEL: u64 = 250_000_000_000;
 
 impl Host {
     /// A host around `engine`.

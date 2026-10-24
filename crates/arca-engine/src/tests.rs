@@ -621,3 +621,36 @@ fn the_budget_of_a_preview_or_a_sterile_copy_grows_with_what_the_scan_unpacked()
     assert!(huge.memory_limit_for(len) <= engine.config().max_memory_bytes);
     assert_eq!(huge.max_wall_time, none_sanitize.max_wall_time);
 }
+
+#[test]
+fn a_sterile_copy_of_a_picture_gets_a_picture_budget_and_nothing_else_does() {
+    use arca_abi::request::flags;
+    let engine = Engine::new(vec![0u8; 8], EngineConfig::default());
+    let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
+    let len = png.len();
+    let adjusted = |op: Op, op_flags: u32, doc: &[u8]| {
+        let mut policy = engine.policy_for(op, doc.len(), 0);
+        engine.size_for_picture_copy(&mut policy, op, op_flags, doc);
+        policy
+    };
+    let plain = engine.policy_for(Op::Sanitize, len, 0);
+    let reduced = adjusted(Op::Sanitize, flags::SANITIZE_ALL, &png);
+    let full = adjusted(Op::Sanitize, flags::SANITIZE_ALL | flags::FULL_SIZE, &png);
+    // A picture costs by its pixels: more fuel and time than a document of the same size, and the
+    // full-size copy more than the reduced one.
+    assert!(reduced.fuel.for_input(len) > 10 * plain.fuel.for_input(len));
+    assert!(full.fuel.for_input(len) > reduced.fuel.for_input(len));
+    assert!(full.max_wall_time > reduced.max_wall_time);
+    assert!(reduced.memory_limit_for(len) >= 256 << 20);
+    // The fixed ceilings stay.
+    assert!(full.fuel.for_input(len) <= full.fuel.max);
+    assert!(full.max_wall_time <= Some(std::time::Duration::from_secs(900)));
+    // Nothing else gets it: not a document, not another operation on a picture.
+    let docx = b"PK\x03\x04 not a picture";
+    assert_eq!(adjusted(Op::Sanitize, flags::SANITIZE_ALL, docx).fuel, plain.fuel);
+    assert_eq!(
+        adjusted(Op::Sanitize, flags::SANITIZE_ALL | flags::FULL_SIZE, docx).max_wall_time,
+        plain.max_wall_time
+    );
+    assert_eq!(adjusted(Op::Scan, 0, &png).fuel, engine.policy_for(Op::Scan, len, 0).fuel);
+}

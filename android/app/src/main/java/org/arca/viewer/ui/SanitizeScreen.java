@@ -17,6 +17,7 @@ import org.arca.viewer.Native;
 import org.arca.viewer.R;
 import org.arca.viewer.Session;
 import org.arca.viewer.core.Fmt;
+import org.arca.viewer.core.Capabilities;
 import org.arca.viewer.core.Model;
 
 /**
@@ -57,7 +58,7 @@ public final class SanitizeScreen extends Screen {
             return failureView(ui.str(R.string.sanitize_title), st.failure, new Runnable() {
                 @Override
                 public void run() {
-                    Session.get().startSanitize(selected);
+                    Session.get().startSanitize(flagsFor(Session.get()));
                 }
             });
         }
@@ -67,6 +68,12 @@ public final class SanitizeScreen extends Screen {
         return options(s);
     }
 
+    /** The options to send: the size of a copy only means something for a picture. */
+    private static int flagsFor(Session s) {
+        String format = s.report() == null ? "" : s.report().format;
+        return Capabilities.isPicture(format) ? selected : selected & ~Native.SANITIZE_FULL_SIZE;
+    }
+
     // ---- options ----------------------------------------------------------------------------
 
     private View options(final Session s) {
@@ -74,24 +81,27 @@ public final class SanitizeScreen extends Screen {
         col.addView(ui.text(R.string.sanitize_intro, Ui.BODY), ui.fillWidth());
         col.addView(ui.space(12));
 
+        // What a copy of this kind of file cannot keep, and which options mean something for it.
+        String format = s.report() == null ? "" : s.report().format;
+        boolean picture = Capabilities.isPicture(format);
+
         LinearLayout always = ui.card();
         always.addView(ui.heading(ui.str(R.string.sanitize_always_title), Ui.LABEL));
         always.addView(ui.space(4));
-        always.addView(ui.text(R.string.sanitize_always_text, Ui.SMALL));
+        always.addView(ui.text(picture ? R.string.sanitize_always_text_picture : R.string.sanitize_always_text, Ui.SMALL));
         col.addView(always, ui.fillWidth());
         col.addView(ui.space(12));
 
-        // What a copy of this kind of file cannot keep, and which options mean something for it.
-        String format = s.report() == null ? "" : s.report().format;
         boolean pdf = "Pdf".equals(format);
         boolean odf = format.startsWith("Od");
         boolean legacy = "Doc".equals(format) || "Xls".equals(format) || "Ppt".equals(format) || "Rtf".equals(format);
-        if (pdf || odf || legacy) {
-            int note = pdf ? R.string.sanitize_note_pdf : legacy ? R.string.sanitize_note_legacy : R.string.sanitize_note_odf;
+        if (pdf || odf || legacy || picture) {
+            int note = picture ? R.string.sanitize_note_picture : pdf ? R.string.sanitize_note_pdf : legacy ? R.string.sanitize_note_legacy : R.string.sanitize_note_odf;
             col.addView(ui.text(note, Ui.SMALL), ui.fillWidth());
             col.addView(ui.space(12));
         }
 
+        // A picture has nothing to choose: it is always written anew from its pixels.
         LinearLayout opt = ui.card();
         opt.addView(ui.heading(ui.str(R.string.sanitize_options_title), Ui.LABEL));
         opt.addView(ui.space(4));
@@ -103,15 +113,24 @@ public final class SanitizeScreen extends Screen {
         if (!pdf) {
             opt.addView(option(R.string.opt_revisions, R.string.opt_revisions_desc, Native.SANITIZE_ACCEPT_REVISIONS));
         }
-        col.addView(opt, ui.fillWidth());
-        col.addView(ui.space(12));
+        if (!picture) {
+            col.addView(opt, ui.fillWidth());
+            col.addView(ui.space(12));
+        } else {
+            LinearLayout size = ui.card();
+            size.addView(ui.heading(ui.str(R.string.sanitize_size_title), Ui.LABEL));
+            size.addView(ui.space(4));
+            size.addView(option(R.string.opt_full_size, R.string.opt_full_size_desc, Native.SANITIZE_FULL_SIZE));
+            col.addView(size, ui.fillWidth());
+            col.addView(ui.space(12));
+        }
 
         col.addView(ui.text(R.string.sanitize_original_untouched, Ui.CAPTION), ui.fillWidth());
         col.addView(ui.space(16));
         col.addView(ui.button(R.string.sanitize_start, Ui.PRIMARY, R.drawable.ic_sanitize, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                s.startSanitize(selected);
+                s.startSanitize(flagsFor(s));
             }
         }), ui.fillWidth());
         return page(header(ui.str(R.string.sanitize_title), true), scrollColumn(col, 640, Adaptive.padding(act)));

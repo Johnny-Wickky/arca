@@ -34,6 +34,8 @@ fn main() -> ExitCode {
     let module = GuestModule::new("arca-guest-xray", bytes);
     let mut policy = SandboxPolicy::default();
     policy.fuel.base = policy.fuel.max;
+    // The engine gives a preview, a sterile copy and a picture this much (see `Engine::policy_for`).
+    policy.memory_base_bytes = 256 << 20;
     let sandbox = Sandbox::new(policy, [module.pin()]);
     let policy_per_byte = SandboxPolicy::default().fuel.per_input_byte;
 
@@ -58,6 +60,9 @@ fn main() -> ExitCode {
         for op in [Op::Scan, Op::Preview, Op::Sanitize, Op::Render, Op::Image] {
             let op_flags = match op {
                 Op::Preview => flags::REVEAL_HIDDEN,
+                Op::Sanitize if std::env::var_os("ARCA_FULL_SIZE").is_some() => {
+                    flags::SANITIZE_ALL | flags::FULL_SIZE
+                }
                 Op::Sanitize => flags::SANITIZE_ALL,
                 Op::Scan | Op::Render | Op::Image => 0,
             };

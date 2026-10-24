@@ -208,3 +208,58 @@ fn the_pictures_of_an_rtf_document_are_hex_or_binary() {
     let (code, _) = ask(Op::Image, 3, &rtf);
     assert_ne!(code, status::OK);
 }
+
+#[test]
+fn a_picture_file_gets_a_sterile_copy_that_is_a_plain_png() {
+    use arca_abi::request::flags;
+    use arca_guest_xray::decode_sanitized;
+    use arca_xray::Verdict;
+    use arca_xray::sanitize::ActionKind;
+
+    let mut jpeg = picture_file("img-420.jpg");
+    jpeg.extend_from_slice(b"PK\x03\x04 hidden payload");
+    for request_flags in [flags::SANITIZE_ALL, flags::SANITIZE_ALL | flags::FULL_SIZE] {
+        let (code, env) = ask(Op::Sanitize, request_flags, &jpeg);
+        assert_eq!(code, status::OK);
+        let (kind, payload) = envelope::open(&env).unwrap();
+        assert_eq!(kind, PayloadKind::SanitizedDocument);
+        let copy = decode_sanitized(kind, payload).unwrap();
+        // A PNG that was written from the pixels, inspected again, and found clean.
+        assert_eq!(copy.format, FileFormat::Png);
+        assert!(copy.bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+        assert_eq!(copy.verification.verdict, Verdict::Clean);
+        assert!(copy.verification.findings.is_empty(), "{:?}", copy.verification.findings);
+        assert!(!copy.bytes.windows(14).any(|w| w == b"hidden payload"));
+        assert!(
+            copy.actions.iter().any(|a| a.kind == ActionKind::ConvertedContentType
+                && a.target.starts_with("JPEG → PNG")),
+            "{:?}",
+            copy.actions
+        );
+        assert!(
+            copy.actions
+                .iter()
+                .any(|a| a.kind == ActionKind::RemovedElement && a.target.contains("after the end")),
+            "{:?}",
+            copy.actions
+        );
+        // The copy shows the same picture as the original.
+        let pixels = |doc: &[u8]| {
+            let (code, env) = ask(Op::Image, 0, doc);
+            assert_eq!(code, status::OK);
+            let (kind, payload) = envelope::open(&env).unwrap();
+            decode_image(kind, payload).unwrap()
+        };
+        let (a, b) = (pixels(&jpeg), pixels(&copy.bytes));
+        assert_eq!((a.width, a.height, &a.rgba), (b.width, b.height, &b.rgba));
+    }
+    // The same for every kind of picture file; a file that only claims to be one is refused.
+    for name in ["img-420.ref.png", "img-java-prog.jpg", "img-cmyk.jpg"] {
+        let (code, _) = ask(Op::Sanitize, flags::SANITIZE_ALL, &picture_file(name));
+        assert_eq!(code, status::OK, "{name}");
+    }
+    let mut broken = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    broken.extend_from_slice(&[0xFF; 64]);
+    let (code, _) = ask(Op::Sanitize, flags::SANITIZE_ALL, &broken);
+    assert_ne!(code, status::OK);
+}
