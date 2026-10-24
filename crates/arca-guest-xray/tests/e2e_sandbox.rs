@@ -518,7 +518,7 @@ fn guest_pictures_equal_native_pictures() {
     bomb[ihdr..ihdr + 4].copy_from_slice(&40_000u32.to_be_bytes());
     bomb[ihdr + 4..ihdr + 8].copy_from_slice(&40_000u32.to_be_bytes());
     let out = run_op(&sandbox, &m, Op::Image, 0, &bomb, &RunOptions::new()).unwrap();
-    assert_eq!(out.status, arca_abi::status::DOCUMENT_REJECTED);
+    assert_eq!(out.status, arca_abi::status::OPERATION_FAILED);
 }
 
 #[test]

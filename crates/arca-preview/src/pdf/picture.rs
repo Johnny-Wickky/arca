@@ -191,14 +191,31 @@ fn dims(pdf: &mut PdfFile<'_>, dict: &Dict, limits: &Limits) -> Result<(u32, u32
     Ok((u32::try_from(w).unwrap_or(1), u32::try_from(h).unwrap_or(1)))
 }
 
-/// Decodes a soft mask (a grey picture) into one alpha byte per pixel of a `w × h` picture.
-fn soft_mask(
-    pdf: &mut PdfFile<'_>,
-    mask: &Obj,
-    w: u32,
-    h: u32,
-    limits: &Limits,
-) -> Option<Vec<u8>> {
+/// A soft mask (a grey picture), sampled on demand at the pixels of the picture it masks.
+///
+/// It is never expanded to the size of that picture: a 1 × 1 mask over a picture of hundreds of
+/// megapixels costs a byte, not one byte per pixel of the picture.
+struct SoftMask {
+    data: Vec<u8>,
+    width: usize,
+    height: usize,
+    bpc: usize,
+    stride: usize,
+    decode: (f32, f32),
+}
+
+impl SoftMask {
+    /// The alpha at pixel `(x, y)` of a `w × h` picture (nearest neighbour).
+    fn alpha(&self, x: usize, y: usize, w: usize, h: usize) -> u8 {
+        let sy = y * self.height / h.max(1);
+        let sx = x * self.width / w.max(1);
+        let row = self.data.get(sy * self.stride..(sy + 1) * self.stride).unwrap_or(&[]);
+        level(sample(row, self.bpc, sx), self.bpc, self.decode)
+    }
+}
+
+/// Reads the soft mask object `mask`: a grey picture with no codec of its own.
+fn soft_mask(pdf: &mut PdfFile<'_>, mask: &Obj, limits: &Limits) -> Option<SoftMask> {
     let mask = pdf.resolve(mask);
     let stream = mask.as_stream()?.clone();
     let (mw, mh) = dims(pdf, &stream.dict, limits).ok()?;
@@ -215,20 +232,15 @@ fn soft_mask(
         return None;
     }
     let pairs = decode_pairs(pdf, &stream.dict, 1);
-    let d = pairs.first().copied().unwrap_or((0.0, 1.0));
-    let stride = (usize::try_from(mw).ok()? * bpc).div_ceil(8);
-    let mut alpha = vec![255u8; usize::try_from(w).ok()? * usize::try_from(h).ok()?];
-    for y in 0..usize::try_from(h).ok()? {
-        let sy = y * usize::try_from(mh).ok()? / usize::try_from(h).ok()?;
-        let row = decoded.data.get(sy * stride..(sy + 1) * stride).unwrap_or(&[]);
-        for x in 0..usize::try_from(w).ok()? {
-            let sx = x * usize::try_from(mw).ok()? / usize::try_from(w).ok()?;
-            if let Some(a) = alpha.get_mut(y * usize::try_from(w).ok()? + x) {
-                *a = level(sample(row, bpc, sx), bpc, d);
-            }
-        }
-    }
-    Some(alpha)
+    let width = usize::try_from(mw).ok()?;
+    Some(SoftMask {
+        data: decoded.data,
+        width,
+        height: usize::try_from(mh).ok()?,
+        bpc,
+        stride: (width * bpc).div_ceil(8),
+        decode: pairs.first().copied().unwrap_or((0.0, 1.0)),
+    })
 }
 
 /// Picture `num` of the PDF `data`.
@@ -278,15 +290,17 @@ pub(crate) fn picture(
     let comps = cs.components();
     let pairs = decode_pairs(&mut pdf, &stream.dict, comps);
     let indexed_default = matches!(cs, Space::Indexed(_));
+    // The size of the picture is checked against the limits before anything else is read or
+    // allocated on its behalf (its mask included).
+    let mut reducer = RowReducer::new(w, h, &limits).map_err(from_decode)?;
     let alpha = if stencil {
         None
     } else {
         let sm = pdf.get(&stream.dict, "SMask");
-        if sm.is_null() { None } else { soft_mask(&mut pdf, &sm, w, h, &limits) }
+        if sm.is_null() { None } else { soft_mask(&mut pdf, &sm, &limits) }
     };
     let (wu, hu) = (usize::try_from(w).unwrap_or(0), usize::try_from(h).unwrap_or(0));
     let stride = (wu * comps * bpc).div_ceil(8);
-    let mut reducer = RowReducer::new(w, h, &limits).map_err(from_decode)?;
     let mut out = vec![0u8; wu * 4];
     for y in 0..hu {
         let Some(row) = decoded.data.get(y * stride..(y + 1) * stride) else { break };
@@ -336,7 +350,7 @@ pub(crate) fn picture(
                     }
                 }
                 if let Some(al) = &alpha {
-                    a = al.get(y * wu + x).copied().unwrap_or(255);
+                    a = al.alpha(x, y, wu, hu);
                 }
             }
             px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], a]);

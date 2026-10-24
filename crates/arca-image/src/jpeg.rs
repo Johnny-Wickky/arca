@@ -25,6 +25,14 @@ const ZIGZAG: [u8; 64] = [
 /// Most zero bytes the entropy reader feeds after the end of its data before it gives up.
 const MAX_PAD_BYTES: u32 = 4096;
 
+/// Most scans one file may have. A progressive image needs about ten; an image made of
+/// thousands of scans exists to burn time (each scan walks the whole image again).
+const MAX_SCANS: usize = 200;
+
+/// Total blocks all scans of a buffered image may visit, as a multiple of the blocks of the
+/// image. A progressive image visits each block a handful of times; this leaves ample room.
+const MAX_VISIT_FACTOR: u64 = 32;
+
 fn natural(k: usize) -> usize {
     usize::from(ZIGZAG.get(k).copied().unwrap_or(63))
 }
@@ -309,6 +317,9 @@ struct Decoder<'a> {
     /// Samples per side of a decoded block: `8 >> shift`.
     bs: usize,
     ycc: YccTables,
+    /// Blocks visited by all scans so far, and the most they may visit.
+    visits: u64,
+    visit_cap: u64,
 }
 
 fn clamp8(v: i32) -> u8 {
@@ -509,7 +520,14 @@ impl<'a> Decoder<'a> {
             shift: 0,
             bs: 8,
             ycc: YccTables::new(),
+            visits: 0,
+            visit_cap: u64::MAX,
         }
+    }
+
+    /// Bytes of a segment past what the segment's format defines: they are not the picture's.
+    fn unexplained(&mut self, seg: &[u8], defined: usize) {
+        self.facts.unaccounted += seg.len().saturating_sub(defined) as u64;
     }
 
     fn parse_sof(&mut self, seg: &[u8], progressive: bool) -> Result<(), DecodeError> {
@@ -589,6 +607,7 @@ impl<'a> Decoder<'a> {
             4 => self.facts.flags |= flag::CMYK,
             _ => {}
         }
+        self.unexplained(seg, 6 + 3 * usize::from(n));
         self.frame = Some(Frame { width, height, progressive, comps, hmax, vmax, mcus_x, mcus_y });
         Ok(())
     }
@@ -631,25 +650,52 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    /// An application segment. What the segment's format defines is accounted for (the JFIF and
+    /// Adobe headers as structure, recognised kinds as metadata); whatever is more than that, and
+    /// every segment of a kind this crate does not know, is reported as unaccounted.
     fn parse_app(&mut self, marker: u8, seg: &[u8]) {
-        self.facts.metadata_bytes += seg.len() as u64;
+        let len = seg.len() as u64;
         match marker {
+            0xE0 if seg.starts_with(b"JFIF\0") => {
+                // 14 bytes of header, then a thumbnail of 3 × width × height bytes (RGB).
+                let thumb = match (seg.get(12), seg.get(13)) {
+                    (Some(&w), Some(&h)) => 3 * usize::from(w) * usize::from(h),
+                    _ => 0,
+                };
+                let header = seg.len().min(14);
+                let used = seg.len().min(14 + thumb);
+                self.facts.metadata_bytes += (used - header) as u64;
+                self.unexplained(seg, used);
+            }
+            0xE0 if seg.starts_with(b"JFXX\0") => self.facts.metadata_bytes += len,
             0xE1 if seg.starts_with(b"Exif\0\0") => {
-                if self.facts.exif.is_none() {
-                    self.facts.exif = seg.get(6..).and_then(exif::parse);
+                self.facts.metadata_bytes += len;
+                if let Some(found) = seg.get(6..).and_then(exif::parse) {
+                    exif::merge_into(&mut self.facts.exif, found);
                 }
             }
             0xE1 if seg.starts_with(b"http://ns.adobe.com/xap/1.0/\0") => {
-                self.facts.flags |= flag::XMP
+                self.facts.flags |= flag::XMP;
+                self.facts.metadata_bytes += len;
             }
-            0xE2 if seg.starts_with(b"ICC_PROFILE\0") => self.facts.flags |= flag::ICC_PROFILE,
+            0xE1 if seg.starts_with(b"http://ns.adobe.com/xmp/extension/\0") => {
+                self.facts.flags |= flag::XMP;
+                self.facts.metadata_bytes += len;
+            }
+            0xE2 if seg.starts_with(b"ICC_PROFILE\0") => {
+                self.facts.flags |= flag::ICC_PROFILE;
+                self.facts.metadata_bytes += len;
+            }
+            // Multi-picture index, camera and editor records of well-known layout.
+            0xE2 if seg.starts_with(b"MPF\0") => self.facts.metadata_bytes += len,
+            0xEC if seg.starts_with(b"Ducky") => self.facts.metadata_bytes += len,
+            0xED if seg.starts_with(b"Photoshop 3.0\0") => self.facts.metadata_bytes += len,
             0xEE if seg.starts_with(b"Adobe") => {
                 self.adobe = seg.get(11).copied();
-                // The Adobe segment is part of the colour description, not metadata to report.
-                self.facts.metadata_bytes -= seg.len() as u64;
+                // The Adobe segment is part of the colour description: 12 bytes, nothing more.
+                self.unexplained(seg, 12);
             }
-            0xE0 if seg.starts_with(b"JFIF\0") => self.facts.metadata_bytes -= seg.len() as u64,
-            _ => {}
+            _ => self.facts.unaccounted += len,
         }
     }
 
@@ -698,6 +744,7 @@ impl<'a> Decoder<'a> {
         } else {
             Scan { comps, ss: 0, se: 63, ah: 0, al: 0 }
         };
+        self.unexplained(seg, 1 + 2 * ns + 3);
         Ok(scan)
     }
 
@@ -731,9 +778,12 @@ impl<'a> Decoder<'a> {
         }
         let oom = || DecodeError::TooLarge("not enough memory for the image".into());
         let mut coef_bytes = 0u64;
+        let mut blocks = 0u64;
         for comp in &frame.comps {
             coef_bytes += (comp.bw * comp.bh * 64 * 2) as u64;
+            blocks += (comp.bw * comp.bh) as u64;
         }
+        self.visit_cap = blocks.saturating_mul(MAX_VISIT_FACTOR);
         if mode == Mode::Buffered && coef_bytes > limits.max_buffered_pixels.saturating_mul(3) {
             return Err(DecodeError::TooLarge(format!(
                 "JPEG: the coefficients of this image need {coef_bytes} bytes of memory"
@@ -871,11 +921,17 @@ impl<'a> Decoder<'a> {
         let mut samples = [0u8; 64];
         let mut dc_only = false;
         let mut ok = true;
+        let mut over = false;
 
         // Decodes one block of component `ci` at block position (bx, by).
         macro_rules! block {
             ($ci:expr, $bx:expr, $by:expr) => {{
                 let (ci, bx, by): (usize, usize, usize) = ($ci, $bx, $by);
+                self.visits += 1;
+                if self.visits > self.visit_cap {
+                    over = true;
+                    ok = false;
+                }
                 let bw = self.frame.as_ref().and_then(|f| f.comps.get(ci)).map_or(0, |c| c.bw);
                 if streaming {
                     let (td, ta) = self
@@ -1002,6 +1058,11 @@ impl<'a> Decoder<'a> {
                 }
             }
         }
+        if over {
+            return Err(DecodeError::TooLarge(
+                "JPEG: the scans visit the picture's blocks too many times".into(),
+            ));
+        }
         if !ok {
             self.damaged = true;
         }
@@ -1096,24 +1157,36 @@ fn ycc_to_rgb(y: i32, cb: i32, cr: i32) -> [u8; 3] {
     ]
 }
 
-/// The position of the next marker at or after `from`: `0xFF` followed by something that is not
-/// a stuffed zero, a fill byte or a restart marker.
-fn next_marker(d: &[u8], from: usize) -> Option<usize> {
-    let mut p = from;
+/// The position of the next marker at or after `from` (`0xFF` followed by something that is not
+/// a stuffed zero, a fill byte or a restart marker), and how many bytes were stepped over to
+/// reach it. Fill bytes (`FF FF`) are padding the format allows and do not count.
+fn find_marker(d: &[u8], from: usize) -> (Option<usize>, u64) {
+    let (mut p, mut skipped) = (from, 0u64);
     while let Some(&b) = d.get(p) {
         if b == 0xFF {
             match d.get(p + 1).copied() {
-                Some(0 | 0xD0..=0xD7) => p += 2,
+                Some(0 | 0xD0..=0xD7) => {
+                    p += 2;
+                    skipped += 2;
+                }
                 Some(0xFF) => p += 1,
-                Some(_) => return Some(p),
-                None => return None,
+                Some(_) => return (Some(p), skipped),
+                None => return (None, skipped),
             }
         } else {
             p += 1;
+            skipped += 1;
         }
     }
-    None
+    (None, skipped)
 }
+
+fn next_marker(d: &[u8], from: usize) -> Option<usize> {
+    find_marker(d, from).0
+}
+
+/// Most markers walked in one file (a hard stop for files made of nothing but markers).
+const MAX_MARKERS: usize = 100_000;
 
 pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, DecodeError> {
     let mut dec = Decoder::new(data, limits, pixels);
@@ -1121,10 +1194,13 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     let mut saw_eoi = false;
     let mut end = data.len();
     let mut scans = 0usize;
-    // A hard stop for files made of nothing but markers.
-    for _ in 0..100_000 {
-        // Find the next marker.
-        let Some(m_at) = next_marker(data, pos) else { break };
+    let mut last_round = false;
+    for round in 0..MAX_MARKERS {
+        last_round = round + 1 == MAX_MARKERS;
+        // Find the next marker. Bytes between two segments belong to none of them.
+        let (found, gap) = find_marker(data, pos);
+        dec.facts.unaccounted += gap;
+        let Some(m_at) = found else { break };
         let Some(&marker) = data.get(m_at + 1) else { break };
         pos = m_at + 2;
         match marker {
@@ -1133,7 +1209,12 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                 end = pos;
                 break;
             }
-            0xD8 | 0x01 | 0xD0..=0xD7 => continue,
+            // A start of image, a temporary marker or a restart marker outside the entropy
+            // data: two bytes the format has no use for here.
+            0xD8 | 0x01 | 0xD0..=0xD7 => {
+                dec.facts.unaccounted += 2;
+                continue;
+            }
             _ => {}
         }
         let mut c = Cursor::at(data, pos);
@@ -1158,6 +1239,7 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
             0xDB => dec.parse_dqt(seg)?,
             0xDD => {
                 dec.restart_interval = Cursor::new(seg).u16_be().map_or(0, usize::from);
+                dec.unexplained(seg, 2);
             }
             0xE0..=0xEF => dec.parse_app(marker, seg),
             0xFE => {
@@ -1166,6 +1248,11 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
             }
             0xDA => {
                 scans += 1;
+                if scans > MAX_SCANS {
+                    return Err(DecodeError::TooLarge(format!(
+                        "JPEG: more than {MAX_SCANS} scans"
+                    )));
+                }
                 let scan = dec.parse_sos(seg)?;
                 if dec.pixels && dec.mode != Mode::Done {
                     if dec.mode == Mode::Pending {
@@ -1181,7 +1268,7 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                         dec.mode = Mode::Done;
                     }
                 }
-                // Skip the entropy-coded data to the next marker.
+                // Skip the entropy-coded data to the next marker (it is the picture's).
                 match next_marker(data, pos) {
                     Some(p) => pos = p,
                     None => {
@@ -1190,7 +1277,9 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                     }
                 }
             }
-            _ => {}
+            // A marker this decoder has no use for (a reserved or application-defined one):
+            // whatever it carries cannot be explained.
+            _ => dec.facts.unaccounted += seg.len() as u64,
         }
     }
     if dec.frame.is_none() {
@@ -1201,6 +1290,9 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     }
     if !saw_eoi {
         dec.damaged = true;
+        if last_round {
+            dec.facts.unaccounted += data.len().saturating_sub(pos) as u64;
+        }
     } else {
         dec.facts.trailing = (data.len() - end) as u64;
     }

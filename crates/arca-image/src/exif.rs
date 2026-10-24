@@ -12,8 +12,6 @@ use crate::bytes::to_usize;
 
 /// Longest text kept from an EXIF string.
 const MAX_TEXT: usize = 64;
-/// Most entries read from one IFD.
-const MAX_ENTRIES: usize = 512;
 
 /// What the EXIF block says, reduced to facts.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -40,8 +38,11 @@ pub struct ExifFacts {
     pub maker_note: bool,
     /// An embedded thumbnail is present.
     pub thumbnail: bool,
-    /// A GPS block is present.
+    /// A GPS block is present (or the tag that points to one, even if the pointer is unusable).
     pub gps: bool,
+    /// A free-text field is present: an image description, a user comment, or one of the
+    /// comment, title, author, keyword and subject fields Windows writes.
+    pub free_text: bool,
     /// The GPS position could be read.
     pub has_position: bool,
     /// Latitude in millionths of a degree (north positive).
@@ -62,6 +63,7 @@ wire_struct!(ExifFacts {
     maker_note,
     thumbnail,
     gps,
+    free_text,
     has_position,
     lat_micro,
     lon_micro
@@ -75,7 +77,44 @@ impl ExifFacts {
             || self.serial
             || self.thumbnail
             || self.maker_note
+            || self.free_text
             || !(self.artist.is_empty() && self.owner.is_empty() && self.copyright.is_empty())
+    }
+
+    /// Folds in the facts of another EXIF block of the same file. Flags accumulate and a text
+    /// that is still empty is filled; the orientation and the position of the first block win.
+    fn absorb(&mut self, o: Self) {
+        for (mine, theirs) in [
+            (&mut self.make, o.make),
+            (&mut self.model, o.model),
+            (&mut self.software, o.software),
+            (&mut self.datetime, o.datetime),
+            (&mut self.artist, o.artist),
+            (&mut self.copyright, o.copyright),
+            (&mut self.owner, o.owner),
+        ] {
+            if mine.is_empty() {
+                *mine = theirs;
+            }
+        }
+        self.serial |= o.serial;
+        self.maker_note |= o.maker_note;
+        self.thumbnail |= o.thumbnail;
+        self.gps |= o.gps;
+        self.free_text |= o.free_text;
+        if !self.has_position && o.has_position {
+            (self.has_position, self.lat_micro, self.lon_micro) = (true, o.lat_micro, o.lon_micro);
+        }
+    }
+}
+
+/// Records the EXIF block `found` in `slot`: the first one is kept as it is, later ones are
+/// folded in. A file can carry several (two `Exif` APP1 segments, a PNG `eXIf` chunk and more);
+/// a reader that looked only at the first would miss what a later one holds.
+pub(crate) fn merge_into(slot: &mut Option<ExifFacts>, found: ExifFacts) {
+    match slot {
+        Some(first) => first.absorb(found),
+        None => *slot = Some(found),
     }
 }
 
@@ -110,20 +149,25 @@ fn type_size(typ: u16) -> usize {
     match typ {
         1 | 2 | 6 | 7 => 1,
         3 | 8 => 2,
-        4 | 9 | 11 => 4,
-        5 | 10 | 12 => 8,
+        // 13 is IFD (a sub-IFD offset), 9 SLONG, 11 FLOAT.
+        4 | 9 | 11 | 13 => 4,
+        // 16 to 18 are the 64-bit types of BigTIFF.
+        5 | 10 | 12 | 16..=18 => 8,
         _ => 0,
     }
 }
 
-/// The entries of the IFD at `off`, and the offset of the next IFD (0 for none).
+/// The entries of the IFD at `off`, and the offset of the next IFD (0 for none). Every entry the
+/// count field declares is read (it is a `u16`, so at most 65 535 of them): a limit lower than
+/// that would let a tag hide behind a run of filler entries.
 fn ifd(d: &[u8], o: Order, off: usize) -> (Vec<Entry>, usize) {
     let mut out = Vec::new();
     let Some(n) = o.u16(d, off) else { return (out, 0) };
-    let n = usize::from(n).min(MAX_ENTRIES);
+    let n = usize::from(n);
     for i in 0..n {
-        let e = off + 2 + i * 12;
-        let (Some(tag), Some(typ), Some(count)) = (o.u16(d, e), o.u16(d, e + 2), o.u32(d, e + 4))
+        let Some(e) = off.checked_add(2 + i * 12) else { return (out, 0) };
+        let (Some(tag), Some(typ), Some(count)) =
+            (o.u16(d, e), o.u16(d, e.saturating_add(2)), o.u32(d, e.saturating_add(4)))
         else {
             return (out, 0);
         };
@@ -132,7 +176,7 @@ fn ifd(d: &[u8], o: Order, off: usize) -> (Vec<Entry>, usize) {
         let at = if size <= 4 {
             e + 8
         } else {
-            match o.u32(d, e + 8) {
+            match o.u32(d, e.saturating_add(8)) {
                 Some(p) => to_usize(p),
                 None => continue,
             }
@@ -141,7 +185,7 @@ fn ifd(d: &[u8], o: Order, off: usize) -> (Vec<Entry>, usize) {
             out.push(Entry { tag, typ, count, at });
         }
     }
-    let next = o.u32(d, off + 2 + n * 12).map_or(0, to_usize);
+    let next = off.checked_add(2 + n * 12).and_then(|at| o.u32(d, at)).map_or(0, to_usize);
     (out, next)
 }
 
@@ -162,8 +206,9 @@ fn short(d: &[u8], o: Order, e: &Entry) -> Option<u16> {
 
 fn long(d: &[u8], o: Order, e: &Entry) -> Option<usize> {
     match e.typ {
-        4 if e.count >= 1 => o.u32(d, e.at).map(to_usize),
-        3 if e.count >= 1 => o.u16(d, e.at).map(usize::from),
+        // LONG, SLONG and IFD: all of them are used for offsets to a sub-IFD.
+        4 | 9 | 13 if e.count >= 1 => o.u32(d, e.at).map(to_usize),
+        3 | 8 if e.count >= 1 => o.u16(d, e.at).map(usize::from),
         _ => None,
     }
 }
@@ -200,6 +245,7 @@ pub fn parse(tiff: &[u8]) -> Option<ExifFacts> {
     let (mut exif_ptr, mut gps_ptr) = (None, None);
     for e in &ifd0 {
         match e.tag {
+            0x010E | 0x9C9B..=0x9C9F => f.free_text = true,
             0x010F => f.make = text(tiff, e),
             0x0110 => f.model = text(tiff, e),
             0x0112 => {
@@ -212,17 +258,23 @@ pub fn parse(tiff: &[u8]) -> Option<ExifFacts> {
             0x013B => f.artist = text(tiff, e),
             0x8298 => f.copyright = text(tiff, e),
             0x8769 => exif_ptr = long(tiff, o, e),
-            0x8825 => gps_ptr = long(tiff, o, e),
+            0x8825 => {
+                // The tag alone says that a position was recorded, whatever its pointer holds.
+                f.gps = true;
+                gps_ptr = long(tiff, o, e);
+            }
             _ => {}
         }
     }
     if next != 0 {
         let (ifd1, _) = ifd(tiff, o, next);
-        f.thumbnail = ifd1.iter().any(|e| e.tag == 0x0201 || e.tag == 0x0202);
+        // JPEG thumbnail (0x0201, 0x0202) or a thumbnail stored as TIFF strips (0x0111).
+        f.thumbnail = ifd1.iter().any(|e| matches!(e.tag, 0x0111 | 0x0201 | 0x0202));
     }
     if let Some(p) = exif_ptr {
         for e in ifd(tiff, o, p).0 {
             match e.tag {
+                0x9286 => f.free_text = true,
                 0x9003 if f.datetime.is_empty() => f.datetime = text(tiff, &e),
                 0xA430 => f.owner = text(tiff, &e),
                 0xA431 | 0xA435 | 0xA420 => f.serial = true,
@@ -233,7 +285,7 @@ pub fn parse(tiff: &[u8]) -> Option<ExifFacts> {
     }
     if let Some(p) = gps_ptr {
         let (gps, _) = ifd(tiff, o, p);
-        f.gps = !gps.is_empty();
+        f.gps |= !gps.is_empty();
         let find = |tag: u16| gps.iter().find(|e| e.tag == tag);
         let sign = |tag: u16, negative: u8| -> i64 {
             find(tag)
@@ -450,5 +502,95 @@ pub(crate) mod tests {
         let t = build(&[(0x010F, V::Ascii("A\u{202e}B\x01C"))], &[], &[], false);
         let f = parse(&t).unwrap();
         assert!(f.make.chars().all(|c| c.is_ascii_graphic() || c == ' '));
+    }
+
+    /// A little-endian TIFF block whose IFD0 holds `entries` (tag, type, count, inline value), then
+    /// a GPS IFD with one entry and, if asked, an IFD1 with one entry of the given tag.
+    fn raw_tiff(entries: &[(u16, u16, u32, [u8; 4])], ifd1_tag: Option<u16>) -> Vec<u8> {
+        let gps_at = 8 + 2 + 12 * entries.len() + 4;
+        let ifd1_at = gps_at + 2 + 12 + 4;
+        let mut t = b"II*\0".to_vec();
+        t.extend_from_slice(&8u32.to_le_bytes());
+        t.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, typ, count, value) in entries {
+            t.extend_from_slice(&tag.to_le_bytes());
+            t.extend_from_slice(&typ.to_le_bytes());
+            t.extend_from_slice(&count.to_le_bytes());
+            t.extend_from_slice(value);
+        }
+        let next = if ifd1_tag.is_some() { ifd1_at as u32 } else { 0 };
+        t.extend_from_slice(&next.to_le_bytes());
+        // The GPS IFD: GPSLatitudeRef = "N".
+        t.extend_from_slice(&1u16.to_le_bytes());
+        t.extend_from_slice(&[1, 0, 2, 0, 2, 0, 0, 0, b'N', 0, 0, 0]);
+        t.extend_from_slice(&[0; 4]);
+        if let Some(tag) = ifd1_tag {
+            t.extend_from_slice(&1u16.to_le_bytes());
+            t.extend_from_slice(&tag.to_le_bytes());
+            t.extend_from_slice(&[4, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+            t.extend_from_slice(&[0; 4]);
+        }
+        t
+    }
+
+    fn gps_pointer(entries_total: usize, typ: u16) -> (u16, u16, u32, [u8; 4]) {
+        let at = (8 + 2 + 12 * entries_total + 4) as u32;
+        (0x8825, typ, 1, at.to_le_bytes())
+    }
+
+    #[test]
+    fn a_gps_pointer_behind_a_run_of_filler_entries_is_found() {
+        let filler = (0x0100u16, 3u16, 1u32, [1u8, 0, 0, 0]);
+        for fillers in [0usize, 100, 511, 512, 1000, 65_000] {
+            let mut entries = vec![filler; fillers];
+            entries.push(gps_pointer(fillers + 1, 4));
+            let f = parse(&raw_tiff(&entries, None)).unwrap();
+            assert!(f.gps, "{fillers} entries before the pointer");
+        }
+    }
+
+    #[test]
+    fn a_gps_pointer_of_any_type_is_a_gps_block() {
+        // IFD (13) and SLONG (9) are offset types some writers use; with a type nobody can
+        // follow, the tag still says that a position was recorded.
+        for typ in [3u16, 4, 9, 13, 2, 7] {
+            let f = parse(&raw_tiff(&[gps_pointer(1, typ)], None)).unwrap();
+            assert!(f.gps, "type {typ}");
+        }
+        let f = parse(&raw_tiff(&[gps_pointer(1, 13)], None)).unwrap();
+        assert!(!f.has_position && f.is_private());
+    }
+
+    #[test]
+    fn free_text_and_strip_thumbnails_are_private() {
+        for tag in [0x010Eu16, 0x9C9B, 0x9C9C, 0x9C9D, 0x9C9E, 0x9C9F] {
+            let f = parse(&raw_tiff(&[(tag, 1, 1, [0; 4])], None)).unwrap();
+            assert!(f.free_text && f.is_private(), "tag {tag:#x}");
+        }
+        let f = parse(&raw_tiff(&[(0x0100, 3, 1, [1, 0, 0, 0])], None)).unwrap();
+        assert!(!f.free_text && !f.thumbnail && !f.is_private());
+        for tag in [0x0111u16, 0x0201, 0x0202] {
+            let f = parse(&raw_tiff(&[(0x0100, 3, 1, [1, 0, 0, 0])], Some(tag))).unwrap();
+            assert!(f.thumbnail, "IFD1 tag {tag:#x}");
+        }
+        let t = build(&[], &[(0x9286, V::Undefined(b"ASCII\0\0\0secret"))], &[], false);
+        assert!(parse(&t).unwrap().free_text);
+    }
+
+    #[test]
+    fn blocks_are_merged_and_the_first_decides_the_orientation() {
+        let a = parse(&build(&[(0x0112, V::Short(6)), (0x010F, V::Ascii("A"))], &[], &[], false));
+        let b = parse(&build(
+            &[(0x0112, V::Short(3)), (0x0110, V::Ascii("B"))],
+            &[(0xA431, V::Ascii("SN"))],
+            &[(1, V::Ascii("N"))],
+            true,
+        ));
+        let mut slot = None;
+        merge_into(&mut slot, a.unwrap());
+        merge_into(&mut slot, b.unwrap());
+        let f = slot.unwrap();
+        assert_eq!((f.make.as_str(), f.model.as_str(), f.orientation), ("A", "B", 6));
+        assert!(f.serial && f.gps && f.thumbnail);
     }
 }

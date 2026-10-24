@@ -16,6 +16,12 @@ use crate::{DecodeError, Facts, ImageFormat, Limits, Raw, exif, flag};
 const MAX_CHUNKS: usize = 200_000;
 /// Window of the inflater (the DEFLATE dictionary size).
 const WINDOW: usize = 32 * 1024;
+/// Most bytes of inflated data past the last row that are counted before the inflater gives up
+/// (a stream that keeps producing output after the picture is a channel, not a picture).
+const TAIL_BUDGET: u64 = 1 << 20;
+/// Largest inflated size for which the headers-only reading (`inspect`) inflates the data to find
+/// where the zlib stream really ends. Beyond it the check is left to the full decoder.
+const INSPECT_INFLATE_CAP: u64 = 64 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Color {
@@ -105,6 +111,39 @@ struct Parsed<'a> {
     idat: Vec<&'a [u8]>,
 }
 
+/// How many bytes of a chunk of `len` bytes the format, or a kind of metadata this crate
+/// recognises, accounts for; `None` for a kind that is not known at all. The rest of a known
+/// chunk and the whole of an unknown one cannot be explained and are reported as unaccounted.
+fn explained(kind: &[u8; 4], len: usize, color: Option<Color>) -> Option<usize> {
+    let up_to = |n: usize| Some(len.min(n));
+    match kind {
+        b"IHDR" => up_to(13),
+        b"IEND" => Some(0),
+        b"gAMA" | b"cICP" => up_to(4),
+        b"cHRM" => up_to(32),
+        b"sRGB" => up_to(1),
+        b"sBIT" => up_to(4),
+        b"bKGD" => up_to(6),
+        b"pHYs" | b"oFFs" => up_to(9),
+        b"tIME" => up_to(7),
+        b"mDCV" => up_to(24),
+        b"cLLI" => up_to(8),
+        b"acTL" => up_to(8),
+        b"fcTL" => up_to(26),
+        b"hIST" => up_to(512),
+        b"tRNS" => match color {
+            Some(Color::Palette) => up_to(256),
+            Some(Color::Gray) => up_to(2),
+            Some(Color::Rgb) => up_to(6),
+            _ => Some(0),
+        },
+        b"PLTE" => Some(if len.is_multiple_of(3) && len <= 768 { len } else { 0 }),
+        b"IDAT" | b"fdAT" | b"iCCP" | b"eXIf" | b"tEXt" | b"zTXt" | b"iTXt" | b"sPLT" | b"pCAL"
+        | b"sCAL" => Some(len),
+        _ => None,
+    }
+}
+
 fn walk_chunks<'a>(data: &'a [u8], limits: &Limits) -> Result<Parsed<'a>, DecodeError> {
     let mut c = Cursor::at(data, 8);
     let mut header: Option<Header> = None;
@@ -143,6 +182,15 @@ fn walk_chunks<'a>(data: &'a [u8], limits: &Limits) -> Result<Parsed<'a>, Decode
         if !crc_ok {
             damaged = true;
         }
+        let known = match &kind {
+            // A second header is not one the format defines.
+            b"IHDR" if header.is_some() => None,
+            _ => explained(&kind, len, header.as_ref().map(|h| h.color)),
+        };
+        facts.unaccounted += match known {
+            Some(n) => len.saturating_sub(n),
+            None => len.saturating_add(12),
+        } as u64;
         match &kind {
             b"IHDR" if header.is_none() => {
                 let h = parse_header(body)?;
@@ -197,8 +245,10 @@ fn walk_chunks<'a>(data: &'a [u8], limits: &Limits) -> Result<Parsed<'a>, Decode
             }
             b"IDAT" => {
                 if after_idat && !idat.is_empty() {
-                    // IDAT chunks must be consecutive; a later one is ignored.
+                    // IDAT chunks must be consecutive; a later one is ignored, so what it
+                    // carries is not picture data.
                     damaged = true;
+                    facts.unaccounted += len as u64;
                 } else {
                     idat.push(body);
                 }
@@ -219,8 +269,8 @@ fn walk_chunks<'a>(data: &'a [u8], limits: &Limits) -> Result<Parsed<'a>, Decode
             }
             b"eXIf" => {
                 facts.metadata_bytes += len as u64;
-                if facts.exif.is_none() {
-                    facts.exif = exif::parse(body);
+                if let Some(found) = exif::parse(body) {
+                    exif::merge_into(&mut facts.exif, found);
                 }
             }
             b"tEXt" | b"zTXt" | b"iTXt" => {
@@ -230,6 +280,8 @@ fn walk_chunks<'a>(data: &'a [u8], limits: &Limits) -> Result<Parsed<'a>, Decode
                     facts.flags |= flag::XMP;
                 }
             }
+            // Suggested palettes and calibration records: data nobody shows.
+            b"sPLT" | b"pCAL" | b"sCAL" => facts.metadata_bytes += len as u64,
             _ => {}
         }
         if &kind != b"IDAT" && !idat.is_empty() {
@@ -262,67 +314,109 @@ fn walk_chunks<'a>(data: &'a [u8], limits: &Limits) -> Result<Parsed<'a>, Decode
     Ok(Parsed { header, facts, palette, trns, idat })
 }
 
-/// Streaming inflater over a zlib stream that is split into slices (the IDAT chunks).
+/// What a zlib stream holds after the last row of the picture.
+struct Tail {
+    /// Bytes that are not picture data: inflated output past the rows, and input past the end of
+    /// the stream.
+    unaccounted: u64,
+    /// The stream ended properly (and, in strict mode, with the right Adler-32 checksum).
+    clean: bool,
+}
+
+/// Streaming inflater over a zlib stream that is split into slices (the IDAT chunks). The chunks
+/// are fed one after the other; they are never joined into one buffer.
 struct Inflater<'a> {
     state: Box<DecompressorOxide>,
     window: Vec<u8>,
     pos: usize,
     ready: core::ops::Range<usize>,
-    input: Vec<u8>,
+    parts: &'a [&'a [u8]],
+    part: usize,
     in_pos: usize,
     finished: bool,
-    _marker: core::marker::PhantomData<&'a ()>,
+    /// The stream ended with `Done` (and, in strict mode, a matching checksum).
+    complete: bool,
+    /// Verify the Adler-32 checksum (the viewer does not; the check of a sterile copy does).
+    strict: bool,
 }
 
 impl<'a> Inflater<'a> {
-    fn new(parts: &[&'a [u8]]) -> Self {
-        let mut input = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
-        for p in parts {
-            input.extend_from_slice(p);
-        }
+    fn new(parts: &'a [&'a [u8]], strict: bool) -> Self {
         Self {
             state: Box::default(),
             window: vec![0; WINDOW],
             pos: 0,
             ready: 0..0,
-            input,
+            parts,
+            part: 0,
             in_pos: 0,
             finished: false,
-            _marker: core::marker::PhantomData,
+            complete: false,
+            strict,
         }
+    }
+
+    /// Bytes of input that have not been consumed.
+    fn unread(&self) -> u64 {
+        let mut n = 0u64;
+        for (i, p) in self.parts.iter().enumerate().skip(self.part) {
+            let used = if i == self.part { self.in_pos } else { 0 };
+            n += p.len().saturating_sub(used) as u64;
+        }
+        n
+    }
+
+    /// Runs the inflater once. Fresh output lands in `ready`; every call consumes input, writes
+    /// output or finishes the stream, so a loop over it ends.
+    fn step(&mut self) {
+        while self.parts.get(self.part).is_some_and(|p| self.in_pos >= p.len()) {
+            self.part += 1;
+            self.in_pos = 0;
+        }
+        let rest = self.parts.get(self.part).and_then(|p| p.get(self.in_pos..)).unwrap_or(&[]);
+        let more = self.parts.get(self.part + 1..).is_some_and(|r| r.iter().any(|p| !p.is_empty()));
+        let mut flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER;
+        if !self.strict {
+            flags |= inflate_flags::TINFL_FLAG_IGNORE_ADLER32;
+        }
+        if more {
+            flags |= inflate_flags::TINFL_FLAG_HAS_MORE_INPUT;
+        }
+        let (status, used, wrote) =
+            decompress(&mut self.state, rest, &mut self.window, self.pos, flags);
+        self.in_pos += used;
+        self.ready = self.pos..self.pos + wrote;
+        self.pos = (self.pos + wrote) & (WINDOW - 1);
+        match status {
+            TINFLStatus::Done => {
+                self.finished = true;
+                self.complete = true;
+            }
+            TINFLStatus::HasMoreOutput => {}
+            TINFLStatus::NeedsMoreInput if more => {}
+            _ => self.finished = true,
+        }
+        if used == 0 && wrote == 0 {
+            self.finished = true;
+        }
+    }
+
+    /// Makes sure there is output to read, or reports that the stream ended or is damaged first.
+    fn fill_ready(&mut self) -> Result<(), ()> {
+        while self.ready.is_empty() {
+            if self.finished {
+                return Err(());
+            }
+            self.step();
+        }
+        Ok(())
     }
 
     /// Fills `dst` completely, or reports that the stream ended or is damaged first.
     fn read_exact(&mut self, dst: &mut [u8]) -> Result<(), ()> {
         let mut filled = 0;
         while filled < dst.len() {
-            if self.ready.is_empty() {
-                if self.finished {
-                    return Err(());
-                }
-                let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
-                    | inflate_flags::TINFL_FLAG_IGNORE_ADLER32;
-                let rest = self.input.get(self.in_pos..).unwrap_or(&[]);
-                let (status, used, wrote) =
-                    decompress(&mut self.state, rest, &mut self.window, self.pos, flags);
-                self.in_pos += used;
-                self.ready = self.pos..self.pos + wrote;
-                self.pos = (self.pos + wrote) & (WINDOW - 1);
-                match status {
-                    TINFLStatus::Done => self.finished = true,
-                    TINFLStatus::HasMoreOutput => {}
-                    _ => {
-                        self.finished = true;
-                        if wrote == 0 {
-                            return Err(());
-                        }
-                    }
-                }
-                if wrote == 0 && !self.finished {
-                    return Err(());
-                }
-                continue;
-            }
+            self.fill_ready()?;
             let avail = self.window.get(self.ready.clone()).unwrap_or(&[]);
             let n = avail.len().min(dst.len() - filled);
             if let (Some(from), Some(to)) = (avail.get(..n), dst.get_mut(filled..filled + n)) {
@@ -332,6 +426,29 @@ impl<'a> Inflater<'a> {
             filled += n;
         }
         Ok(())
+    }
+
+    /// Skips `n` bytes of output.
+    fn skip(&mut self, mut n: u64) -> Result<(), ()> {
+        while n > 0 {
+            self.fill_ready()?;
+            let take = u64::try_from(self.ready.len()).unwrap_or(u64::MAX).min(n);
+            self.ready.start += usize::try_from(take).unwrap_or(0);
+            n -= take;
+        }
+        Ok(())
+    }
+
+    /// After the last row: drains the stream (up to [`TAIL_BUDGET`]) and counts what is left.
+    fn tail(&mut self) -> Tail {
+        let mut extra = self.ready.len() as u64;
+        self.ready = 0..0;
+        while !self.finished && extra <= TAIL_BUDGET {
+            self.step();
+            extra += self.ready.len() as u64;
+            self.ready = 0..0;
+        }
+        Tail { unaccounted: extra + self.unread(), clean: self.complete }
     }
 }
 
@@ -490,9 +607,48 @@ const ADAM7: [(usize, usize, usize, usize); 7] = [
     (0, 1, 1, 2),
 ];
 
-pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, DecodeError> {
+/// Bytes of inflated data the header promises: the filter byte and the packed samples of every
+/// row of every pass.
+fn raw_size(h: &Header) -> u64 {
+    let (w, ht) = (to_usize(h.width), to_usize(h.height));
+    if !h.interlaced {
+        return (1 + h.stride(w)) as u64 * ht as u64;
+    }
+    ADAM7
+        .iter()
+        .map(|&(x0, y0, dx, dy)| {
+            let pw = w.saturating_sub(x0).div_ceil(dx);
+            let ph = ht.saturating_sub(y0).div_ceil(dy);
+            if pw == 0 || ph == 0 { 0 } else { (1 + h.stride(pw)) as u64 * ph as u64 }
+        })
+        .sum()
+}
+
+/// The headers-only reading: inflates the picture data without keeping it, to learn where the
+/// zlib stream really ends and what trails it. (Only for pictures whose inflated size is within
+/// [`INSPECT_INFLATE_CAP`]; a larger one is checked when it is decoded.)
+fn probe_stream(header: &Header, idat: &[&[u8]], facts: &mut Facts) {
+    let raw = raw_size(header);
+    if idat.is_empty() || raw > INSPECT_INFLATE_CAP {
+        return;
+    }
+    let mut inflater = Inflater::new(idat, false);
+    if inflater.skip(raw).is_err() {
+        facts.flags |= flag::DAMAGED;
+        return;
+    }
+    facts.unaccounted += inflater.tail().unaccounted;
+}
+
+pub(crate) fn decode(
+    data: &[u8],
+    limits: &Limits,
+    pixels: bool,
+    strict: bool,
+) -> Result<Raw, DecodeError> {
     let Parsed { header, mut facts, palette, trns, idat } = walk_chunks(data, limits)?;
     if !pixels {
+        probe_stream(&header, &idat, &mut facts);
         return Ok(Raw { facts, pixels: None });
     }
     if idat.is_empty() {
@@ -503,7 +659,7 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     }
     let (w, h) = (to_usize(header.width), to_usize(header.height));
     let mut scaler = Downscaler::new(header.width, header.height, limits.max_out_side)?;
-    let mut inflater = Inflater::new(&idat);
+    let mut inflater = Inflater::new(&idat, strict);
     let ex = Expander { header: &header, palette: &palette, trns: &trns };
     let bpp = header.bpp();
     let mut ok = true;
@@ -566,6 +722,13 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
             ex.expand(&cur, w, &mut rgba);
             scaler.push(&rgba);
             core::mem::swap(&mut prev, &mut cur);
+        }
+    }
+    if ok {
+        let tail = inflater.tail();
+        facts.unaccounted += tail.unaccounted;
+        if strict && !tail.clean {
+            ok = false;
         }
     }
     if !ok {

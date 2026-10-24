@@ -60,11 +60,103 @@ impl Channel {
     }
 }
 
+/// What a walk over run-length coded pixel data found.
+struct RleWalk {
+    /// Bytes consumed, up to and including the end-of-bitmap code.
+    consumed: usize,
+    /// The end-of-bitmap code was reached (not the end of the data first).
+    finished: bool,
+    /// Bytes of commands that draw nothing at all: runs that start outside the bitmap.
+    hidden: u64,
+}
+
+/// Walks RLE8 or RLE4 data of a `w × h` bitmap. `put(x, y, value)` is called for every pixel that
+/// lands inside the bitmap. The work is bounded: a run is cut at the right edge before it is
+/// drawn, so the pixels drawn never exceed `w × h`, and the codes are at most the data.
+fn rle_walk(
+    pixel_data: &[u8],
+    eight: bool,
+    w: usize,
+    h: usize,
+    mut put: impl FnMut(usize, usize, u8),
+) -> RleWalk {
+    let (mut x, mut y) = (0usize, 0usize);
+    let mut p = Cursor::new(pixel_data);
+    let mut hidden = 0u64;
+    let mut finished = false;
+    loop {
+        let start = p.pos();
+        let (Some(n), Some(v)) = (p.u8(), p.u8()) else { break };
+        let visible = x < w && y < h;
+        if n > 0 {
+            let n = usize::from(n);
+            if visible {
+                for i in 0..n.min(w - x) {
+                    let value = if eight {
+                        v
+                    } else if i % 2 == 0 {
+                        v >> 4
+                    } else {
+                        v & 15
+                    };
+                    put(x + i, y, value);
+                }
+            } else {
+                hidden += 2;
+            }
+            x = x.saturating_add(n);
+            continue;
+        }
+        match v {
+            0 => {
+                x = 0;
+                y = y.saturating_add(1);
+            }
+            1 => {
+                finished = true;
+                break;
+            }
+            2 => {
+                let (Some(dx), Some(dy)) = (p.u8(), p.u8()) else { break };
+                x = x.saturating_add(usize::from(dx));
+                y = y.saturating_add(usize::from(dy));
+            }
+            count => {
+                let count = usize::from(count);
+                let bytes = if eight { count } else { count.div_ceil(2) };
+                let Some(run) = p.take(bytes) else { break };
+                if visible {
+                    for i in 0..count.min(w - x) {
+                        let value = if eight {
+                            run.get(i).copied().unwrap_or(0)
+                        } else {
+                            let b = run.get(i / 2).copied().unwrap_or(0);
+                            if i % 2 == 0 { b >> 4 } else { b & 15 }
+                        };
+                        put(x + i, y, value);
+                    }
+                } else {
+                    hidden += (p.pos() - start) as u64;
+                }
+                x = x.saturating_add(count);
+                // Absolute runs are padded to an even number of bytes.
+                if bytes % 2 == 1 {
+                    let _ = p.u8();
+                }
+            }
+        }
+    }
+    RleWalk { consumed: p.pos(), finished, hidden }
+}
+
 pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, DecodeError> {
     let mut facts = Facts::new(ImageFormat::Bmp);
     let mut c = Cursor::at(data, 10);
     let offset = to_usize(c.u32_le().ok_or_else(|| bad("the header is cut short"))?);
     let dib = to_usize(c.u32_le().ok_or_else(|| bad("the header is cut short"))?);
+    // The two reserved words of the file header are zero in every bitmap anyone writes.
+    facts.unaccounted +=
+        data.get(6..10).map_or(0, |r| r.iter().filter(|&&b| b != 0).count()) as u64;
     let (width, height_raw, bpp, compression, clr_used, mut masks): (
         i64,
         i64,
@@ -201,11 +293,44 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     if masks[3] != 0 && bpp >= 16 {
         facts.flags |= flag::HAS_ALPHA;
     }
-    // Trailing data after an uncompressed pixel array.
-    if !rle {
+    // Between the headers (with the palette, or the bit masks and the optional colour table)
+    // and the pixel array there is nothing: a gap is not part of the picture.
+    let masks_len = match (dib, compression) {
+        (40, BI_BITFIELDS) => 12,
+        (40, BI_ALPHABITFIELDS) => 16,
+        _ => 0,
+    };
+    let table_len = if bpp <= 8 {
+        palette.len() * if dib == 12 { 3 } else { 4 }
+    } else {
+        clr_used.min(256) * if dib == 12 { 3 } else { 4 }
+    };
+    let header_end =
+        14usize.saturating_add(dib).saturating_add(masks_len).saturating_add(table_len);
+    facts.unaccounted += offset.min(data.len()).saturating_sub(header_end) as u64;
+    let pixel_data = data.get(offset..).unwrap_or(&[]);
+    if rle {
+        // Walk the run-length codes without drawing: they say where the pixel data ends, and
+        // which of them draw nothing at all.
+        let walk = rle_walk(pixel_data, compression == BI_RLE8, w, h, |_, _, _| {});
+        facts.unaccounted += walk.hidden;
+        if walk.finished {
+            facts.trailing = (pixel_data.len() - walk.consumed) as u64;
+        }
+    } else {
+        // Trailing data after an uncompressed pixel array.
         let end = offset.saturating_add(stride.saturating_mul(h));
         if end <= data.len() {
             facts.trailing = (data.len() - end) as u64;
+        }
+        // Padding bytes at the end of a row are zero in every bitmap anyone writes.
+        let used = (w * to_usize(bpp)).div_ceil(8);
+        if stride > used {
+            for r in 0..h {
+                let at = offset.saturating_add(r.saturating_mul(stride)).saturating_add(used);
+                let Some(pad) = data.get(at..at.saturating_add(stride - used)) else { break };
+                facts.unaccounted += pad.iter().filter(|&&b| b != 0).count() as u64;
+            }
         }
     }
     if !pixels {
@@ -213,81 +338,16 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     }
     let mut scaler = Downscaler::new(facts.width, facts.height, limits.max_out_side)?;
     let mut damaged = false;
-    let pixel_data = data.get(offset..).unwrap_or(&[]);
     let mut row_rgba = vec![0u8; w * 4];
     if rle {
         // Decode into an index buffer first: the escapes can jump around.
         let mut idx = vec![0u8; w * h];
-        let (mut x, mut y) = (0usize, 0usize);
-        let mut p = Cursor::new(pixel_data);
-        let eight = compression == BI_RLE8;
-        let put = |idx: &mut Vec<u8>, x: usize, y: usize, v: u8| {
-            if x < w
-                && y < h
-                && let Some(s) = idx.get_mut(y * w + x)
-            {
+        let walk = rle_walk(pixel_data, compression == BI_RLE8, w, h, |x, y, v| {
+            if let Some(s) = idx.get_mut(y * w + x) {
                 *s = v;
             }
-        };
-        loop {
-            let (Some(n), Some(v)) = (p.u8(), p.u8()) else {
-                damaged = true;
-                break;
-            };
-            if n > 0 {
-                for i in 0..usize::from(n) {
-                    let value = if eight {
-                        v
-                    } else if i % 2 == 0 {
-                        v >> 4
-                    } else {
-                        v & 15
-                    };
-                    put(&mut idx, x + i, y, value);
-                }
-                x += usize::from(n);
-                continue;
-            }
-            match v {
-                0 => {
-                    x = 0;
-                    y += 1;
-                }
-                1 => break,
-                2 => {
-                    let (Some(dx), Some(dy)) = (p.u8(), p.u8()) else {
-                        damaged = true;
-                        break;
-                    };
-                    x += usize::from(dx);
-                    y += usize::from(dy);
-                }
-                count => {
-                    let count = usize::from(count);
-                    let bytes = if eight { count } else { count.div_ceil(2) };
-                    let Some(run) = p.take(bytes) else {
-                        damaged = true;
-                        break;
-                    };
-                    for i in 0..count {
-                        let value = if eight {
-                            run.get(i).copied().unwrap_or(0)
-                        } else {
-                            let b = run.get(i / 2).copied().unwrap_or(0);
-                            if i % 2 == 0 { b >> 4 } else { b & 15 }
-                        };
-                        put(&mut idx, x + i, y, value);
-                    }
-                    x += count;
-                    if bytes % 2 == 1 {
-                        let _ = p.u8();
-                    }
-                }
-            }
-            if y > h {
-                break;
-            }
-        }
+        });
+        damaged |= !walk.finished;
         let rows: Vec<usize> = if top_down { (0..h).collect() } else { (0..h).rev().collect() };
         for y in rows {
             for (xx, px) in row_rgba.chunks_exact_mut(4).enumerate() {

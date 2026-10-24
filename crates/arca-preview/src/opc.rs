@@ -50,6 +50,8 @@ pub(crate) struct Package<'a> {
     xml_limits: arca_container::xml::XmlLimits,
     types: ContentTypes,
     rels: BTreeMap<String, Vec<Rel>>,
+    /// Number of every member by its folded name (see [`Package::entry_id`]).
+    ids: BTreeMap<String, u32>,
     /// Parts that were present but could not be read (display-safe names).
     pub(crate) skipped: Vec<String>,
 }
@@ -65,12 +67,22 @@ fn xml_failure(part: &str, e: &XmlError) -> PreviewError {
 impl<'a> Package<'a> {
     /// Opens an already parsed archive as a package.
     pub(crate) fn new(zip: ZipArchive<'a>, policy: &PreviewPolicy) -> Result<Self, PreviewError> {
+        let ids = zip
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                let key = e.name().trim_start_matches('/').to_ascii_lowercase();
+                Some((key, u32::try_from(i).ok()?))
+            })
+            .collect();
         let mut pkg = Self {
             zip,
             budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20),
             xml_limits: policy.xml,
             types: ContentTypes::default(),
             rels: BTreeMap::new(),
+            ids,
             skipped: Vec::new(),
         };
         pkg.load_content_types()?;
@@ -96,9 +108,7 @@ impl<'a> Package<'a> {
     /// A stable number for a member: its position in the central directory. It is what a picture
     /// is later asked for by (see [`Package::read_by_id`]).
     pub(crate) fn entry_id(&self, name: &str) -> Option<u32> {
-        let entry = self.zip.entry(name)?;
-        let at = self.zip.entries().iter().position(|e| std::ptr::eq(e, entry))?;
-        u32::try_from(at).ok()
+        self.ids.get(&name.trim_start_matches('/').to_ascii_lowercase()).copied()
     }
 
     /// The member with the number `id` (see [`Package::entry_id`]): its name and bytes.
@@ -325,5 +335,28 @@ mod tests {
         assert_eq!(resolve("a/b.xml", "../../../etc/passwd"), None);
         assert_eq!(resolve("a/b.xml", "c.xml#frag").as_deref(), Some("a/c.xml"));
         assert_eq!(resolve("a.xml", ""), None);
+    }
+
+    #[test]
+    fn every_member_is_found_by_its_number_in_any_case() {
+        // Thousands of pictures: each is numbered once, not by a search per picture.
+        let names: Vec<String> = (0..3000).map(|i| format!("word/media/Image{i}.png")).collect();
+        let parts: Vec<(&str, &[u8])> =
+            std::iter::once(("[Content_Types].xml", b"<Types/>".as_slice()))
+                .chain(names.iter().map(|n| (n.as_str(), n.as_bytes())))
+                .collect();
+        let data = crate::testkit::zip(&parts);
+        let policy = PreviewPolicy::default();
+        let zip = ZipArchive::parse(&data, policy.zip).unwrap();
+        let mut pkg = Package::new(zip, &policy).unwrap();
+        for i in [0usize, 1, 17, 1500, 2999] {
+            let id = pkg.entry_id(&names[i]).unwrap();
+            assert_eq!(id as usize, i + 1, "after [Content_Types].xml");
+            assert_eq!(pkg.entry_id(&format!("/{}", names[i].to_uppercase())), Some(id));
+            let (name, bytes) = pkg.read_by_id(id).unwrap().unwrap();
+            assert_eq!((name.as_str(), bytes.as_slice()), (names[i].as_str(), names[i].as_bytes()));
+        }
+        assert_eq!(pkg.entry_id("word/media/nothing.png"), None);
+        assert!(pkg.read_by_id(3001).unwrap().is_none());
     }
 }

@@ -268,9 +268,13 @@ fn sanitize_picture_within(
     // the pixels is kept, so that the picture and its copy are never in memory together.
     let wanted = arca_image::pixels_fingerprint(width, height, &rgba);
     drop(rgba);
-    let back =
-        arca_image::decode(&png, &Limits { max_out_side: width.max(height), ..Limits::default() })
-            .map_err(from_decode)?;
+    // Strict: every checksum is verified, and the file must be nothing but a header, the pixels
+    // and an end marker (no metadata, no trailing bytes, nothing the decoder cannot explain).
+    let back = arca_image::decode_sterile(
+        &png,
+        &Limits { max_out_side: width.max(height), ..Limits::default() },
+    )
+    .map_err(from_decode)?;
     if arca_image::pixels_fingerprint(back.width, back.height, &back.rgba) != wanted {
         return Err(PictureError::Malformed("the sterile copy does not match the picture".into()));
     }

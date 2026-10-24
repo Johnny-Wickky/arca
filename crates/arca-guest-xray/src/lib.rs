@@ -263,7 +263,12 @@ fn image(document: &[u8], id: u32) -> (i32, Vec<u8>) {
         Err(e @ PictureError::Unsupported(_)) => {
             (status::UNSUPPORTED_FORMAT, error_envelope(&e.to_string()))
         }
-        Err(e) => (status::DOCUMENT_REJECTED, error_envelope(&e.to_string())),
+        // A picture that is damaged, beyond a limit or not there is the failure of this one
+        // operation, not a verdict on the document it was found in: the reader can still open
+        // the document and its other pictures.
+        Err(e @ (PictureError::Malformed(_) | PictureError::Missing)) => {
+            (status::OPERATION_FAILED, error_envelope(&e.to_string()))
+        }
     }
 }
 

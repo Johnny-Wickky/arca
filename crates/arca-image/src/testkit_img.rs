@@ -87,6 +87,8 @@ pub(crate) struct GifSpec {
     pub trailing: Vec<u8>,
     /// Frame offset on a larger canvas: (canvas w, canvas h, left, top).
     pub canvas: Option<(usize, usize, usize, usize)>,
+    /// Bytes appended to the LZW data of the first frame, after its end-of-information code.
+    pub lzw_extra: Vec<u8>,
 }
 
 pub(crate) fn gif(spec: &GifSpec, px: &dyn Fn(usize, usize) -> u8) -> Vec<u8> {
@@ -134,7 +136,11 @@ pub(crate) fn gif(spec: &GifSpec, px: &dyn Fn(usize, usize) -> u8) -> Vec<u8> {
             .flat_map(|&y| (0..spec.w).map(move |x| (x, y)))
             .map(|(x, y)| f(x, y))
             .collect();
-        sub_blocks(&lzw_encode(min_code, &indices), out);
+        let mut lzw = lzw_encode(min_code, &indices);
+        if gce {
+            lzw.extend_from_slice(&spec.lzw_extra);
+        }
+        sub_blocks(&lzw, out);
     };
     frame(&mut out, px, true);
     for _ in 0..spec.extra_frames {

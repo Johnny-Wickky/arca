@@ -12,6 +12,9 @@ use crate::{DecodeError, Facts, ImageFormat, Limits, Raw, flag};
 const MAX_FRAMES: u32 = 1000;
 /// Most blocks walked in one file.
 const MAX_BLOCKS: usize = 1_000_000;
+/// Largest frame (in pixels) whose LZW data the headers-only reading runs through to find where
+/// it ends. A larger one is checked when it is decoded.
+const INSPECT_LZW_CAP: u64 = 32_000_000;
 
 /// Three bytes as a colour.
 fn rgb(p: &[u8]) -> Option<[u8; 3]> {
@@ -55,11 +58,23 @@ struct Frame {
     data: Vec<u8>,
 }
 
-/// LZW decoding of GIF image data into at most `want` palette indices.
-fn lzw(min_code: u8, data: &[u8], want: usize) -> (Vec<u8>, bool) {
+/// The result of reading the LZW data of a frame.
+struct Lzw {
+    /// The palette indices (empty when only the extent of the data was asked for).
+    out: Vec<u8>,
+    /// Fewer than the wanted number of indices could be read.
+    short: bool,
+    /// Bytes of the data consumed, up to and including the end-of-information code (all of it if
+    /// that code was not found).
+    used: usize,
+}
+
+/// LZW decoding of GIF image data into at most `want` palette indices; with `store` false the
+/// indices are only counted, which is all it takes to learn where the data ends.
+fn lzw(min_code: u8, data: &[u8], want: usize, store: bool) -> Lzw {
     let mut out = Vec::new();
-    if out.try_reserve_exact(want).is_err() {
-        return (out, false);
+    if store && out.try_reserve_exact(want).is_err() {
+        return Lzw { out, short: true, used: data.len() };
     }
     let clear = 1usize << min_code;
     let eoi = clear + 1;
@@ -70,19 +85,41 @@ fn lzw(min_code: u8, data: &[u8], want: usize) -> (Vec<u8>, bool) {
     let mut next = eoi + 1;
     let mut prev: Option<usize> = None;
     let (mut acc, mut nbits, mut pos) = (0u32, 0u32, 0usize);
-    let mut ok = true;
-    while out.len() < want {
-        while nbits < size {
-            let Some(&b) = data.get(pos) else {
-                return (out, false);
-            };
-            pos += 1;
-            acc |= u32::from(b) << nbits;
-            nbits += 8;
-        }
-        let code = to_usize(acc & ((1 << size) - 1));
-        acc >>= size;
-        nbits -= size;
+    let mut produced = 0usize;
+    // The next code, or `None` when the data has run out.
+    macro_rules! code {
+        () => {{
+            let mut got = true;
+            while nbits < size {
+                let Some(&b) = data.get(pos) else {
+                    got = false;
+                    break;
+                };
+                pos += 1;
+                acc |= u32::from(b) << nbits;
+                nbits += 8;
+            }
+            if got {
+                let c = to_usize(acc & ((1 << size) - 1));
+                acc >>= size;
+                nbits -= size;
+                Some(c)
+            } else {
+                None
+            }
+        }};
+    }
+    // Where the data ends if the code just read was its last: whole unread bytes in the
+    // accumulator are given back.
+    macro_rules! consumed {
+        () => {
+            pos - (nbits / 8) as usize
+        };
+    }
+    while produced < want {
+        let Some(code) = code!() else {
+            return Lzw { out, short: true, used: data.len() };
+        };
         if code == clear {
             size = u32::from(min_code) + 1;
             next = eoi + 1;
@@ -90,30 +127,27 @@ fn lzw(min_code: u8, data: &[u8], want: usize) -> (Vec<u8>, bool) {
             continue;
         }
         if code == eoi {
-            return (out, false);
+            return Lzw { out, short: true, used: consumed!() };
         }
-        let first = match prev {
-            None => {
-                if code >= clear {
-                    ok = false;
-                    break;
-                }
-                out.push(u8::try_from(code).unwrap_or(0));
-                prev = Some(code);
-                continue;
+        let Some(p) = prev else {
+            if code >= clear {
+                return Lzw { out, short: true, used: data.len() };
             }
-            Some(_) => code,
+            if store {
+                out.push(u8::try_from(code).unwrap_or(0));
+            }
+            produced += 1;
+            prev = Some(code);
+            continue;
         };
         // Decode the string for `code` (or, for the KwKwK case, for `prev` plus its first byte).
-        let p = prev.unwrap_or(0);
         stack.clear();
-        let mut cur = if first < next {
-            first
-        } else if first == next && next < 4096 {
+        let mut cur = if code < next {
+            code
+        } else if code == next && next < 4096 {
             p
         } else {
-            ok = false;
-            break;
+            return Lzw { out, short: true, used: data.len() };
         };
         for _ in 0..4097 {
             if cur < clear {
@@ -124,13 +158,15 @@ fn lzw(min_code: u8, data: &[u8], want: usize) -> (Vec<u8>, bool) {
             cur = usize::from(prefix.get(cur).copied().unwrap_or(0));
         }
         let first_byte = stack.last().copied().unwrap_or(0);
-        if first == next {
-            // KwKwK: the string is that of `prev` followed by its own first byte.
+        // For KwKwK the string is that of `prev` followed by its own first byte.
+        let kwkwk = code == next;
+        if store {
             out.extend(stack.iter().rev());
-            out.push(first_byte);
-        } else {
-            out.extend(stack.iter().rev());
+            if kwkwk {
+                out.push(first_byte);
+            }
         }
+        produced += stack.len() + usize::from(kwkwk);
         if next < 4096 {
             if let (Some(pf), Some(sf)) = (prefix.get_mut(next), suffix.get_mut(next)) {
                 *pf = u16::try_from(p).unwrap_or(0);
@@ -144,7 +180,18 @@ fn lzw(min_code: u8, data: &[u8], want: usize) -> (Vec<u8>, bool) {
         prev = Some(code);
     }
     out.truncate(want);
-    (out, ok)
+    // All pixels are there. A well-formed stream ends with the end-of-information code (maybe
+    // after a clear code); what follows it is not part of the picture.
+    for _ in 0..4 {
+        let before = consumed!();
+        match code!() {
+            Some(c) if c == clear => size = u32::from(min_code) + 1,
+            Some(c) if c == eoi => return Lzw { out, short: false, used: consumed!() },
+            Some(_) => return Lzw { out, short: false, used: before },
+            None => break,
+        }
+    }
+    Lzw { out, short: false, used: data.len() }
 }
 
 pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, DecodeError> {
@@ -172,7 +219,9 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     let mut saw_trailer = false;
     let mut end = data.len();
     let mut damaged = false;
-    for _ in 0..MAX_BLOCKS {
+    let mut last_round = false;
+    for round in 0..MAX_BLOCKS {
+        last_round = round + 1 == MAX_BLOCKS;
         let Some(kind) = c.u8() else {
             damaged = true;
             break;
@@ -200,6 +249,8 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                         } else {
                             None
                         };
+                        // The graphic control block is four bytes: flags, delay, colour index.
+                        facts.unaccounted += body.len().saturating_sub(4) as u64;
                     }
                     0xFE | 0xFF => {
                         let mut body = Vec::new();
@@ -207,23 +258,35 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                             damaged = true;
                             break;
                         }
-                        facts.metadata_bytes += body.len() as u64;
+                        let len = body.len() as u64;
                         if label == 0xFE {
                             facts.flags |= flag::COMMENT;
+                            facts.metadata_bytes += len;
                         } else if body.starts_with(b"XMP DataXMP") {
                             facts.flags |= flag::XMP;
+                            facts.metadata_bytes += len;
                         } else if body.starts_with(b"ICCRGBG1012") {
                             facts.flags |= flag::ICC_PROFILE;
+                            facts.metadata_bytes += len;
+                        } else if body.starts_with(b"NETSCAPE2.0")
+                            || body.starts_with(b"ANIMEXTS1.0")
+                        {
+                            // The animation extensions are the loop count: an 11 byte name and
+                            // three bytes of data.
+                            facts.unaccounted += len.saturating_sub(14);
                         } else {
-                            // Animation extensions (NETSCAPE, ANIMEXTS) are not metadata.
-                            facts.metadata_bytes -= body.len() as u64;
+                            // An application the format has no use for here.
+                            facts.unaccounted += len;
                         }
                     }
                     _ => {
-                        if sub_blocks(&mut c, None).is_none() {
+                        // Plain text, and any extension this decoder does not know: nothing in
+                        // it is shown, and nothing in it can be explained.
+                        let Some(total) = sub_blocks(&mut c, None) else {
                             damaged = true;
                             break;
-                        }
+                        };
+                        facts.unaccounted += total as u64;
                     }
                 }
             }
@@ -250,11 +313,11 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                     damaged = true;
                     break;
                 };
-                frames += 1;
+                frames = frames.saturating_add(1);
                 let mut payload = Vec::new();
                 let first = frames == 1;
-                let walked =
-                    sub_blocks(&mut c, if first && pixels { Some(&mut payload) } else { None });
+                // Only the first frame is read; the others are walked to find where they end.
+                let walked = sub_blocks(&mut c, if first { Some(&mut payload) } else { None });
                 if walked.is_none() {
                     damaged = true;
                 }
@@ -280,7 +343,7 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                         facts.flags |= flag::HAS_ALPHA;
                     }
                 }
-                if walked.is_none() || frames >= MAX_FRAMES {
+                if walked.is_none() {
                     break;
                 }
             }
@@ -289,6 +352,10 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
                 break;
             }
         }
+    }
+    if last_round && !saw_trailer {
+        // A file of nothing but blocks: the walk was cut off, and what is left is unexamined.
+        facts.unaccounted += data.len().saturating_sub(c.pos()) as u64;
     }
     let Some(fr) = frame else {
         return Err(bad("there is no image"));
@@ -311,11 +378,25 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
             "GIF: {area} pixels is beyond the limit of {cap}"
         )));
     }
+    // The frame is checked on its own: it may be far larger than the canvas it is drawn on, and
+    // its indices are held (or at least counted) whatever part of them shows.
+    if fr.width > to_usize(limits.max_side) || fr.height > to_usize(limits.max_side) {
+        return Err(DecodeError::TooLarge(format!(
+            "GIF: a frame of {}×{} pixels is beyond the limit",
+            fr.width, fr.height
+        )));
+    }
+    let frame_area = fr.width as u64 * fr.height as u64;
+    if frame_area > cap {
+        return Err(DecodeError::TooLarge(format!(
+            "GIF: a frame of {frame_area} pixels is beyond the limit of {cap}"
+        )));
+    }
     facts.width = cw;
     facts.height = ch;
     facts.bits = 8;
     facts.flags |= flag::PALETTE;
-    facts.frames = frames.max(1);
+    facts.frames = frames.clamp(1, MAX_FRAMES);
     if frames > 1 {
         facts.flags |= flag::ANIMATED;
     }
@@ -324,7 +405,14 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     } else {
         damaged = true;
     }
+    let want = fr.width * fr.height;
     if !pixels {
+        // Only the extent of the data: where the LZW stream ends, and what follows it.
+        if frame_area <= INSPECT_LZW_CAP {
+            let read = lzw(fr.min_code, &fr.data, want, false);
+            damaged |= read.short;
+            facts.unaccounted += fr.data.len().saturating_sub(read.used) as u64;
+        }
         if damaged {
             facts.flags |= flag::DAMAGED;
         }
@@ -334,11 +422,10 @@ pub(crate) fn decode(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, 
     // Frame rectangle clipped to the canvas.
     let fw = fr.width.min(canvas.0.saturating_sub(fr.left));
     let fh = fr.height.min(canvas.1.saturating_sub(fr.top));
-    let want = fr.width * fr.height;
-    let (indices, complete) = lzw(fr.min_code, &fr.data, want);
-    if !complete && indices.len() < want {
-        damaged = true;
-    }
+    let read = lzw(fr.min_code, &fr.data, want, true);
+    damaged |= read.short;
+    facts.unaccounted += fr.data.len().saturating_sub(read.used) as u64;
+    let indices = read.out;
     // Row order of the frame as stored.
     let mut order: Vec<usize> = Vec::new();
     if fr.interlaced {

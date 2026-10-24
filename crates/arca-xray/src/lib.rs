@@ -376,7 +376,12 @@ pub(crate) fn dispatch(
         Magic::Zip => scan_zip(ctx, data, location),
         Magic::Ole2 => ole::scan(ctx, data, location),
         Magic::Pdf => pdf::scan(ctx, data, location),
-        Magic::Image(format) => image::scan(ctx, data, location, format),
+        Magic::Image(format) => {
+            // A picture is also checked as a whole, wherever its decoder puts the end of the
+            // image: a PDF header near the start, a ZIP archive hidden at the end.
+            check_polyglot(ctx, data, location, false);
+            image::scan(ctx, data, location, format)
+        }
         Magic::Rtf => rtf::scan(ctx, data, location),
         Magic::Jet(fmt) => {
             ole::scan_access(ctx, data, location);

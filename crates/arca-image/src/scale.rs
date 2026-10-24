@@ -17,7 +17,7 @@ pub(crate) struct Downscaler {
     ow: usize,
     oh: usize,
     /// Per output column: sums of `a`, `r·a`, `g·a`, `b·a` over the current group of rows.
-    acc: Vec<u32>,
+    acc: Vec<u64>,
     rows_in_group: usize,
     rows_seen: usize,
     out: Vec<u8>,
@@ -69,7 +69,7 @@ impl Downscaler {
         }
         for (x, px) in row.chunks_exact(4).enumerate() {
             let (r, g, b, a) = match px {
-                [r, g, b, a] => (u32::from(*r), u32::from(*g), u32::from(*b), u32::from(*a)),
+                [r, g, b, a] => (u64::from(*r), u64::from(*g), u64::from(*b), u64::from(*a)),
                 _ => continue,
             };
             let at = x / self.k * 4;
@@ -96,7 +96,7 @@ impl Downscaler {
         for ox in 0..self.ow {
             let first = ox * self.k;
             let cols = self.k.min(self.src_w.saturating_sub(first));
-            let n = u32::try_from(rows * cols).unwrap_or(u32::MAX).max(1);
+            let n = u64::try_from(rows * cols).unwrap_or(u64::MAX).max(1);
             let (sa, sr, sg, sb) = match self.acc.get(ox * 4..ox * 4 + 4) {
                 Some([a, r, g, b]) => (*a, *r, *g, *b),
                 _ => (0, 0, 0, 0),
@@ -104,7 +104,7 @@ impl Downscaler {
             if sa == 0 {
                 self.out.extend_from_slice(&[0, 0, 0, 0]);
             } else {
-                let avg = |s: u32| u8::try_from((s + sa / 2) / sa).unwrap_or(255);
+                let avg = |s: u64| u8::try_from((s + sa / 2) / sa).unwrap_or(255);
                 let alpha = u8::try_from((sa + n / 2) / n).unwrap_or(255);
                 self.out.extend_from_slice(&[avg(sr), avg(sg), avg(sb), alpha]);
             }
@@ -183,5 +183,18 @@ mod tests {
     fn zero_sized_images_are_refused() {
         assert!(Downscaler::new(0, 5, 10).is_err());
         assert!(Downscaler::new(5, 0, 10).is_err());
+    }
+
+    #[test]
+    fn boxes_of_hundreds_of_pixels_a_side_do_not_overflow() {
+        // k = 334: the sum of 334 × 334 pixels of 255 × 255 does not fit in 32 bits.
+        let mut d = Downscaler::new(1000, 1000, 3).unwrap();
+        let row = [255u8; 4000];
+        for _ in 0..1000 {
+            d.push(&row);
+        }
+        let (w, h, px) = d.finish();
+        assert_eq!((w, h), (3, 3));
+        assert!(px.chunks(4).all(|p| p == [255, 255, 255, 255]), "{px:?}");
     }
 }

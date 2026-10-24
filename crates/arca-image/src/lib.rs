@@ -18,6 +18,13 @@
 //! What was dropped is *reported* in [`Facts`] (an embedded GPS position, a camera serial
 //! number, an uncropped thumbnail, bytes appended after the image, an animation…), so that the
 //! threat X-ray can tell the reader about it.
+//!
+//! Every decoder also accounts for the bytes of the file: what is picture data, what the format
+//! itself defines (headers, tables, markers) and what is metadata of a recognised kind is
+//! explained, and everything else — private chunks and markers, extension blocks, gaps, padding
+//! that carries values, data after the end of a compressed stream — is counted in
+//! [`Facts::unaccounted`]. A hidden payload therefore cannot stay silent by being "just another
+//! block".
 
 #![forbid(unsafe_code)]
 
@@ -121,10 +128,27 @@ pub struct Facts {
     pub trailing: u64,
     /// Bytes of metadata (EXIF, XMP, ICC, comments, text chunks) that were not shown.
     pub metadata_bytes: u64,
+    /// Bytes of the file that are neither picture data, nor structure the format defines, nor
+    /// metadata of a kind this crate recognises, nor trailing data: private chunks and markers,
+    /// extension blocks, gaps, padding that carries values, data after the end of a compressed
+    /// stream. Whatever the decoder cannot explain is counted here, so that a hidden payload
+    /// cannot stay invisible by being "just another block".
+    pub unaccounted: u64,
     /// The EXIF block, if any.
     pub exif: Option<ExifFacts>,
 }
-wire_struct!(Facts { format, width, height, bits, flags, frames, trailing, metadata_bytes, exif });
+wire_struct!(Facts {
+    format,
+    width,
+    height,
+    bits,
+    flags,
+    frames,
+    trailing,
+    metadata_bytes,
+    unaccounted,
+    exif
+});
 
 impl Facts {
     pub(crate) fn new(format: ImageFormat) -> Self {
@@ -137,6 +161,7 @@ impl Facts {
             frames: 1,
             trailing: 0,
             metadata_bytes: 0,
+            unaccounted: 0,
             exif: None,
         }
     }
@@ -313,7 +338,7 @@ fn check_input(data: &[u8], limits: &Limits) -> Result<ImageFormat, DecodeError>
 
 fn run(data: &[u8], limits: &Limits, pixels: bool) -> Result<Raw, DecodeError> {
     match check_input(data, limits)? {
-        ImageFormat::Png => png::decode(data, limits, pixels),
+        ImageFormat::Png => png::decode(data, limits, pixels, false),
         ImageFormat::Jpeg => jpeg::decode(data, limits, pixels),
         ImageFormat::Gif => gif::decode(data, limits, pixels),
         ImageFormat::Bmp => bmp::decode(data, limits, pixels),
@@ -357,6 +382,37 @@ pub fn decode(data: &[u8], limits: &Limits) -> Result<Image, DecodeError> {
     Ok(Image { width: w, height: h, rgba, facts })
 }
 
+/// Reads back a PNG that [`encode_png`] wrote — a sterile copy — and checks that it is nothing
+/// but its pixels: every chunk checksum and the zlib checksum are verified, and the file must be
+/// undamaged, without a byte after its end, without metadata or unaccounted bytes, of one frame.
+///
+/// # Errors
+/// [`DecodeError::Malformed`] naming the first thing that is not as an encoded copy must be, or
+/// whatever [`decode`] reports.
+pub fn decode_sterile(data: &[u8], limits: &Limits) -> Result<Image, DecodeError> {
+    if check_input(data, limits)? != ImageFormat::Png {
+        return Err(DecodeError::Malformed("the sterile copy is not a PNG".into()));
+    }
+    let Raw { facts, pixels } = png::decode(data, limits, true, true)?;
+    let unclean =
+        |what: &str| DecodeError::Malformed(format!("the sterile copy is not clean: {what}"));
+    if facts.has(flag::DAMAGED) {
+        return Err(unclean("it is damaged (a checksum or the data does not match)"));
+    }
+    if facts.trailing != 0 || facts.unaccounted != 0 {
+        return Err(unclean("it holds bytes that are not its pixels"));
+    }
+    if facts.metadata_bytes != 0 || facts.exif.is_some() {
+        return Err(unclean("it carries metadata"));
+    }
+    if facts.frames != 1 || facts.has(flag::ANIMATED | flag::INTERLACED) {
+        return Err(unclean("it is animated or interlaced"));
+    }
+    let (width, height, rgba) =
+        pixels.ok_or_else(|| DecodeError::Malformed("the image has no pixels".into()))?;
+    Ok(Image { width, height, rgba, facts })
+}
+
 #[cfg(test)]
 mod testkit;
 
@@ -374,3 +430,6 @@ mod tests_enc;
 
 #[cfg(test)]
 mod tests_reduced;
+
+#[cfg(test)]
+mod tests_hidden;

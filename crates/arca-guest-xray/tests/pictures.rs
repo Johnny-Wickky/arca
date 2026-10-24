@@ -104,7 +104,7 @@ fn a_picture_inside_a_document_is_found_by_its_id() {
     assert!(img.width >= 1 && img.height >= 1);
     // Any other number is refused, and so is a member that is not a picture.
     let (code, _) = ask(Op::Image, 9_999, &deck);
-    assert_eq!(code, status::DOCUMENT_REJECTED);
+    assert_eq!(code, status::OPERATION_FAILED);
     let (code, _) = ask(Op::Image, 0, &deck);
     assert_ne!(code, status::OK, "member 0 is not a picture");
 }
