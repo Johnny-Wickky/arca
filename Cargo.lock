@@ -10,18 +10,18 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "arca-abi"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "arca-attribution"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-digest",
 ]
 
 [[package]]
 name = "arca-container"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-digest",
  "miniz_oxide",
@@ -30,11 +30,11 @@ dependencies = [
 
 [[package]]
 name = "arca-digest"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "arca-engine"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-abi",
  "arca-attribution",
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "arca-guest-xray"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-abi",
  "arca-container",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "arca-image"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-abi",
  "arca-digest",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "arca-jni"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-digest",
  "arca-engine",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "arca-preview"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-abi",
  "arca-container",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "arca-sandbox"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-abi",
  "arca-digest",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "arca-xray"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arca-abi",
  "arca-container",

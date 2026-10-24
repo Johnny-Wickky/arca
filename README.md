@@ -10,9 +10,10 @@ parsed by safe Rust inside a single-use, zero-import WebAssembly sandbox.*
 
 **Android-приложение:** готовые подписанные сборки — в
 [Releases](https://github.com/Johnny-Wickky/arca/releases) (Android 8–16, телефоны,
-планшеты, складные устройства). Что умеет первая версия и чего ещё нет —
-[`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md); справочник по Android-части —
-[`docs/ANDROID.md`](docs/ANDROID.md).
+планшеты, складные устройства).
+* **Статус тестирования:** Протестировано человеком в жизни на реальных устройствах.
+* **Каналы обновлений:** Строго через маркеты приложений (F-Droid, Google Play, App Store) без встроенных самозагрузчиков.
+Справочник по Android-части — [`docs/ANDROID.md`](docs/ANDROID.md).
 
 ## Как это работает — простыми словами
 
