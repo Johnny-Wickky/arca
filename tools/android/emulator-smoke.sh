@@ -186,8 +186,22 @@ open_doc() { # open_doc <file> <label>
         adb shell "content insert --uri content://media/external/downloads --bind _display_name:s:$f --bind mime_type:s:$(mime_of "$f") --bind relative_path:s:Download/Arca-smoke" >/dev/null 2>&1 || true
         id=$(adb shell "content query --uri content://media/external/downloads --projection _id --where \"_display_name='$f'\"" 2>/dev/null \
             | tr -d '\r' | sed -n 's/.*_id=\([0-9][0-9]*\).*/\1/p' | tail -n1)
-        if [ -n "$id" ] && adb shell "cat /sdcard/Download/$f | content write --uri content://media/external/downloads/$id" >/dev/null 2>&1; then
-            uri="content://media/external/downloads/$id"
+        if [ -n "$id" ]; then
+            # Where the row says its file is.
+            data=$(adb shell "content query --uri content://media/external/downloads/$id --projection _data" 2>/dev/null \
+                | tr -d '\r' | sed -n 's/.*_data=\(.*\)$/\1/p' | head -n1)
+            adb shell "cat /sdcard/Download/$f | content write --uri content://media/external/downloads/$id" >/dev/null 2>&1 || true
+            # `content write` exits 0 even when the provider refused it (API 30: "Package ...
+            # does not belong to 2000"), and a row that was just inserted has no file yet. So look
+            # at the file itself, and if it is not there put it where the row says.
+            if [ -n "$data" ] && ! adb shell "[ -s '$data' ]"; then
+                adb shell "mkdir -p '$(dirname "$data")'" >/dev/null 2>&1 || true
+                adb push "$FIX/$f" "$data" >/dev/null 2>&1 || true
+            fi
+            # (If the row has no readable path there is nothing to check: trust the write, as before.)
+            if [ -z "$data" ] || adb shell "[ -s '$data' ]"; then
+                uri="content://media/external/downloads/$id"
+            fi
         fi
     fi
     if [ -z "${uri:-}" ]; then
