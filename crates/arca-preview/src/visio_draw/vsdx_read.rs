@@ -12,6 +12,7 @@
 
 use std::collections::BTreeSet;
 
+use super::Want;
 use super::geom::MAX_ARGS;
 use super::model::{
     Cells, Connect, Doc, Fmt, Geom, Kind, Layer, Master, PageDef, Piece, Row, RowKind, Sheet, Val,
@@ -587,17 +588,6 @@ fn parse(pkg: &Package<'_>, text: &str, b: &mut Build) -> bool {
         b.end_frame();
     }
     ok
-}
-
-/// What to read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Want {
-    /// The page list only.
-    Count,
-    /// The page list and the content of foreground page `n` (and its background page).
-    Page(usize),
-    /// Every page.
-    All,
 }
 
 fn collect_masters(sheets: &[Sheet], out: &mut BTreeSet<u32>, depth: usize) {
