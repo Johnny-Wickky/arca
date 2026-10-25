@@ -18,16 +18,17 @@ import android.widget.TextView;
 
 import org.arca.viewer.Engine;
 import org.arca.viewer.MainActivity;
-import org.arca.viewer.Native;
-import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
+import org.arca.viewer.Stats;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Model;
-
-import java.util.TimeZone;
+import org.arca.viewer.core.StatsView;
 
 /** The start screen: open a file, see that the sandbox is up, reach the other screens. */
 public final class HomeScreen extends Screen {
+    /** The period shown on the statistics card; kept while the screen is rebuilt (rotation, folding). */
+    private static int statsWindow = StatsView.WEEK;
+
     public HomeScreen(MainActivity act) {
         super(act);
     }
@@ -53,6 +54,7 @@ public final class HomeScreen extends Screen {
         View hero = hero();
         View open = openCard();
         View status = statusCard();
+        View statistics = statsCard();
         View passport = passportCard();
         View links = linksRow();
 
@@ -64,6 +66,8 @@ public final class HomeScreen extends Screen {
             left.addView(hero);
             left.addView(ui.space(16));
             left.addView(open);
+            left.addView(ui.space(16));
+            left.addView(statistics);
             LinearLayout right = ui.vbox();
             right.addView(status);
             right.addView(ui.space(16));
@@ -79,6 +83,8 @@ public final class HomeScreen extends Screen {
             col.addView(hero);
             col.addView(ui.space(16));
             col.addView(open);
+            col.addView(ui.space(16));
+            col.addView(statistics);
             col.addView(ui.space(16));
             col.addView(status);
             col.addView(ui.space(16));
@@ -176,9 +182,8 @@ public final class HomeScreen extends Screen {
         Model.Passport p = null;
         if (Engine.state() == Engine.State.READY) {
             try {
-                long now = System.currentTimeMillis();
-                int day = Fmt.epochDay(now, TimeZone.getDefault().getOffset(now));
-                byte[] json = Native.passport(Prefs.engineLang(act), Prefs.passport(act), day);
+                // Built by the core from the all-time statistics; null when statistics are off.
+                byte[] json = Stats.passportJson(act);
                 if (json != null) {
                     p = Model.parsePassport(json);
                 }
@@ -190,17 +195,18 @@ public final class HomeScreen extends Screen {
             card.addView(ui.heading(ui.str(R.string.passport_fallback_title), Ui.TITLE));
             card.addView(ui.space(6));
             card.addView(ui.text(R.string.passport_fallback_body, Ui.SMALL));
+            card.addView(ui.space(12));
+            card.addView(ui.button(R.string.about_title, Ui.TONAL, R.drawable.ic_heart, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    act.push(MainActivity.Route.ABOUT);
+                }
+            }), ui.fillWidth());
             return card;
         }
         card.addView(ui.heading(p.title, Ui.TITLE));
         card.addView(ui.space(6));
         card.addView(ui.text(p.body, Ui.SMALL));
-        card.addView(ui.space(12));
-        LinearLayout stats = ui.hbox();
-        stats.addView(stat(p.documents, R.string.stat_documents), ui.weight(1f));
-        stats.addView(stat(p.trackers, R.string.stat_trackers), ui.weight(1f));
-        stats.addView(stat(p.active, R.string.stat_active), ui.weight(1f));
-        card.addView(stats, ui.fillWidth());
         card.addView(ui.space(12));
         card.addView(ui.button(p.cta, Ui.TONAL, R.drawable.ic_heart, new View.OnClickListener() {
             @Override
@@ -211,13 +217,102 @@ public final class HomeScreen extends Screen {
         return card;
     }
 
-    private View stat(long value, int labelRes) {
+    /**
+     * What Arca did on this device: a card with a Week / Month / All time toggle. The numbers are
+     * counted by the Rust core and kept only on the device; the text says so.
+     */
+    private View statsCard() {
+        LinearLayout card = ui.card();
+        card.addView(ui.heading(ui.str(R.string.stats_title), Ui.TITLE));
+        card.addView(ui.space(8));
+        if (!Stats.enabled(act)) {
+            card.addView(ui.text(R.string.stats_off_note, Ui.SMALL));
+            return card;
+        }
+        final StatsView.Summary summary = Stats.summary(act);
+        card.addView(periodToggle());
+        card.addView(ui.space(12));
+        StatsView.Totals t = summary.window(statsWindow);
+        if (summary.empty || t.isZero()) {
+            card.addView(ui.text(R.string.stats_empty, Ui.SMALL));
+        } else {
+            addTiles(card, t);
+        }
+        card.addView(ui.space(12));
+        card.addView(ui.text(R.string.stats_local_note, Ui.CAPTION));
+        return card;
+    }
+
+    /** The segmented toggle: three equal buttons that wrap instead of being cut off on narrow screens. */
+    private View periodToggle() {
+        int[] labels = {R.string.stats_period_week, R.string.stats_period_month, R.string.stats_period_all};
+        LinearLayout row = ui.hbox();
+        row.setContentDescription(ui.str(R.string.stats_period_label));
+        for (int i = 0; i < labels.length; i++) {
+            final int which = i;
+            TextView chip = ui.chip(ui.str(labels[i]), i == statsWindow, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (statsWindow != which) {
+                        statsWindow = which;
+                        act.refresh();
+                    }
+                }
+            });
+            chip.setSingleLine(false);
+            chip.setMaxLines(2);
+            chip.setPadding(ui.dp(6), ui.dp(8), ui.dp(6), ui.dp(8));
+            if (i > 0) {
+                row.addView(ui.hspace(6));
+            }
+            row.addView(chip, ui.weight(1f));
+        }
+        return row;
+    }
+
+    /** Two columns of counters; zero counters other than the first are left out to keep the card short. */
+    private void addTiles(LinearLayout card, StatsView.Totals t) {
+        int[] labels = {R.string.stats_opened, R.string.stats_threats, R.string.stats_trackers,
+            R.string.stats_rejected, R.string.stats_unverified, R.string.stats_sterile, R.string.stats_pictures};
+        long[] values = {t.opened, t.active, t.trackers, t.rejected, t.unverified, t.sterile, t.pictures};
+        LinearLayout row = null;
+        int inRow = 0;
+        for (int i = 0; i < labels.length; i++) {
+            if (i > 0 && values[i] == 0 && i != 1 && i != 2) {
+                continue; // rejected / unverified / sterile / pictures appear when there is something to say
+            }
+            if (row == null || inRow == 2) {
+                if (row != null) {
+                    card.addView(ui.space(10));
+                }
+                row = ui.hbox();
+                card.addView(row, ui.fillWidth());
+                inRow = 0;
+            }
+            if (inRow == 1) {
+                row.addView(ui.hspace(12));
+            }
+            row.addView(tile(values[i], labels[i]), ui.weight(1f));
+            inRow++;
+        }
+        if (inRow == 1 && row != null) {
+            row.addView(ui.hspace(12));
+            row.addView(new View(act), ui.weight(1f));
+        }
+    }
+
+    private View tile(long value, int labelRes) {
         LinearLayout l = ui.vbox();
-        l.setGravity(Gravity.CENTER_HORIZONTAL);
-        l.addView(ui.text(Long.toString(value), Ui.HEADLINE));
-        TextView label = ui.text(labelRes, Ui.CAPTION);
-        label.setGravity(Gravity.CENTER);
-        l.addView(label);
+        String number = StatsView.count(value);
+        String label = ui.str(labelRes);
+        l.addView(ui.text(number, Ui.TITLE));
+        l.addView(ui.text(label, Ui.CAPTION));
+        // One spoken item per counter ("Documents opened: 12"), not two loose texts.
+        l.setFocusable(true);
+        l.setContentDescription(ui.str(R.string.stats_item_description, label, number));
+        for (int i = 0; i < l.getChildCount(); i++) {
+            l.getChildAt(i).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        }
         return l;
     }
 

@@ -156,6 +156,47 @@ public final class Native {
 
     public static native byte[] passportUpdate(byte[] record, int today, int trackers, int active);
 
+    /**
+     * The extra support addresses (crypto wallets, Boosty) as JSON {@code {"items":[...]}}; the list is
+     * empty until the owner configures it in {@code crates/arca-attribution/src/support.rs}.
+     */
+    public static native byte[] extraSupport();
+
+    // ---- local statistics (the blob is opaque; day numbers are in the device's LOCAL calendar) ------
+    /** The blob after one scan; {@code verdict} 0 clean, 1 hidden trackers, 2 active content, 3 rejected, 4 unverified. */
+    public static native byte[] statsRecordScan(byte[] blob, int day, int verdict, int trackers, int active);
+
+    /** The blob after a sterile copy ({@code event} 1) or an opened picture (2). */
+    public static native byte[] statsRecordEvent(byte[] blob, int day, int event);
+
+    /** Week, month and all-time totals as JSON. */
+    public static native byte[] statsSummary(byte[] blob, int today);
+
+    /** The blob with the older counters folded into the all-time total. */
+    public static native byte[] statsFoldLegacy(byte[] blob, byte[] passport, long documents, long threats, int today);
+
+    /** The Patron Passport JSON built from the statistics blob. */
+    public static native byte[] statsPassport(int lang, byte[] blob, int today);
+
+    // ---- reminder rules (when, whether and which text; the platform only owns the alarm) -----------
+    /** The time of the next reminder, epoch milliseconds. */
+    public static native long reminderPlan(long nowMs, int offsetMs, int rnd);
+
+    /** A planned time corrected for the UTC offset at that time. */
+    public static native long reminderRefine(long targetMs, int offsetUsedMs, int offsetAtTargetMs);
+
+    /** What to do when the alarm fires (JSON {@code {"action":..,"at":..}}). */
+    public static native byte[] reminderOnFire(long nowMs, int offsetMs, long lastShownMs, int enabled, int canPost, int rnd);
+
+    /** What to do with the stored time when the app starts (JSON {@code {"action":..,"at":..}}). */
+    public static native byte[] reminderOnStart(long nextMs, long nowMs, int offsetMs, int enabled, int rnd);
+
+    /** The text to show: {@code index | uses << 8}. */
+    public static native int reminderPick(int seq, long documents, long threats);
+
+    /** The number of reminder texts the app must have. */
+    public static native int reminderItemCount();
+
     public static native byte[] licenseText(int which);
 
     public static native byte[] releaseInfo();

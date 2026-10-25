@@ -11,9 +11,11 @@ import android.util.Base64;
 import java.util.Locale;
 
 /**
- * The app's few settings and the Patron Passport record. Everything is stored in the app's
- * private storage (never backed up: {@code allowBackup="false"}); nothing here is ever sent
- * anywhere, the app has no network permission.
+ * The app's few settings, the reminder schedule and the opaque statistics blob of the Rust core.
+ * Everything is stored in the app's private storage (never backed up: {@code allowBackup="false"});
+ * nothing here is ever sent anywhere, the app has no network permission. Nothing about a document
+ * is stored: no name, no content, no hash; the statistics blob holds counters per day and nothing
+ * else.
  */
 public final class Prefs {
     private Prefs() {}
@@ -34,13 +36,16 @@ public final class Prefs {
     private static final String K_REVEAL = "reveal_hidden";
     private static final String K_IMAGES = "auto_images";
     private static final String K_SECURE = "secure_screen";
+    /** Keys of the counters of versions before 0.3.0: read once to be folded into the statistics, then deleted. */
     private static final String K_PASSPORT = "passport";
+    private static final String K_DOC_COUNT = "doc_count";
+    private static final String K_THREAT_COUNT = "threat_count";
+    private static final String K_STATS = "stats";
+    private static final String K_STATS_ON = "stats_on";
     private static final String K_REMINDERS = "reminders";
     private static final String K_LAST_REMINDER = "last_reminder";
     private static final String K_NEXT_REMINDER = "next_reminder";
     private static final String K_REMINDER_INDEX = "reminder_idx";
-    private static final String K_DOC_COUNT = "doc_count";
-    private static final String K_THREAT_COUNT = "threat_count";
 
     private static SharedPreferences sp(Context c) {
         return c.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
@@ -117,23 +122,6 @@ public final class Prefs {
         sp(c).edit().putBoolean(K_SECURE, v).apply();
     }
 
-    /** The stored Patron Passport record (36 bytes), or an empty array. */
-    public static byte[] passport(Context c) {
-        String s = sp(c).getString(K_PASSPORT, null);
-        if (s == null) {
-            return new byte[0];
-        }
-        try {
-            return Base64.decode(s, Base64.NO_WRAP);
-        } catch (IllegalArgumentException e) {
-            return new byte[0];
-        }
-    }
-
-    public static void setPassport(Context c, byte[] record) {
-        sp(c).edit().putString(K_PASSPORT, Base64.encodeToString(record, Base64.NO_WRAP)).apply();
-    }
-
     /** Language code passed to the engine: 0 Russian, 1 English. */
     public static int engineLang(Context c) {
         switch (lang(c)) {
@@ -174,8 +162,13 @@ public final class Prefs {
         return base.createConfigurationContext(conf);
     }
 
+    /**
+     * Whether the support reminder is on. A new install has it on only where no permission is
+     * needed to post (before Android 13); from Android 13 on it stays off until the person turns
+     * it on and grants the notification permission.
+     */
     public static boolean reminders(Context c) {
-        return sp(c).getBoolean(K_REMINDERS, true);
+        return sp(c).getBoolean(K_REMINDERS, android.os.Build.VERSION.SDK_INT < 33);
     }
 
     public static void setReminders(Context c, boolean on) {
@@ -206,27 +199,83 @@ public final class Prefs {
         sp(c).edit().putInt(K_REMINDER_INDEX, idx).apply();
     }
 
-    public static int docCount(Context c) {
-        return sp(c).getInt(K_DOC_COUNT, 0);
+    /**
+     * The private storage of the statistics: the blob of the Rust core (base64), the on / off
+     * switch, and the counters of older versions (so they can be folded in once and deleted).
+     */
+    public static org.arca.viewer.core.StatsStore.Storage statsStorage(final Context c) {
+        final Context app = c.getApplicationContext();
+        return new org.arca.viewer.core.StatsStore.Storage() {
+            @Override
+            public byte[] readBlob() {
+                return decode(sp(app).getString(K_STATS, null));
+            }
+
+            @Override
+            public void writeBlob(byte[] blob) {
+                sp(app).edit().putString(K_STATS, Base64.encodeToString(blob, Base64.NO_WRAP)).apply();
+            }
+
+            @Override
+            public void deleteBlob() {
+                sp(app).edit().remove(K_STATS).apply();
+            }
+
+            @Override
+            public boolean enabled() {
+                return sp(app).getBoolean(K_STATS_ON, true);
+            }
+
+            @Override
+            public void setEnabled(boolean on) {
+                sp(app).edit().putBoolean(K_STATS_ON, on).apply();
+            }
+
+            @Override
+            public boolean hasLegacy() {
+                SharedPreferences p = sp(app);
+                return p.contains(K_PASSPORT) || p.contains(K_DOC_COUNT) || p.contains(K_THREAT_COUNT);
+            }
+
+            @Override
+            public byte[] legacyPassport() {
+                return decode(sp(app).getString(K_PASSPORT, null));
+            }
+
+            @Override
+            public long legacyDocuments() {
+                return legacyCount(K_DOC_COUNT);
+            }
+
+            @Override
+            public long legacyThreats() {
+                return legacyCount(K_THREAT_COUNT);
+            }
+
+            private long legacyCount(String key) {
+                try {
+                    return Math.max(0, sp(app).getInt(key, 0));
+                } catch (ClassCastException e) {
+                    return 0;
+                }
+            }
+
+            @Override
+            public void deleteLegacy() {
+                sp(app).edit().remove(K_PASSPORT).remove(K_DOC_COUNT).remove(K_THREAT_COUNT).apply();
+            }
+        };
     }
 
-    public static void incrementDocCount(Context c) {
-        sp(c).edit().putInt(K_DOC_COUNT, docCount(c) + 1).apply();
-    }
-
-    public static int threatCount(Context c) {
-        return sp(c).getInt(K_THREAT_COUNT, 0);
-    }
-
-    public static void addThreats(Context c, int n) {
-        if (n > 0) {
-            sp(c).edit().putInt(K_THREAT_COUNT, threatCount(c) + n).apply();
+    private static byte[] decode(String s) {
+        if (s == null) {
+            return new byte[0];
         }
-    }
-
-    /** Forgets the local usage counters and the Patron Passport; nothing leaves the device either way. */
-    public static void resetUsage(Context c) {
-        sp(c).edit().remove(K_DOC_COUNT).remove(K_THREAT_COUNT).remove(K_PASSPORT).apply();
+        try {
+            return Base64.decode(s, Base64.NO_WRAP);
+        } catch (IllegalArgumentException e) {
+            return new byte[0];
+        }
     }
 
     private static int clamp(int v, int lo, int hi) {

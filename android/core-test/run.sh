@@ -7,5 +7,6 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-javac -Xlint:all -Werror -d "$work" android/app/src/main/java/org/arca/viewer/core/*.java android/core-test/CoreTest.java
+javac -Xlint:all -Werror -d "$work" android/app/src/main/java/org/arca/viewer/core/*.java android/core-test/CoreTest.java android/core-test/StatsTest.java
 java -cp "$work" CoreTest
+java -cp "$work" StatsTest

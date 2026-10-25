@@ -14,8 +14,11 @@ import org.arca.viewer.MainActivity;
 import org.arca.viewer.Native;
 import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
+import org.arca.viewer.core.ExtraSupport;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Model;
+
+import java.util.List;
 
 /**
  * "About &amp; Support": who made the viewer (the original authors and, if this is a modified
@@ -52,6 +55,8 @@ public final class AboutScreen extends Screen {
         } else {
             addAbout(col, about);
         }
+
+        addExtraSupport(col);
 
         col.addView(ui.space(16));
         col.addView(ui.button(R.string.licenses_title, Ui.OUTLINE, 0, new View.OnClickListener() {
@@ -99,6 +104,58 @@ public final class AboutScreen extends Screen {
             col.addView(ui.space(8));
             col.addView(fact(ui.str(R.string.about_fingerprint), Fmt.grouped(about.fingerprint), true));
         }
+    }
+
+    /**
+     * "Other ways to support": crypto wallets and Boosty, from the list the owner configures in the
+     * attribution crate. The list ships empty, and then nothing is drawn. A wallet entry opens a
+     * dialog that shows the full address first and copies it only on an explicit tap (flagged
+     * sensitive, cleared again after a minute where the system allows); a Boosty entry goes
+     * through the same "show the whole address, open on a tap" dialog as every other link.
+     */
+    private void addExtraSupport(LinearLayout col) {
+        List<ExtraSupport.Entry> items;
+        try {
+            items = ExtraSupport.parse(Native.extraSupport());
+        } catch (RuntimeException | LinkageError e) {
+            return;
+        }
+        if (items.isEmpty()) {
+            return;
+        }
+        col.addView(ui.space(12));
+        LinearLayout card = ui.card();
+        TextView title = ui.heading(ui.str(R.string.about_extra_title), Ui.LABEL);
+        title.setTextColor(ui.color(R.color.arca_primary));
+        card.addView(title);
+        card.addView(ui.space(6));
+        card.addView(ui.text(R.string.about_extra_hint, Ui.SMALL));
+        card.addView(ui.space(8));
+        for (final ExtraSupport.Entry e : items) {
+            if (e.isWallet()) {
+                card.addView(ui.button(Fmt.safe(e.label + " (" + e.network + ")"), Ui.TONAL, R.drawable.ic_link,
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            showWallet(e);
+                        }
+                    }));
+            } else {
+                card.addView(linkButton(Fmt.safe(e.label), Ui.TONAL, e.value));
+            }
+            card.addView(ui.space(6));
+        }
+        card.addView(ui.text(R.string.about_extra_cleared, Ui.CAPTION));
+        col.addView(card, ui.fillWidth());
+    }
+
+    private void showWallet(ExtraSupport.Entry e) {
+        StringBuilder title = new StringBuilder(Fmt.safe(e.label));
+        title.append('\n').append(ui.str(R.string.about_extra_network, Fmt.safe(e.network)));
+        if (!e.memo.isEmpty()) {
+            title.append('\n').append(ui.str(R.string.about_extra_memo, Fmt.safe(e.memo)));
+        }
+        ui.showText(act, title.toString(), e.value, "address");
     }
 
     private View card(Model.Card c) {
