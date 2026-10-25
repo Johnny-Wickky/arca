@@ -3,10 +3,10 @@
 # Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
 #
 # Checks the Android app without the Android build tools (aapt2, d8): everything that can be
-# verified from a plain JDK, Python and two android.jar files.
+# verified from a plain JDK, the Rust arca-devtools tool and two android.jar files.
 #
 #   1. resources and manifest are well-formed XML, consistent between languages, complete with
-#      respect to the Rust enums, and every reference resolves  (check_resources.py)
+#      respect to the Rust enums, and every reference resolves  (arca-devtools check-resources)
 #   2. the whole app compiles against the TARGET SDK's android.jar (API 36)
 #   3. against the MINIMUM SDK's android.jar (API 26) it compiles too, except for the version-
 #      specific classes isolated in ui/Compat.java: a call to a newer API anywhere else is a
@@ -37,32 +37,23 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 step() { printf '\n== %s\n' "$*"; }
+# The helper tool is Rust (crates/arca-devtools); cargo builds it on first use.
+# shellcheck disable=SC2086
+devtools() { cargo run --quiet --locked --manifest-path "$ROOT/Cargo.toml" -p arca-devtools ${ARCA_CARGO_FLAGS:-} -- "$@"; }
 
 step "1. XML well-formedness"
 if command -v xmllint >/dev/null 2>&1; then
     find "$APP" -name '*.xml' -print0 | xargs -0 xmllint --noout
     echo "ok"
 else
-    python3 - "$APP" <<'EOF'
-import os, sys, xml.etree.ElementTree as ET
-bad = 0
-for root, _, files in os.walk(sys.argv[1]):
-    for f in files:
-        if f.endswith(".xml"):
-            try:
-                ET.parse(os.path.join(root, f))
-            except ET.ParseError as e:
-                print(os.path.join(root, f), e); bad += 1
-sys.exit(1 if bad else 0)
-EOF
-    echo "ok (python parser; xmllint not installed)"
+    echo "skipped (xmllint not installed; step 2 parses every XML file with the strict reader of arca-container)"
 fi
 
 step "2. Resources: languages, engine identifiers, references"
-python3 "$ROOT/tools/android/check_resources.py" --android-jar "$MIN_JAR" --repo-root "$ROOT"
+devtools check-resources "$ROOT/android" --android-jar "$MIN_JAR" --repo-root "$ROOT"
 
 step "3. Compile against the target SDK (API 36)"
-python3 "$ROOT/tools/android/gen_r.py" "$APP/res" org.arca.viewer "$WORK/gen"
+devtools gen-r "$APP/res" org.arca.viewer "$WORK/gen"
 find "$APP/java" -name '*.java' > "$WORK/sources.txt"
 find "$WORK/gen" -name '*.java' >> "$WORK/sources.txt"
 mkdir -p "$WORK/out36" "$WORK/out26"
@@ -86,36 +77,7 @@ fi
 inside="$(printf '%s\n' "$errors" | grep -c '/ui/Compat.java:' || true)"
 echo "ok: no use of APIs newer than 26 outside Compat.java ($inside guarded use(s) inside it)"
 # Those inside Compat must sit in the nested ApiNN classes, never in the code that runs on API 26.
-python3 - "$APP/java/org/arca/viewer/ui/Compat.java" "$WORK/min.log" <<'EOF'
-import re, sys
-src = open(sys.argv[1], encoding="utf-8").read().split("\n")
-log = open(sys.argv[2], encoding="utf-8").read()
-# Line ranges of the nested classes Api28 / Api30 / Api33 ...
-ranges = []
-for i, line in enumerate(src):
-    m = re.search(r"\bclass (Api\d+)\b", line)
-    if m:
-        depth = 0
-        started = False
-        for j in range(i, len(src)):
-            depth += src[j].count("{") - src[j].count("}")
-            if "{" in src[j]:
-                started = True
-            if started and depth <= 0:
-                ranges.append((i + 1, j + 1, m.group(1)))
-                break
-bad = []
-for m in re.finditer(r"Compat\.java:(\d+): error:", log):
-    n = int(m.group(1))
-    if src[n - 1].lstrip().startswith("import "):
-        continue  # importing a newer class is harmless: it is only loaded where it is used
-    if not any(a <= n <= b for a, b, _ in ranges):
-        bad.append(n)
-if bad:
-    print("Compat.java: newer APIs outside the nested ApiNN classes at lines", sorted(set(bad)), file=sys.stderr)
-    sys.exit(1)
-print("ok: all of them are inside", ", ".join(sorted({c for _, _, c in ranges})))
-EOF
+devtools check-compat "$APP/java/org/arca/viewer/ui/Compat.java" "$WORK/min.log"
 
 step "5. Core tests on the JVM"
 bash "$ROOT/android/core-test/run.sh"

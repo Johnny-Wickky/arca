@@ -16,7 +16,7 @@ import java.util.Locale;
 /**
  * Localised names for the engine's identifiers. Each identifier maps to a string resource named
  * {@code prefix_snake_case_id}; an identifier from a newer engine that the app has no text for
- * is shown as it is (escaped), never hidden. {@code tools/android/check_resources.py} checks
+ * is shown as it is (escaped), never hidden. {@code arca-devtools check-resources} checks
  * that every identifier the engine can produce has a text in every language.
  */
 public final class Labels {

@@ -22,7 +22,7 @@ export ARCA_GUEST_WASM
 # shellcheck disable=SC2086
 cargo build --release -p arca-jni ${ARCA_CARGO_FLAGS:-}
 # shellcheck disable=SC2086
-target_dir=$(cargo metadata --format-version 1 --no-deps ${ARCA_CARGO_FLAGS:-} | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+target_dir=$(cargo metadata --format-version 1 --no-deps ${ARCA_CARGO_FLAGS:-} | cargo run --quiet --locked -p arca-devtools ${ARCA_CARGO_FLAGS:-} -- json-get target_directory)
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

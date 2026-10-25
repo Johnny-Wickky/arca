@@ -3,7 +3,7 @@
      Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
 
      Names for the identifiers the engine reports. The resource name is the identifier in
-     snake_case (ui/Labels.java); tools/android/check_resources.py checks that every
+     snake_case (ui/Labels.java); arca-devtools check-resources checks that every
      identifier of the Rust enums has an entry here and in values-ru/. -->
 <resources>
     <!-- File formats (FileFormat) -->

@@ -21,7 +21,7 @@ android/
   `tools/android/build-apk.sh` (aapt2 → javac → d8 → zipalign → apksigner).
 * Всё, что новее API 26, — только в `ui/Compat.java` за проверками `SDK_INT`;
   `tools/android/check-android.sh` компилирует приложение против API 26 и 36 и это проверяет.
-* Добавляя строку, добавляйте её в `values/` и `values-ru/`: `tools/android/check_resources.py`
-  сверяет оба языка и идентификаторы движка.
+* Добавляя строку, добавляйте её в `values/` и `values-ru/`: `arca-devtools check-resources`
+  (`crates/arca-devtools`) сверяет оба языка и идентификаторы движка.
 * Интерфейс строится в коде. Новый экран — подкласс `ui/Screen`; любое состояние документа — в
   `Session` (переживает пересоздание `Activity`).

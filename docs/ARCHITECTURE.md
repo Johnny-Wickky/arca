@@ -53,8 +53,9 @@ arca/
 ├── tools/
 │   ├── check-unsafe.sh           # механическая проверка политики (unsafe, заглушки, C)
 │   ├── build-guest.sh            # сборка Wasm-гостя и проверка «ноль импортов»
-│   ├── gen_third_party.py        # сторонние лицензии из графа зависимостей
-│   ├── android/                  # build-apk.sh · check-android.sh · emulator-smoke.sh · check_elf.py
+│   ├── check-lockfile.sh · check-reproducible.sh
+│   ├── android/                  # build-apk.sh · build-local.sh · check-android.sh · emulator-smoke.sh
+│   ├── fixtures/                 # make_*.py: разовые генераторы фикстур (не часть сборки; см. tools/fixtures/README.md)
 │   └── ios/                      # build-xcframework.sh · check-ios.sh (только macOS)
 ├── tests/fixtures/               # безобидные документы, сделанные настоящим ПО (без вредоносных)
 ├── docs/
@@ -77,7 +78,8 @@ arca/
 │   ├── arca-attribution/        # атрибуция создателей, форков, «Паспорт Хранителя»
 │   ├── arca-engine/             # безопасный хост-слой для приложений: лимиты, статусы, JSON страницами
 │   ├── arca-jni/                # JNI-мост Android (libarca_jni.so); `unsafe` только в ffi.rs
-│   └── arca-ffi/                # C-мост для iOS (libarca_ffi.a); `unsafe` только в ffi.rs; не проверялся на macOS
+│   ├── arca-ffi/                # C-мост для iOS (libarca_ffi.a); `unsafe` только в ffi.rs; не проверялся на macOS
+│   └── arca-devtools/           # инструменты сборки и проверки на Rust (wasm-imports, elf-check, third-party, check-resources, gen-r, check-lockfile, check-compat); член workspace, ни от чего не зависит, в приложение не линкуется
 ├── android/                      # приложение Android (Java, без AndroidX/Gradle) и его тесты
 │   ├── app/src/main/             # манифест, ресурсы (ru/en, светлая/тёмная), исходники
 │   ├── core-test/                # тесты чистой Java-логики (JVM)
@@ -541,8 +543,8 @@ BMP ограничен шириной и общим объёмом работы.
 * прямые зависимости закреплены точно (`=x.y.z`), функции по умолчанию
   выключены, включено только проверенное;
 * **`Cargo.lock`** (D-1) закоммичен, у каждого пакета crates.io в нём есть контрольная сумма;
-  `tools/check-lockfile.sh` проверяет это в CI, сборки и тесты идут с `--locked`. Список
-  библиотек, которые попадают в APK, не ведётся вручную: `tools/gen_third_party.py` строит
+  `tools/check-lockfile.sh` (`arca-devtools check-lockfile`) проверяет это в CI, сборки и тесты идут с `--locked`. Список
+  библиотек, которые попадают в APK, не ведётся вручную: `arca-devtools third-party` строит
   его (с текстами лицензий) из графа зависимостей `arca-jni`; если у библиотеки нет
   лицензии, выпуск останавливается;
 * **закрепление гостя** (D-2): приложение вшивает `arca_guest_xray.wasm` в `libarca_jni.so` и
@@ -552,6 +554,9 @@ BMP ограничен шириной и общим объёмом работы.
   импортов. Хэш виден в «Диагностике» и печатается в заметках релиза. Задание CI
   `reproducible` (`tools/check-reproducible.sh`) собирает гостя и хостовую `libarca_jni.so`
   дважды — из двух копий дерева в каталогах с разными именами — и требует одинаковый SHA-256.
+  Задание `reproducible-guest` собирает гостя ещё и в двух дистрибутивах (`ubuntu:22.04`, `debian:bookworm`: свой rustup, `--locked`,
+  `--remap-path-prefix`, `SOURCE_DATE_EPOCH`) и требует одинаковый SHA-256; побитовая воспроизводимость всего APK не заявляется
+  (см. docs/RELEASING.md, «Воспроизводимость»).
   Между разными машинами/образами и для APK целиком (NDK, подпись) сравнения не было;
 * `cargo deny check all` в CI: лицензии, RustSec advisories, запреты, источники;
 * зависимости содержат внутренний `unsafe` (`wasmi`, `quick-xml`, `memchr`,
@@ -607,6 +612,8 @@ ARCA_GUEST_XRAY_WASM=$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wa
 # Фаззинг
 ARCA_FUZZ_ITERS=30000 ARCA_FUZZ_SEED=1 \
     cargo test --release -p arca-xray mutation_fuzz   # структурные мутации, детерминированно
+ARCA_FUZZ_ITERS=30000 ARCA_FUZZ_SEED=1 cargo test --release -p arca-image --test mutation       # декодеры PNG/JPEG/GIF/BMP/EXIF
+ARCA_FUZZ_ITERS=30000 ARCA_FUZZ_SEED=1 cargo test --release -p arca-container --test jet_mutation   # базы Access
 cd fuzz && cargo +nightly fuzz run scan               # libFuzzer, см. fuzz/README.md
 
 # Android

@@ -53,7 +53,7 @@ for entry in aarch64-linux-android:arm64-v8a:aarch64 armv7-linux-androideabi:arm
     cargo build --release --locked -p arca-jni --target "$triple"
     mkdir -p "$NATIVE/$abi"
     cp "$TARGET_DIR/$triple/release/libarca_jni.so" "$NATIVE/$abi/"
-    python3 tools/android/check_elf.py "$NATIVE/$abi/libarca_jni.so" --align 16384 --machine "$machine"
+    cargo run --quiet --locked -p arca-devtools -- elf-check "$NATIVE/$abi/libarca_jni.so" --align 16384 --machine "$machine"
 done
 sha256sum "$NATIVE"/*/libarca_jni.so "$ARCA_GUEST_WASM" | tee "$NATIVE/SHA256SUMS"
 

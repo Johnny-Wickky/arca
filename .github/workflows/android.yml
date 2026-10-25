@@ -140,7 +140,7 @@ jobs:
             mkdir -p "native/$abi"
             cp "target/$triple/release/libarca_jni.so" "native/$abi/"
             # Every PT_LOAD segment must be 16 KiB aligned, and the machine must be the right one.
-            python3 tools/android/check_elf.py "native/$abi/libarca_jni.so" --align 16384 --machine "$machine"
+            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --machine "$machine"
           done
           sha256sum native/*/libarca_jni.so target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm | tee native/SHA256SUMS
       - name: signing key
@@ -224,7 +224,7 @@ jobs:
             mkdir -p "native/$abi"
             cp "target/$triple/release/libarca_jni.so" "native/$abi/"
             # Every PT_LOAD segment must be 16 KiB aligned, and the machine must be the right one.
-            python3 tools/android/check_elf.py "native/$abi/libarca_jni.so" --align 16384 --machine "$machine"
+            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --machine "$machine"
           done
           sha256sum native/*/libarca_jni.so target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm | tee native/SHA256SUMS
       - name: signing key

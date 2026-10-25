@@ -1,0 +1,21 @@
+[package]
+name = "arca-devtools"
+description = "Build and release helper tools (Wasm import check, ELF alignment check, third-party notices, Android resource checks), written in Rust so that the build chain needs no scripting language. Never linked into the app."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A workspace member only: no other crate depends on it, so it cannot end up in libarca_jni.so
+# or in the Wasm guest. It reuses the audited readers of arca-container (XML) and arca-digest
+# (SHA-256); quick-xml is already part of the dependency graph through arca-container, and its
+# event type is needed to walk the parsed documents.
+[dependencies]
+arca-container.workspace = true
+arca-digest.workspace = true
+quick-xml.workspace = true
+
+[lints]
+workspace = true

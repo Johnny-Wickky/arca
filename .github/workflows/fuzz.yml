@@ -8,6 +8,11 @@
 #   dispatch      the same, with a duration of your choice
 #
 # Corpora and crash artifacts are uploaded, never committed (they may contain hostile files).
+#
+# The deterministic, no-nightly counterparts run in the ordinary test job and, with a large
+# iteration count, in the `mutation` job below: ARCA_FUZZ_ITERS / ARCA_FUZZ_SEED drive
+# crates/arca-xray/src/tests/mutation.rs, crates/arca-image/tests/mutation.rs and
+# crates/arca-container/tests/jet_mutation.rs.
 name: fuzz
 
 on:
@@ -34,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [scan, sanitize, wire, zip, cfb, xml, preview, decrypt]
+        target: [scan, sanitize, wire, zip, cfb, xml, preview, decrypt, image, png, jpeg, gif, bmp, exif, jet, pdf]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,15 +50,26 @@ jobs:
           cargo install cargo-fuzz --version 0.12.0 --locked
       - name: seeds (the real-software fixtures)
         run: |
-          mkdir -p "fuzz/corpus/${{ matrix.target }}"
-          cp tests/fixtures/* "fuzz/corpus/${{ matrix.target }}/"
+          set -euo pipefail
+          dir="fuzz/corpus/${{ matrix.target }}"
+          mkdir -p "$dir"
+          case "${{ matrix.target }}" in
+            image|png|jpeg|gif|bmp|exif) cp crates/arca-image/tests/fixtures/*.jpg crates/arca-image/tests/fixtures/*.png "$dir/" ;;
+            jet) cp tests/fixtures/access-2000.mdb tests/fixtures/access-2016.accdb "$dir/" ;;
+            pdf) cp tests/fixtures/*.pdf "$dir/" ;;
+            *) cp tests/fixtures/* "$dir/" ;;
+          esac
       - name: fuzz
         working-directory: fuzz
         env:
           SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || github.event.inputs.seconds || '1800' }}
         run: |
           dict=dictionaries/documents.dict
-          case "${{ matrix.target }}" in scan|sanitize|zip|cfb|xml) dict=dictionaries/ooxml.dict;; esac
+          case "${{ matrix.target }}" in
+            scan|sanitize|zip|cfb|xml) dict=dictionaries/ooxml.dict ;;
+            image|png|jpeg|gif|bmp|exif) dict=dictionaries/images.dict ;;
+            pdf) dict=dictionaries/pdf.dict ;;
+          esac
           cargo +nightly fuzz run "${{ matrix.target }}" -- \
             -dict="$dict" -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=30
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -61,4 +77,33 @@ jobs:
         with:
           name: fuzz-crash-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+
+  # Deterministic mutation tests (no nightly, no sanitizers): same inputs for the same seed, so
+  # a failure reproduces with the seed printed in the log. Weekly and on demand, not on PRs.
+  mutation:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: mutation tests (release profile)
+        env:
+          # The run number gives every run its own seed; the log prints it, so a failure replays.
+          ARCA_FUZZ_SEED: ${{ github.run_number }}
+          ARCA_FUZZ_ITERS: ${{ github.event_name == 'schedule' && '20000' || '2000' }}
+        run: |
+          set -euo pipefail
+          echo "ARCA_FUZZ_SEED=$ARCA_FUZZ_SEED ARCA_FUZZ_ITERS=$ARCA_FUZZ_ITERS"
+          cargo test --release --locked -p arca-xray mutation_fuzz
+          cargo test --release --locked -p arca-image --test mutation
+          cargo test --release --locked -p arca-container --test jet_mutation
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: mutation-failure-inputs
+          path: /tmp/arca-fuzz-failure-*.bin
           if-no-files-found: ignore

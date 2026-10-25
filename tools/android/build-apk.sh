@@ -70,7 +70,8 @@ step "1. resources (aapt2 $BT_NAME, minSdk $MIN_SDK, targetSdk $TARGET_SDK)"
 # Third-party notices are generated from the dependency graph and shipped as an asset.
 ASSETS="$WORK/assets"
 mkdir -p "$ASSETS"
-python3 "$ROOT/tools/gen_third_party.py" --out "$ASSETS/THIRD_PARTY_NOTICES.txt"
+# shellcheck disable=SC2086
+cargo run --quiet --locked --manifest-path "$ROOT/Cargo.toml" -p arca-devtools ${ARCA_CARGO_FLAGS:-} -- third-party --root "$ROOT" --out "$ASSETS/THIRD_PARTY_NOTICES.txt"
 
 mkdir -p "$WORK/gen"
 "$AAPT2" link \

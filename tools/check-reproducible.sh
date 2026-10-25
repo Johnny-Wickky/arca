@@ -9,6 +9,7 @@
 #
 #   tools/check-reproducible.sh            # guest + libarca_jni.so (host)
 #   ARCA_REPRO_GUEST_ONLY=1 tools/check-reproducible.sh
+#   ARCA_REPRO_UNTRACKED=1 tools/check-reproducible.sh   # also copy files not committed yet
 #
 # Extra cargo flags (for example --offline) can be passed in ARCA_CARGO_FLAGS. The Android
 # libraries need the NDK and are compared by the release workflow, not here.
@@ -21,7 +22,11 @@ copies=("$work/first/arca" "$work/second/arca-copy-with-another-name")
 guest=target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm
 for dir in "${copies[@]}"; do
     mkdir -p "$dir"
-    (cd "$root" && git ls-files -z | tar --null -T - -cf -) | tar -xf - -C "$dir"
+    # ARCA_REPRO_UNTRACKED=1 also copies new files that are not committed yet and tolerates files
+    # deleted but not yet committed (a pre-commit check of the working tree).
+    tarflags=(); list=(git ls-files -z)
+    if [ -n "${ARCA_REPRO_UNTRACKED:-}" ]; then list=(git ls-files -z --cached --others --exclude-standard); tarflags=(--ignore-failed-read); fi
+    (cd "$root" && "${list[@]}" | tar "${tarflags[@]}" --null -T - -cf -) | tar -xf - -C "$dir"
     (
         cd "$dir"
         export CARGO_TARGET_DIR="$dir/target"

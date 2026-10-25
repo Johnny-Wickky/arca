@@ -283,7 +283,7 @@ Windows удобнее всего WSL с Ubuntu. Нужно (в каталоге
 очень медленная):
 
 ```sh
-sudo apt install build-essential python3 zip unzip curl git     # build-essential — только как линкер: C-код не собирается
+sudo apt install build-essential zip unzip curl git     # build-essential — только как линкер: C-код не собирается
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # затем перезапустить оболочку
 rustup toolchain install                                        # версия и цели — из rust-toolchain.toml (1.97.0, wasm32, Android)
 ```
