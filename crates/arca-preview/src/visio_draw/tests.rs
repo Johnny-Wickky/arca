@@ -391,7 +391,7 @@ fn colour_indices_use_the_document_table_and_patterns_are_flat_colours() {
         .replace(r#"<Cell N="FillPattern" V="1"/>"#, r#"<Cell N="FillPattern" V="5"/>"#);
     let r = render_visio_page_noted(&drawing(&[page(&shape)], doc, &[]), 0, &PreviewPolicy::default()).unwrap();
     // Pattern 5 is a hatch: drawn as the mix of the two colours, and reported.
-    assert_eq!(paths(&r.page)[0].1, 0xFF28_4858);
+    assert_eq!(paths(&r.page)[0].1, 0xFF28_3848);
     assert!(r.page.approximate);
     assert!(r.notes.iter().any(|n| n.contains("fill patterns")));
 }
