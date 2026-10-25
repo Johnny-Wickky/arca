@@ -4,25 +4,36 @@
 //! The preview lists the objects of the database and shows each table as a grid of the *stored*
 //! values:
 //!
-//! * the data of a table is read page by page; indexes, relationships and validation rules are
-//!   not used;
-//! * queries are shown as the rows Access stores for them and, for a plain `SELECT`, as an
-//!   approximate SQL text marked [`crate::model::style::SYNTHETIC`]; no query is ever run. Forms,
-//!   reports, macros and modules are **listed, never shown or run** (a macro or module is code);
+//! * the data of a table is read page by page; the indexes are listed (names and columns) but not
+//!   used, and validation rules are not applied;
+//! * queries are shown as SQL text rebuilt from the rows Access stores for them, marked
+//!   [`crate::model::style::SYNTHETIC`] (see [`query`]); when a query does not fit the documented
+//!   layout it is shown as the stored rows instead. No query is ever run, no expression is
+//!   evaluated. Forms, reports, macros, modules and data access pages are **listed by name only**
+//!   (a macro or module is code);
+//! * relationships and indexes are listed;
 //! * linked tables are listed; the database they point to is not opened;
-//! * memo text and hyperlinks are shown (the address is never followed); OLE objects, binary
-//!   values and attachments are replaced by their size;
+//! * memo text and hyperlinks are shown (the address is never followed); of an OLE object or a
+//!   binary value only the size is shown; attachments are shown by name and stored size, never
+//!   extracted; multi-value fields show their values; a calculated column shows the result Access
+//!   stored, which is not recalculated;
 //! * rows marked deleted are not shown, but their number is reported ([`NoticeKind::DeletedRecords`]):
 //!   Access keeps them in the file until the database is compacted;
 //! * databases that are encrypted or password protected are reported, not opened.
 
 mod db;
+mod query;
 
 use crate::PreviewError;
 use crate::model::{Block, CellKind, FileFormat, NoticeKind, Paragraph, Run, SectionKind, style};
 use crate::numfmt;
 use crate::sink::{GridBuilder, Sink};
-use db::{Db, Object, OpenError, Table, Value};
+use db::{
+    ComplexData, ComplexItem, ComplexKind, Db, IndexKind, Object, OpenError, PropValue, Table,
+    Value, ty,
+};
+use query::{Outcome, QueryKind, QueryRow, reconstruct};
+use std::collections::BTreeMap;
 
 /// Object types of the system catalog.
 mod kind {
@@ -50,8 +61,15 @@ const MAX_QUERY_ROWS: usize = 200_000;
 const MAX_QUERY_ROWS_PER_OBJECT: usize = 4096;
 /// Most bytes of query text kept in all.
 const MAX_QUERY_BYTES: usize = 4 << 20;
-/// Most characters kept of one text field of a query row.
-const MAX_QUERY_FIELD_CHARS: usize = 16 * 1024;
+/// Most characters of one text field of a query row; a longer one makes the query unreadable
+/// (it is never cut, because a cut statement would be a different statement).
+const MAX_QUERY_FIELD_CHARS: usize = 64 * 1024;
+/// Most relationships listed.
+const MAX_RELATIONSHIPS: usize = 4096;
+/// Most rows of `MSysRelationships` read.
+const MAX_RELATIONSHIP_ROWS: usize = 100_000;
+/// Most values shown in one cell of a complex field.
+const MAX_COMPLEX_IN_CELL: usize = 1000;
 
 /// Shows the database in `data`.
 pub(crate) fn extract(
@@ -63,9 +81,12 @@ pub(crate) fn extract(
         OpenError::Encrypted => PreviewError::Encrypted,
         OpenError::Malformed(why) => PreviewError::Malformed(why.to_owned()),
     })?;
-    let objects = db
-        .catalog()
+    let (objects, catalog_stats) = db
+        .catalog_checked()
         .ok_or_else(|| PreviewError::Malformed("the system catalog is unreadable".into()))?;
+    if catalog_stats.stopped {
+        sink.truncated("catalog");
+    }
 
     let user = |o: &Object| {
         order(o.kind) < OTHER
@@ -86,6 +107,8 @@ pub(crate) fn extract(
     overview(sink, &shown, &tables);
 
     let mut deleted_total = 0u64;
+    let mut calculated = false;
+    let mut complex_stopped = false;
     for (o, table) in &tables {
         let hidden = o.flags & HIDDEN_FLAG != 0;
         let Some(table) = table else {
@@ -93,6 +116,16 @@ pub(crate) fn extract(
             continue;
         };
         let Some(sec) = sink.open_section(SectionKind::Sheet, &o.name, hidden) else { break };
+        calculated |= table.columns.iter().any(db::Column::is_calculated);
+        // The values of the complex columns, read once for the whole table.
+        let complex: Vec<Option<ComplexData>> = table
+            .columns
+            .iter()
+            .map(|c| {
+                if c.ty == ty::COMPLEX { db.complex_data(&objects, o.page, c) } else { None }
+            })
+            .collect();
+        complex_stopped |= complex.iter().flatten().any(|d| d.stopped);
         let mut grid =
             GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
         let mut row_no = 1u32;
@@ -110,7 +143,11 @@ pub(crate) fn extract(
                 return false;
             }
             for (i, v) in vals.iter().enumerate() {
-                let Some((kind, text, href)) = cell(v) else { continue };
+                let shown = match v {
+                    Value::Complex(key) => complex_cell(complex.get(i).and_then(Option::as_ref), *key),
+                    other => cell(other),
+                };
+                let Some((kind, text, href)) = shown else { continue };
                 let col = u32::try_from(i).unwrap_or(u32::MAX);
                 if !grid.linked_cell(col, kind, text, href) {
                     return false;
@@ -128,131 +165,20 @@ pub(crate) fn extract(
             break;
         }
     }
-
-    // Extract SQL queries from MSysQueries if present (Issue #47)
-    let msys_queries_obj = objects.iter().find(|o| o.name == "MSysQueries");
-    let msys_queries_table = msys_queries_obj.and_then(|o| db.table(o.page));
-    let mut queries_map: std::collections::BTreeMap<i64, Vec<QueryRow>> =
-        std::collections::BTreeMap::new();
-    // Only the queries that will be shown are collected, and the collection is bounded in rows
-    // and in bytes, so a hostile `MSysQueries` cannot grow the map without limit.
-    let wanted: std::collections::BTreeSet<i64> =
-        shown.iter().filter(|o| o.kind == kind::QUERY).map(|o| o.id).collect();
-    if let Some(q_table) = msys_queries_table.as_ref().filter(|_| !wanted.is_empty()) {
-        let mut seen_rows = 0usize;
-        let mut kept_bytes = 0usize;
-        let mut query_limit_hit = false;
-        let col =
-            |name: &str| q_table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(name));
-        let (c_obj, c_attr, c_expr, c_n1, c_n2, c_ord, c_flag) = (
-            col("ObjectId"),
-            col("Attribute"),
-            col("Expression"),
-            col("Name1"),
-            col("Name2"),
-            col("Order"),
-            col("Flag"),
+    if complex_stopped {
+        sink.truncated("complex values");
+    }
+    if calculated {
+        sink.note(
+            NoticeKind::FormulasNotEvaluated,
+            "access: calculated columns show the result Access stored; their expressions are not evaluated",
         );
-        let int_val = |vals: &[Value], i: Option<usize>| -> i64 {
-            i.and_then(|idx| vals.get(idx))
-                .and_then(|v| match v {
-                    Value::Int(n) => Some(*n),
-                    _ => None,
-                })
-                .unwrap_or(0)
-        };
-        let str_val = |vals: &[Value], i: Option<usize>| -> String {
-            i.and_then(|idx| vals.get(idx))
-                .and_then(|v| match v {
-                    Value::Text(s) => Some(s.chars().take(MAX_QUERY_FIELD_CHARS).collect()),
-                    _ => None,
-                })
-                .unwrap_or_default()
-        };
-        let stats = db.rows(q_table, |vals| {
-            seen_rows += 1;
-            if seen_rows > MAX_QUERY_ROWS {
-                query_limit_hit = true;
-                return false;
-            }
-            let object_id = int_val(vals, c_obj);
-            if !wanted.contains(&object_id) {
-                return true;
-            }
-            let attribute = int_val(vals, c_attr);
-            let expression = str_val(vals, c_expr);
-            let name1 = str_val(vals, c_n1);
-            let name2 = str_val(vals, c_n2);
-            let order = int_val(vals, c_ord);
-            let flag = int_val(vals, c_flag);
-            kept_bytes = kept_bytes
-                .saturating_add(expression.len())
-                .saturating_add(name1.len())
-                .saturating_add(name2.len());
-            if kept_bytes > MAX_QUERY_BYTES {
-                query_limit_hit = true;
-                return false;
-            }
-            let rows = queries_map.entry(object_id).or_default();
-            if rows.len() >= MAX_QUERY_ROWS_PER_OBJECT {
-                query_limit_hit = true;
-                return true;
-            }
-            rows.push(QueryRow { attribute, expression, name1, name2, order, flag });
-            true
-        });
-        if query_limit_hit || stats.stopped {
-            sink.truncated("queries");
-        }
     }
 
-    let (mut reconstructed, mut as_stored) = (false, false);
-    for o in shown.iter().filter(|o| o.kind == kind::QUERY) {
-        if sink.is_full() {
-            break;
-        }
-        let Some(mut rows) = queries_map.remove(&o.id) else {
-            // Nothing is made up for a query whose definition is not in the file.
-            sink.skipped(&format!("query {}: no definition rows", o.name));
-            continue;
-        };
-        let hidden = o.flags & HIDDEN_FLAG != 0;
-        let Some(sec) =
-            sink.open_section(SectionKind::Sheet, &format!("Query: {}", o.name), hidden)
-        else {
-            break;
-        };
-        rows.sort_by_key(|r| (r.attribute, r.order));
-        let qtype = query_type(o.flags);
-        // The viewer's own words are marked as such (`SYNTHETIC`); the rows below are the file's.
-        let mut text = format!("-- {}", qtype.label());
-        if qtype == QueryType::Select
-            && let Some(sql) = select_sql(&rows)
-        {
-            text.push('\n');
-            text.push_str(&sql);
-            reconstructed = true;
-        } else {
-            as_stored = true;
-        }
-        let mut p = Paragraph::default();
-        p.runs.push(Run { text, style: style::MONO | style::SYNTHETIC, href: String::new() });
-        sink.push(sec, Block::Para(p));
-        let rows_grid = stored_rows(sink, &rows);
-        sink.push(sec, Block::Grid(rows_grid));
-    }
-    if reconstructed {
-        sink.note(
-            NoticeKind::BestEffort,
-            "access: SELECT text is reconstructed from MSysQueries and not verified against Access",
-        );
-    }
-    if as_stored {
-        sink.note(
-            NoticeKind::Unsupported,
-            "access: queries other than plain SELECT are shown as their stored rows, not as SQL",
-        );
-    }
+    indexes_section(sink, &tables);
+    relationships_section(sink, &db, &objects);
+    queries_section(sink, &db, &objects, &shown);
+    startup_notes(sink, &db);
 
     if deleted_total > 0 {
         sink.count(NoticeKind::DeletedRecords, "", deleted_total);
@@ -263,150 +189,194 @@ pub(crate) fn extract(
 /// The position of the objects that are not listed.
 const OTHER: u8 = 8;
 
-/// Position of a kind of object in the overview.
-
-#[derive(Debug, Clone, Default)]
-struct QueryRow {
-    attribute: i64,
-    expression: String,
-    name1: String,
-    name2: String,
-    order: i64,
-    flag: i64,
-}
-
-/// What a row of `MSysQueries` describes, by its `Attribute` (the layout Jackcess documents in
-/// `QueryImpl`; no query in the test databases confirms it, so every use of it is labelled).
-mod attr {
-    pub(super) const TYPE: i64 = 1;
-    pub(super) const PARAMETERS: i64 = 2;
-    pub(super) const FLAGS: i64 = 3;
-    pub(super) const TABLE: i64 = 5;
-    pub(super) const COLUMN: i64 = 6;
-    pub(super) const WHERE: i64 = 8;
-    pub(super) const GROUP_BY: i64 = 9;
-    pub(super) const HAVING: i64 = 10;
-    pub(super) const ORDER_BY: i64 = 11;
-}
-
-/// The kind of a query: the DAO `QueryDef.Type` that Access keeps in the flags of the query's
-/// catalog entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QueryType {
-    Select,
-    Crosstab,
-    Delete,
-    Update,
-    Append,
-    MakeTable,
-    DataDefinition,
-    PassThrough,
-    Union,
-    Other(u32),
-}
-
-fn query_type(flags: u32) -> QueryType {
-    match flags & 0xF0 {
-        0x00 => QueryType::Select,
-        0x10 => QueryType::Crosstab,
-        0x20 => QueryType::Delete,
-        0x30 => QueryType::Update,
-        0x40 => QueryType::Append,
-        0x50 => QueryType::MakeTable,
-        0x60 => QueryType::DataDefinition,
-        0x70 => QueryType::PassThrough,
-        0x80 => QueryType::Union,
-        other => QueryType::Other(other),
+fn int_of(v: Option<&Value>) -> Option<i64> {
+    match v {
+        Some(Value::Int(n)) => Some(*n),
+        _ => None,
     }
 }
 
-impl QueryType {
-    /// The SQL name of the kind (technical vocabulary, not a sentence).
-    fn label(self) -> String {
-        match self {
-            Self::Select => "SELECT".to_owned(),
-            Self::Crosstab => "TRANSFORM".to_owned(),
-            Self::Delete => "DELETE".to_owned(),
-            Self::Update => "UPDATE".to_owned(),
-            Self::Append => "INSERT INTO".to_owned(),
-            Self::MakeTable => "SELECT INTO".to_owned(),
-            Self::DataDefinition => "DDL".to_owned(),
-            Self::PassThrough => "PASS-THROUGH".to_owned(),
-            Self::Union => "UNION".to_owned(),
-            Self::Other(n) => format!("TYPE {n:#X}"),
+fn text_of(v: Option<&Value>) -> Option<&str> {
+    match v {
+        Some(Value::Text(s)) => Some(s),
+        _ => None,
+    }
+}
+
+/// Short text for a notice: control characters removed, at most 80 characters.
+fn short(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(80).collect()
+}
+
+/// The saved rows of one query.
+#[derive(Default)]
+struct Collected {
+    rows: Vec<QueryRow>,
+    /// Some of the rows could not be kept whole (a limit was reached), so the statement cannot be
+    /// rebuilt.
+    incomplete: bool,
+}
+
+/// Reads the rows of `MSysQueries` of the queries in `wanted`, in the order the file stores them.
+fn read_query_rows(
+    sink: &mut Sink<'_>,
+    db: &Db<'_>,
+    q_table: &Table,
+    wanted: &std::collections::BTreeSet<i64>,
+) -> BTreeMap<i64, Collected> {
+    let mut out: BTreeMap<i64, Collected> = BTreeMap::new();
+    let col = |name: &str| q_table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(name));
+    let (c_obj, c_attr, c_expr, c_n1, c_n2, c_flag, c_extra, c_ord) = (
+        col("ObjectId"),
+        col("Attribute"),
+        col("Expression"),
+        col("Name1"),
+        col("Name2"),
+        col("Flag"),
+        col("LvExtra"),
+        col("Order"),
+    );
+    let mut seen_rows = 0usize;
+    let mut kept_bytes = 0usize;
+    let mut limit_hit = false;
+    let stats = db.rows_raw(q_table, |vals| {
+        seen_rows += 1;
+        if seen_rows > MAX_QUERY_ROWS {
+            limit_hit = true;
+            return false;
+        }
+        let Some(object_id) = c_obj.and_then(|i| int_of(vals.get(i))) else { return true };
+        if !wanted.contains(&object_id) {
+            return true;
+        }
+        let entry = out.entry(object_id).or_default();
+        if entry.incomplete {
+            return true;
+        }
+        let mut oversize = false;
+        let mut field = |i: Option<usize>| -> Option<String> {
+            let s = i.and_then(|i| text_of(vals.get(i)))?;
+            // Counted in bytes: a character is at least one.
+            if s.len() > MAX_QUERY_FIELD_CHARS * 4 || s.chars().count() > MAX_QUERY_FIELD_CHARS {
+                oversize = true;
+                return None;
+            }
+            Some(s.to_owned())
+        };
+        let row = QueryRow {
+            attribute: c_attr.and_then(|i| int_of(vals.get(i))).unwrap_or(0),
+            expression: field(c_expr),
+            flag: c_flag.and_then(|i| int_of(vals.get(i))),
+            extra: c_extra.and_then(|i| int_of(vals.get(i))),
+            name1: field(c_n1),
+            name2: field(c_n2),
+            order: match c_ord.and_then(|i| vals.get(i)) {
+                Some(Value::Blob(b)) => b.clone(),
+                _ => Vec::new(),
+            },
+        };
+        if oversize {
+            entry.incomplete = true;
+            return true;
+        }
+        kept_bytes = kept_bytes
+            .saturating_add(row.expression.as_ref().map_or(0, String::len))
+            .saturating_add(row.name1.as_ref().map_or(0, String::len))
+            .saturating_add(row.name2.as_ref().map_or(0, String::len));
+        if kept_bytes > MAX_QUERY_BYTES {
+            limit_hit = true;
+            return false;
+        }
+        if entry.rows.len() >= MAX_QUERY_ROWS_PER_OBJECT {
+            entry.incomplete = true;
+            return true;
+        }
+        entry.rows.push(row);
+        true
+    });
+    if limit_hit || stats.stopped {
+        sink.truncated("queries");
+        // Rows after the stopping point are missing: no query is complete any more.
+        for c in out.values_mut() {
+            c.incomplete = true;
         }
     }
+    out
 }
 
-/// `[name]`, or `[name] AS [alias]`.
-fn named(name: &str, alias: &str) -> String {
-    if alias.is_empty() || alias == name {
-        format!("[{name}]")
-    } else {
-        format!("[{name}] AS [{alias}]")
+/// One section per saved query: the SQL rebuilt from its rows, or the rows themselves.
+fn queries_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object], shown: &[&Object]) {
+    let queries: Vec<&&Object> = shown.iter().filter(|o| o.kind == kind::QUERY).collect();
+    if queries.is_empty() {
+        return;
     }
-}
+    let wanted: std::collections::BTreeSet<i64> = queries.iter().map(|o| o.id).collect();
+    let q_table = objects
+        .iter()
+        .find(|o| o.kind == kind::TABLE && o.name.eq_ignore_ascii_case("MSysQueries"))
+        .and_then(|o| db.table(o.page));
+    let mut collected = match q_table.as_ref() {
+        Some(t) => read_query_rows(sink, db, t, &wanted),
+        None => BTreeMap::new(),
+    };
 
-/// The SQL of a plain `SELECT`, rebuilt from its rows (already sorted by attribute and order).
-///
-/// Only what is unambiguous is rebuilt: columns, tables, `WHERE`, `GROUP BY`, `HAVING` and
-/// `ORDER BY` in the default direction. A query with joins, a remote database, an unknown
-/// attribute, an `ORDER BY` row that carries flags, or no columns or tables gets `None`: its
-/// rows are shown as stored instead.
-fn select_sql(rows: &[QueryRow]) -> Option<String> {
-    let (mut columns, mut tables) = (Vec::new(), Vec::new());
-    let (mut wh, mut group, mut having, mut order) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for r in rows {
-        match r.attribute {
-            attr::TYPE | attr::PARAMETERS | attr::FLAGS => {}
-            attr::COLUMN => {
-                if !r.expression.is_empty() {
-                    columns.push(if r.name1.is_empty() || r.name1 == r.expression {
-                        r.expression.clone()
-                    } else {
-                        format!("{} AS [{}]", r.expression, r.name1)
-                    });
-                } else if !r.name1.is_empty() {
-                    columns.push(format!("[{}]", r.name1));
-                }
+    let (mut reconstructed, mut as_stored) = (false, false);
+    for o in queries {
+        if sink.is_full() {
+            break;
+        }
+        let Some(found) = collected.remove(&o.id) else {
+            // Nothing is made up for a query whose definition is not in the file.
+            sink.skipped(&format!("query {}: no definition rows", o.name));
+            continue;
+        };
+        let hidden = o.flags & HIDDEN_FLAG != 0;
+        let Some(sec) =
+            sink.open_section(SectionKind::Sheet, &format!("Query: {}", o.name), hidden)
+        else {
+            break;
+        };
+        let outcome = if found.incomplete {
+            Outcome::Unsupported(
+                QueryKind::from_object_flags(o.flags),
+                "the definition is larger than the limits allow",
+            )
+        } else {
+            reconstruct(o.flags, &found.rows)
+        };
+        let (text, show_rows) = match outcome {
+            Outcome::Sql(kind, sql) => {
+                reconstructed = true;
+                (format!("-- {}\n{sql}", kind.label()), false)
             }
-            attr::TABLE => {
-                if !r.name1.is_empty() {
-                    tables.push(named(&r.name1, &r.name2));
-                } else if !r.expression.is_empty() {
-                    tables.push(r.expression.clone());
-                }
+            Outcome::Unsupported(kind, why) => {
+                as_stored = true;
+                let label = kind
+                    .map_or_else(|| format!("TYPE {:#X}", o.flags & 0xF0), |k| k.label().to_owned());
+                (format!("-- {label}: not rebuilt as SQL ({why}); the stored rows follow"), true)
             }
-            attr::WHERE => wh.push(r.expression.clone()),
-            attr::GROUP_BY => group.push(r.expression.clone()),
-            attr::HAVING => having.push(r.expression.clone()),
-            attr::ORDER_BY => {
-                if r.flag != 0 {
-                    return None;
-                }
-                order.push(r.expression.clone());
-            }
-            _ => return None,
+        };
+        // The viewer's own words are marked as such (`SYNTHETIC`); the rows below are the file's.
+        let mut p = Paragraph::default();
+        p.runs.push(Run { text, style: style::MONO | style::SYNTHETIC, href: String::new() });
+        sink.push(sec, Block::Para(p));
+        if show_rows {
+            let rows_grid = stored_rows(sink, &found.rows);
+            sink.push(sec, Block::Grid(rows_grid));
         }
     }
-    if columns.is_empty() || tables.is_empty() {
-        return None;
+    if reconstructed {
+        sink.note(
+            NoticeKind::BestEffort,
+            "access: query SQL is rebuilt from the stored rows for display; it is equivalent to, not necessarily identical to, the text Access shows, and is never run",
+        );
     }
-    let mut sql = format!("SELECT {}\nFROM {}", columns.join(", "), tables.join(", "));
-    for (keyword, parts, glue) in [
-        ("WHERE", &wh, " AND "),
-        ("GROUP BY", &group, ", "),
-        ("HAVING", &having, " AND "),
-        ("ORDER BY", &order, ", "),
-    ] {
-        let parts: Vec<&str> = parts.iter().map(String::as_str).filter(|p| !p.is_empty()).collect();
-        if !parts.is_empty() {
-            sql.push_str(&format!("\n{keyword} {}", parts.join(glue)));
-        }
+    if as_stored {
+        sink.note(
+            NoticeKind::Unsupported,
+            "access: queries that do not fit the documented layout are shown as their stored rows, not as SQL",
+        );
     }
-    sql.push(';');
-    Some(sql)
 }
 
 /// The stored rows of a query as a grid: what the file says, whatever the viewer makes of it.
@@ -427,8 +397,9 @@ fn stored_rows(sink: &Sink<'_>, rows: &[QueryRow]) -> crate::model::Grid {
         true
     };
     // The column names of `MSysQueries` itself.
-    let head = ["Attribute", "Flag", "Order", "Name1", "Name2", "Expression"].map(str::to_owned);
+    let head = ["Attribute", "Flag", "Extra", "Name1", "Name2", "Expression"].map(str::to_owned);
     let mut ok = put(&mut grid, head, [CellKind::Text; 6]);
+    let num = |n: Option<i64>| n.map_or_else(String::new, |n| n.to_string());
     for r in rows {
         if !ok {
             break;
@@ -437,11 +408,11 @@ fn stored_rows(sink: &Sink<'_>, rows: &[QueryRow]) -> crate::model::Grid {
             &mut grid,
             [
                 r.attribute.to_string(),
-                r.flag.to_string(),
-                r.order.to_string(),
-                r.name1.clone(),
-                r.name2.clone(),
-                r.expression.clone(),
+                num(r.flag),
+                num(r.extra),
+                r.name1.clone().unwrap_or_default(),
+                r.name2.clone().unwrap_or_default(),
+                r.expression.clone().unwrap_or_default(),
             ],
             [
                 CellKind::Number,
@@ -454,6 +425,184 @@ fn stored_rows(sink: &Sink<'_>, rows: &[QueryRow]) -> crate::model::Grid {
         );
     }
     grid.finish()
+}
+
+/// A list of the indexes of all tables: name, kind, columns.
+fn indexes_section(sink: &mut Sink<'_>, tables: &[(&Object, Option<Table>)]) {
+    if !tables.iter().any(|(_, t)| t.as_ref().is_some_and(|t| !t.indexes.is_empty())) {
+        return;
+    }
+    let Some(sec) = sink.open_section(SectionKind::Sheet, "Indexes", false) else { return };
+    let mut grid =
+        GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
+    let mut line = 1u32;
+    let mut ok = grid.row(line, false);
+    for (i, head) in ["Table", "Index", "Kind", "Columns"].into_iter().enumerate() {
+        ok = ok && grid.cell(u32::try_from(i).unwrap_or(0), CellKind::Text, head.to_owned());
+    }
+    'tables: for (o, t) in tables {
+        let Some(t) = t else { continue };
+        for ix in &t.indexes {
+            if !ok {
+                break 'tables;
+            }
+            line = line.saturating_add(1);
+            let kind = match (ix.kind, ix.unique) {
+                (IndexKind::Primary, _) => "Primary key",
+                (IndexKind::Foreign, _) => "Relationship",
+                (_, true) => "Unique",
+                (IndexKind::Other(_), false) => "Index (other)",
+                (IndexKind::Normal, false) => "Index",
+            };
+            let cols: Vec<String> = ix
+                .columns
+                .iter()
+                .map(|(n, asc)| if *asc { n.clone() } else { format!("{n} DESC") })
+                .collect();
+            ok = grid.row(line, false)
+                && grid.cell(0, CellKind::Text, o.name.clone())
+                && grid.cell(1, CellKind::Text, ix.name.clone())
+                && grid.cell(2, CellKind::Text, kind.to_owned())
+                && grid.cell(3, CellKind::Text, cols.join(", "));
+        }
+    }
+    let grid = grid.finish();
+    if grid.truncated || !ok {
+        sink.truncated("indexes");
+    }
+    sink.push(sec, Block::Grid(grid));
+}
+
+/// The bits of `grbit` in `MSysRelationships` (the layout the Jackcess library documents).
+fn relationship_attributes(grbit: i64) -> String {
+    let mut parts = Vec::new();
+    for (bit, text) in [
+        (0x1, "one-to-one"),
+        (0x2, "no referential integrity"),
+        (0x100, "cascade update"),
+        (0x1000, "cascade delete"),
+        (0x2000, "set null on delete"),
+        (0x0100_0000, "left outer join"),
+        (0x0200_0000, "right outer join"),
+    ] {
+        if grbit & bit != 0 {
+            parts.push(text);
+        }
+    }
+    parts.join(", ")
+}
+
+/// A list of the relationships between tables.
+fn relationships_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object]) {
+    let Some(table) = objects
+        .iter()
+        .find(|o| o.kind == kind::TABLE && o.name.eq_ignore_ascii_case("MSysRelationships"))
+        .and_then(|o| db.table(o.page))
+    else {
+        return;
+    };
+    let col = |n: &str| table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(n));
+    let (Some(c_name), Some(c_obj), Some(c_col), Some(c_ref_obj), Some(c_ref_col)) = (
+        col("szRelationship"),
+        col("szObject"),
+        col("szColumn"),
+        col("szReferencedObject"),
+        col("szReferencedColumn"),
+    ) else {
+        return;
+    };
+    let (c_flags, c_index) = (col("grbit"), col("icolumn"));
+    // (name, table, related table, flags) with the column pairs by position.
+    struct Rel {
+        table: String,
+        related: String,
+        flags: i64,
+        columns: Vec<(i64, String, String)>,
+    }
+    let mut rels: BTreeMap<String, Rel> = BTreeMap::new();
+    let mut seen = 0usize;
+    let stats = db.rows(&table, |v| {
+        seen += 1;
+        if seen > MAX_RELATIONSHIP_ROWS {
+            return false;
+        }
+        let name = text_of(v.get(c_name)).unwrap_or("").to_owned();
+        if rels.len() >= MAX_RELATIONSHIPS && !rels.contains_key(&name) {
+            return true;
+        }
+        let rel = rels.entry(name).or_insert_with(|| Rel {
+            table: text_of(v.get(c_obj)).unwrap_or("").to_owned(),
+            related: text_of(v.get(c_ref_obj)).unwrap_or("").to_owned(),
+            flags: c_flags.and_then(|i| int_of(v.get(i))).unwrap_or(0),
+            columns: Vec::new(),
+        });
+        if rel.columns.len() < 64 {
+            rel.columns.push((
+                c_index.and_then(|i| int_of(v.get(i))).unwrap_or(0),
+                text_of(v.get(c_col)).unwrap_or("").to_owned(),
+                text_of(v.get(c_ref_col)).unwrap_or("").to_owned(),
+            ));
+        }
+        true
+    });
+    if rels.is_empty() {
+        return;
+    }
+    let Some(sec) = sink.open_section(SectionKind::Sheet, "Relationships", false) else { return };
+    let mut grid =
+        GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
+    let mut line = 1u32;
+    let mut ok = grid.row(line, false);
+    for (i, head) in
+        ["Relationship", "Table", "Columns", "Related table", "Related columns", "Attributes"]
+            .into_iter()
+            .enumerate()
+    {
+        ok = ok && grid.cell(u32::try_from(i).unwrap_or(0), CellKind::Text, head.to_owned());
+    }
+    for (name, rel) in &mut rels {
+        if !ok {
+            break;
+        }
+        rel.columns.sort_by_key(|c| c.0);
+        let own: Vec<&str> = rel.columns.iter().map(|c| c.1.as_str()).collect();
+        let other: Vec<&str> = rel.columns.iter().map(|c| c.2.as_str()).collect();
+        line = line.saturating_add(1);
+        ok = grid.row(line, false)
+            && grid.cell(0, CellKind::Text, name.clone())
+            && grid.cell(1, CellKind::Text, rel.table.clone())
+            && grid.cell(2, CellKind::Text, own.join(", "))
+            && grid.cell(3, CellKind::Text, rel.related.clone())
+            && grid.cell(4, CellKind::Text, other.join(", "))
+            && grid.cell(5, CellKind::Text, relationship_attributes(rel.flags));
+    }
+    let grid = grid.finish();
+    if grid.truncated || !ok || stats.stopped {
+        sink.truncated("relationships");
+    }
+    sink.push(sec, Block::Grid(grid));
+}
+
+/// Reports what the database says should happen when it opens. Nothing of it is done.
+fn startup_notes(sink: &mut Sink<'_>, db: &Db<'_>) {
+    let Some(props) = db.properties_of("MSysDb") else { return };
+    for p in props.iter().filter(|p| p.map_kind == 0 && p.scope.is_empty()) {
+        let PropValue::Text(value) = &p.value else { continue };
+        if value.is_empty() {
+            continue;
+        }
+        let what = if p.name.eq_ignore_ascii_case("StartUpForm") {
+            "startup form"
+        } else if p.name.eq_ignore_ascii_case("StartUpMenuBar") {
+            "startup menu bar"
+        } else {
+            continue;
+        };
+        sink.note_detail(
+            NoticeKind::Unsupported,
+            format!("access: the database names a {what} ({}); it is never opened or run", short(value)),
+        );
+    }
 }
 
 const fn order(kind: i64) -> u8 {
@@ -486,6 +635,22 @@ const fn kind_name(kind: i64) -> &'static str {
     }
 }
 
+/// A connection string without the values of its passwords.
+fn without_passwords(connect: &str) -> String {
+    connect
+        .split(';')
+        .map(|part| {
+            let key = part.split('=').next().unwrap_or("").trim().to_ascii_lowercase();
+            if part.contains('=') && matches!(key.as_str(), "pwd" | "password" | "dbq pwd") {
+                format!("{}=***", part.split('=').next().unwrap_or(""))
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 /// Lists the objects of the database.
 fn overview(sink: &mut Sink<'_>, objects: &[&Object], tables: &[(&Object, Option<Table>)]) {
     let Some(sec) = sink.open_section(SectionKind::Body, "Database", false) else { return };
@@ -493,7 +658,7 @@ fn overview(sink: &mut Sink<'_>, objects: &[&Object], tables: &[(&Object, Option
         GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
     let mut row = 1u32;
     let mut full = !grid.row(row, false);
-    for (col, head) in ["Object", "Name", "Rows"].into_iter().enumerate() {
+    for (col, head) in ["Object", "Name", "Rows", "Source"].into_iter().enumerate() {
         if full {
             break;
         }
@@ -516,9 +681,17 @@ fn overview(sink: &mut Sink<'_>, objects: &[&Object], tables: &[(&Object, Option
             .find(|(t, _)| std::ptr::eq(*t, *o))
             .and_then(|(_, t)| t.as_ref())
             .map(|t| t.row_count.to_string());
+        // Where a linked table gets its rows from (never opened or contacted).
+        let source = if matches!(o.kind, kind::LINKED | kind::LINKED_ODBC) {
+            let target = if o.database.is_empty() { &o.connect } else { &o.database };
+            Some(without_passwords(target))
+        } else {
+            None
+        };
         let ok = grid.cell(0, CellKind::Text, kind_name(o.kind).to_owned())
             && grid.cell(1, CellKind::Text, o.name.clone())
-            && rows.is_none_or(|r| grid.cell(2, CellKind::Number, r));
+            && rows.is_none_or(|r| grid.cell(2, CellKind::Number, r))
+            && source.is_none_or(|s| s.is_empty() || grid.cell(3, CellKind::Text, s));
         if !ok {
             break;
         }
@@ -530,7 +703,7 @@ fn overview(sink: &mut Sink<'_>, objects: &[&Object], tables: &[(&Object, Option
     sink.push(sec, Block::Grid(grid));
     sink.note(
         NoticeKind::Unsupported,
-        "forms, reports, macros and modules are listed, not shown or run; queries are shown as stored rows and, for plain SELECT, as reconstructed text that is never run",
+        "forms, reports, macros, modules and data access pages are listed by name, not shown or run; queries are shown as SQL text that is never run",
     );
     if code {
         sink.note(NoticeKind::Unsupported, "macros and modules are code and are never run");
@@ -565,10 +738,46 @@ fn cell(v: &Value) -> Option<(CellKind, String, String)> {
         Value::Link(text, address) => Some((CellKind::Text, text.clone(), address.clone())),
         Value::Binary(n) => plain(CellKind::Text, format!("(binary, {n} bytes)")),
         Value::Ole(n) => plain(CellKind::Text, format!("(object, {n} bytes)")),
+        Value::Blob(b) => plain(CellKind::Text, format!("(binary, {} bytes)", b.len())),
         Value::Guid(s) | Value::Numeric(s) => plain(CellKind::Text, s.clone()),
-        Value::Complex => plain(CellKind::Text, "(attachments or multiple values)".to_owned()),
+        Value::Complex(k) => plain(CellKind::Text, format!("(complex field, key {k})")),
         Value::ExtDate(s) => plain(CellKind::Date, s.clone()),
     }
+}
+
+/// How the values of a complex field are shown in one cell. Attachments are named with their
+/// stored size and never read; multi-value fields list their values.
+fn complex_cell(data: Option<&ComplexData>, key: i64) -> Option<(CellKind, String, String)> {
+    let text = |t: String| Some((CellKind::Text, t, String::new()));
+    let Some(data) = data else {
+        return text("(complex field; its values are not in the file)".to_owned());
+    };
+    if data.kind == ComplexKind::Unsupported {
+        return text("(complex field of an unsupported kind)".to_owned());
+    }
+    let items = data.items.get(&key)?;
+    let mut parts: Vec<String> = Vec::new();
+    for item in items.iter().take(MAX_COMPLEX_IN_CELL) {
+        match item {
+            ComplexItem::Attachment { name, size } => {
+                let name = if name.is_empty() { "(unnamed)" } else { name.as_str() };
+                parts.push(format!("{name} ({size} bytes)"));
+            }
+            ComplexItem::Value(v) => {
+                if let Some((_, t, _)) = cell(v) {
+                    parts.push(t);
+                }
+            }
+            ComplexItem::Version => {}
+        }
+    }
+    if data.kind == ComplexKind::VersionHistory {
+        return text(format!("({} versions of this text are kept; only the current one is shown)", items.len()));
+    }
+    if items.len() > MAX_COMPLEX_IN_CELL {
+        parts.push(format!("... ({} more)", items.len() - MAX_COMPLEX_IN_CELL));
+    }
+    text(parts.join("; "))
 }
 
 /// Currency with at least two decimals: `-1234.50`.
