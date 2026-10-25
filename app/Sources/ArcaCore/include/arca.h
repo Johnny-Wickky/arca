@@ -524,6 +524,163 @@ int32_t arca_passport_update(
 );
 
 /**
+ * @brief Local statistics: the blob after one scanned document.
+ *
+ * The statistics are an opaque, versioned, CRC-protected blob that the app keeps in its private
+ * storage (nothing else about documents is ever stored). Pass NULL / 0 for "no statistics yet";
+ * a damaged or unknown blob is treated as empty. The core has no clock: `day` is the number of
+ * days since 1970-01-01 in the device's LOCAL calendar.
+ *
+ * @param verdict Wire tag of the X-ray verdict: 0 Clean, 1 HiddenTrackers,
+ *        2 ActiveContentNeutralized, 3 Rejected, 4 Unverified (anything else counts as 4).
+ * @param trackers Remote-content findings of medium severity or higher (negative = 0).
+ * @param active Active-content findings of medium severity or higher (negative = 0).
+ * @param[out] out Receives the new blob. Caller must free with `arca_buffer_free`.
+ * @return ARCA_STATUS_OK (0) on success, or an error status code.
+ */
+int32_t arca_stats_record_scan(
+    const uint8_t *blob,
+    size_t blob_len,
+    int32_t day,
+    int32_t verdict,
+    int32_t trackers,
+    int32_t active,
+    ArcaBuffer *out
+);
+
+/**
+ * @brief Local statistics: the blob after a sterile copy (`event` 1) or an opened picture (2).
+ *
+ * Any other event code returns the blob unchanged. See `arca_stats_record_scan`.
+ */
+int32_t arca_stats_record_event(
+    const uint8_t *blob,
+    size_t blob_len,
+    int32_t day,
+    int32_t event,
+    ArcaBuffer *out
+);
+
+/**
+ * @brief Local statistics: week, month and all-time totals as JSON.
+ *
+ * `{"version":1,"empty":false,"firstDay":N,"days":N,"week":{...},"month":{...},"all":{...}}`
+ * where every window holds opened, clean, trackers, active, threats, rejected, unverified,
+ * sterile and pictures.
+ *
+ * @param today Today's day number in the device's local calendar.
+ * @param[out] out Receives the JSON. Caller must free with `arca_buffer_free`.
+ */
+int32_t arca_stats_summary(
+    const uint8_t *blob,
+    size_t blob_len,
+    int32_t today,
+    ArcaBuffer *out
+);
+
+/**
+ * @brief Local statistics: folds the counters of an older app version into the all-time total.
+ *
+ * @param passport The old 36-byte patron record (NULL / 0 if none); when it is missing or
+ *        damaged, `documents` and `threats` (the old plain counters) are used instead.
+ * Call it once, then delete the old data. Nothing is added when everything is zero.
+ */
+int32_t arca_stats_fold_legacy(
+    const uint8_t *blob,
+    size_t blob_len,
+    const uint8_t *passport,
+    size_t passport_len,
+    int64_t documents,
+    int64_t threats,
+    int32_t today,
+    ArcaBuffer *out
+);
+
+/**
+ * @brief The Patron Passport JSON (as `arca_passport`) built from the statistics blob.
+ */
+int32_t arca_stats_passport(
+    int32_t lang,
+    const uint8_t *blob,
+    size_t blob_len,
+    int32_t today,
+    ArcaBuffer *out
+);
+
+/**
+ * @brief Reminder rules: when to show the next support reminder.
+ *
+ * 7 to 9 local days after `now_ms` (epoch milliseconds), between 12:00 and 17:59 local time.
+ * `offset_ms` is the UTC offset of the local time zone in milliseconds, `rnd` any random
+ * number. The core reads no clock and draws no randomness.
+ */
+int64_t arca_reminder_plan(int64_t now_ms, int32_t offset_ms, int32_t rnd);
+
+/**
+ * @brief Reminder rules: moves a planned time so that it keeps its local wall-clock time when
+ *        the UTC offset at that time (`offset_at_target_ms`) differs from the one used.
+ */
+int64_t arca_reminder_refine(int64_t target_ms, int32_t offset_used_ms, int32_t offset_at_target_ms);
+
+/**
+ * @brief Reminder rules: what to do when the reminder fires.
+ *
+ * JSON `{"action":"show|quietHours|tooSoon|noPermission|disabled","at":<epoch ms>}`: post
+ * only on "show"; in every case except "disabled" arm the next trigger for `at`.
+ * Reminders are shown between 11:00 and 20:30 local time, at least six days apart.
+ *
+ * @param last_shown_ms When the previous reminder was shown (0 if never).
+ * @param enabled Non-zero if the person has reminders switched on.
+ * @param can_post Non-zero if the system lets the app post notifications.
+ */
+int32_t arca_reminder_on_fire(
+    int64_t now_ms,
+    int32_t offset_ms,
+    int64_t last_shown_ms,
+    int32_t enabled,
+    int32_t can_post,
+    int32_t rnd,
+    ArcaBuffer *out
+);
+
+/**
+ * @brief Reminder rules: what to do with the stored time when the app starts.
+ *
+ * JSON `{"action":"off|keep|plan","at":<epoch ms>}`: "off" cancels, "keep" and "plan" arm the
+ * trigger for `at` and store it. `next_ms` is the stored time (0 if none).
+ */
+int32_t arca_reminder_on_start(
+    int64_t next_ms,
+    int64_t now_ms,
+    int32_t offset_ms,
+    int32_t enabled,
+    int32_t rnd,
+    ArcaBuffer *out
+);
+
+/**
+ * @brief Reminder rules: which reminder text to show.
+ *
+ * Returns `index | (uses << 8)`; `uses` is 0 none, 1 documents, 2 threats, 3 both (which
+ * counters the text quotes, as `%1$d` / `%2$d`). Texts that quote a zero counter are skipped.
+ * Store `index + 1` as the next `seq`.
+ */
+int32_t arca_reminder_pick(int32_t seq, int64_t documents, int64_t threats);
+
+/** @brief Reminder rules: the number of reminder texts the app must have. */
+int32_t arca_reminder_item_count(void);
+
+/**
+ * @brief The extra support addresses (crypto wallets, Boosty) as JSON.
+ *
+ * `{"items":[{"kind":"crypto"|"boosty","label":..,"network":..,"value":..,"memo":..}]}`. The list
+ * is empty until the owner configures it (crates/arca-attribution/src/support.rs). Show the
+ * full value first; copy a wallet address only on an explicit tap (mark the clipboard item
+ * sensitive and clear it later); open a Boosty address only after an explicit tap.
+ */
+int32_t arca_extra_support(ArcaBuffer *out);
+
+/**
  * @brief Retrieves verbatim license text strings.
  *
  * @param which License selector: `0` = GNU AGPLv3, `1` = Additional Terms (Russian), `2` = English.

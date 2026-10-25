@@ -221,3 +221,33 @@ fn a_module_that_is_not_the_recorded_one_is_refused() {
     let other = arca_engine::guest_digest_of(b"another module");
     assert_eq!(Engine::pinned(wasm, &other, EngineConfig::default()).unwrap_err(), Status::Fault);
 }
+
+#[test]
+fn statistics_and_reminder_rules_work_without_a_guest() {
+    // Feed three outcomes, read the totals, fold the old counters in, drop the blob.
+    let mut blob = stats_record_scan(&[], 20_000, 0, 0, 0);
+    blob = stats_record_scan(&blob, 20_000, 2, 1, 4);
+    blob = stats_record_event(&blob, 20_001, 1);
+    let json = String::from_utf8(stats_summary(&blob, 20_001)).expect("utf-8");
+    assert!(json.contains("\"week\":{\"opened\":2,\"clean\":1,\"trackers\":1,\"active\":4"), "{json}");
+    assert!(json.contains("\"sterile\":1"), "{json}");
+    // Hostile blobs and arguments are empty statistics, never a failure.
+    let junk = stats_summary(&[0xff; 300], -1);
+    assert!(String::from_utf8(junk).expect("utf-8").contains("\"empty\":true"));
+    let folded = stats_fold_legacy(&[], &[], 5, 2, 20_000);
+    assert!(String::from_utf8(stats_summary(&folded, 20_000)).expect("utf-8").contains("\"all\":{\"opened\":5"));
+    let pass = String::from_utf8(stats_passport(1, &blob, 20_001)).expect("utf-8");
+    assert!(pass.contains("\"documents\":2"), "{pass}");
+
+    // Reminder rules.
+    let now = 1_772_323_200_000_i64;
+    let t = reminder_plan(now, 3_600_000, 7);
+    assert!(t > now + 6 * 86_400_000);
+    assert_eq!(reminder_refine(t, 3_600_000, 3_600_000), t);
+    let fire = String::from_utf8(reminder_on_fire(now + 13 * 3_600_000, 0, 0, 1, 1, 0)).expect("utf-8");
+    assert!(fire.starts_with("{\"action\":\"show\""), "{fire}");
+    let start = String::from_utf8(reminder_on_start(0, now, 0, 1, 0)).expect("utf-8");
+    assert!(start.contains("\"plan\""), "{start}");
+    assert_eq!(reminder_item_count(), 38);
+    assert_eq!(reminder_pick(0, 0, 0) >> 8, 0);
+}
