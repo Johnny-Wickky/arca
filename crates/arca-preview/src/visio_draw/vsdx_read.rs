@@ -626,8 +626,7 @@ pub(crate) fn read(
     let mut infos = std::mem::take(&mut pb.pages);
     let mut sheets = std::mem::take(&mut pb.page_sheets).into_iter();
     infos.truncate(MAX_PAGES);
-    let mut doc = Doc::default();
-    doc.pages_cut = infos.len() >= MAX_PAGES;
+    let mut doc = Doc { pages_cut: infos.len() >= MAX_PAGES, ..Doc::default() };
     for info in &infos {
         let (cells, layers) = sheets.next().flatten().unwrap_or_default();
         doc.pages.push(PageDef {

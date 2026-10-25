@@ -59,7 +59,6 @@ const MAX_CHUNKS: usize = 2_000_000;
 
 // Pointer types.
 const POINTER_TRAILER: i32 = 20;
-const POINTER_PAGES: i32 = 0x27;
 pub(crate) const POINTER_PAGE: i32 = 0x15;
 const POINTER_NAMES: i32 = 0x32;
 const POINTER_NAME_IDX: i32 = 0xc9;
@@ -160,8 +159,6 @@ pub(crate) struct Chunk<'a> {
     pub(crate) id: u32,
     /// The level the chunk says it is at, plus the level of the stream that holds it.
     pub(crate) level: u32,
-    /// The "list" word of the header (non-zero for chunks that list their children).
-    pub(crate) list: u32,
     pub(crate) body: &'a [u8],
 }
 
@@ -199,7 +196,7 @@ pub(crate) fn chunks(data: &[u8], version: u16, max: usize) -> Vec<Chunk<'_>> {
         }
         let body_at = pos + CHUNK_HEADER;
         let Some(body) = data.get(body_at..body_at + len) else { break };
-        out.push(Chunk { ty, id, level: u32::from(level), list: unknown1, body });
+        out.push(Chunk { ty, id, level: u32::from(level), body });
         let mut end = body_at + len;
         if has_trailer && end + 8 <= data.len() {
             end += 8;
@@ -483,7 +480,6 @@ impl Walk<'_, '_> {
                     ty: u32::try_from(p.ty).unwrap_or(0),
                     id: idx,
                     level: level + 1,
-                    list: 0,
                     body: content.data.get(shift..).unwrap_or(&[]),
                 };
                 f(Ev::Chunk(&c));
@@ -666,12 +662,6 @@ fn read_page(
     }
     def.loaded = true;
     Some(def)
-}
-
-/// The number of foreground pages of the drawing.
-pub(crate) fn page_count(cf: &CompoundFile<'_>, policy: &PreviewPolicy) -> Result<usize, PreviewError> {
-    let doc = read_doc(cf, policy, Want::Count)?;
-    Ok(doc.pages.iter().filter(|p| !p.background).count())
 }
 
 /// Shows the text of the pages of the drawing.

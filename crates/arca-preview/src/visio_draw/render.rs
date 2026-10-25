@@ -460,9 +460,7 @@ impl<'a> Painter<'a> {
             }
             self.emit_path(&segs, m, want_fill, want_line, fill_color, line_color, line_pt);
         }
-        if geoms.is_empty() && look.sheet.is_1d() {
-            self.straight(look, parent, line_pt, line_color, line_on);
-        } else if geoms.is_empty() && look.target.is_some_and(Sheet::is_1d) && look.sheet.is_1d() {
+        if geoms.is_empty() && look.cell("BeginX").is_some() && look.cell("EndX").is_some() {
             self.straight(look, parent, line_pt, line_color, line_on);
         }
         if line_on && let Some(pts) = first_path {
@@ -875,31 +873,31 @@ fn merge_geom(base: &Geom, own: &Geom) -> Geom {
 }
 
 fn is_closed(segs: &[Seg]) -> bool {
-    let mut start: Option<(f64, f64)> = None;
-    let mut cur: Option<(f64, f64)> = None;
-    let mut any = false;
+    let mut start = (0.0f64, 0.0f64);
+    let mut cur = (0.0f64, 0.0f64);
+    let mut drawn = false;
     for s in segs {
         match *s {
             Seg::M(x, y) => {
-                start = Some((x, y));
-                cur = Some((x, y));
+                start = (x, y);
+                cur = (x, y);
+                drawn = false;
             }
-            Seg::L(x, y) => cur = Some((x, y)),
-            Seg::C(c) => cur = Some((c[4], c[5])),
-            Seg::Z => {
-                any = true;
-                cur = start;
+            Seg::L(x, y) => {
+                cur = (x, y);
+                drawn = true;
             }
+            Seg::C(c) => {
+                cur = (c[4], c[5]);
+                drawn = true;
+            }
+            Seg::Z => return true,
         }
-        if let (Some(a), Some(b)) = (start, cur)
-            && !matches!(s, Seg::M(..))
-            && (a.0 - b.0).abs() < 1e-9
-            && (a.1 - b.1).abs() < 1e-9
-        {
-            any = true;
+        if drawn && (start.0 - cur.0).abs() < 1e-9 && (start.1 - cur.1).abs() < 1e-9 {
+            return true;
         }
     }
-    any
+    false
 }
 
 /// The vertices of a path in page coordinates (control points of curves included).

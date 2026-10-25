@@ -52,16 +52,6 @@ pub(crate) struct Flags {
     pub(crate) cut: bool,
 }
 
-impl Flags {
-    pub(crate) fn merge(&mut self, o: Self) {
-        self.nurbs |= o.nurbs;
-        self.spline |= o.spline;
-        self.bad_formula |= o.bad_formula;
-        self.degree_capped |= o.degree_capped;
-        self.cut |= o.cut;
-    }
-}
-
 /// Largest coordinate kept (inches).
 const MAX_COORD: f64 = 1.0e7;
 /// Highest degree of a spline that is evaluated.
