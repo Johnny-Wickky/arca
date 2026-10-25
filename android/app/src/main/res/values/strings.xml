@@ -327,6 +327,7 @@
     <string name="pages_too_large">Page too large to show</string>
     <string name="pages_note_truncated">The page is very complex; part of it is not shown.</string>
     <string name="pages_note_approx">Gradients and patterns are shown as flat colours, pictures as grey boxes (tap one to open it), fonts are replaced.</string>
+    <string name="fold_dock_label">Controls beside the fold</string>
     <string name="image_show">Show picture</string>
     <string name="image_hide">Hide picture</string>
     <string name="image_loading">Decoding the picture in the sandbox…</string>

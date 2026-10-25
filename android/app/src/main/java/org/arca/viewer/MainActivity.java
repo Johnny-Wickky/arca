@@ -14,6 +14,7 @@ import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import org.arca.viewer.core.FoldLayout;
 import org.arca.viewer.ui.AboutScreen;
 import org.arca.viewer.ui.Compat;
 import org.arca.viewer.ui.DiagnosticsScreen;
@@ -78,7 +79,21 @@ public final class MainActivity extends Activity implements Session.Listener, En
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
                 int[] i = Compat.insets(insets);
+                boolean padded = v.getPaddingLeft() != i[0] || v.getPaddingTop() != i[1]
+                    || v.getPaddingRight() != i[2] || v.getPaddingBottom() != i[3];
                 v.setPadding(i[0], i[1], i[2], i[3]);
+                // A hinge reported as a display cutout, or bars that moved the area around a fold:
+                // lay the screen out again (once the insets pass is over).
+                boolean hinge = Hinge.onInsets(insets);
+                FoldLayout fold = Hinge.current();
+                if (hinge || (padded && fold != null && fold.split())) {
+                    v.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            show();
+                        }
+                    });
+                }
                 return insets;
             }
         });
@@ -215,12 +230,19 @@ public final class MainActivity extends Activity implements Session.Listener, En
         try {
             do {
                 rebuildRequested = false;
+                // Where the fold is, before any screen asks Adaptive how big the window is.
+                Hinge.update(this);
                 Route r = ROUTES.get(ROUTES.size() - 1);
                 top = create(r);
                 View view = top.build();
+                View dock = Hinge.hasDock() ? top.dock() : null;
                 root.removeAllViews();
-                // Across the fold of a half-open foldable the screen takes one half of the window.
-                root.addView(view, Hinge.layout(this));
+                // Across a fold the screen takes the document's part of the window, and the
+                // controls it moved out (if any) the other part: book (left/right) or tabletop (upper/lower).
+                root.addView(view, Hinge.layout(root));
+                if (dock != null) {
+                    root.addView(dock, Hinge.dockLayout(root));
+                }
             } while (rebuildRequested);
         } finally {
             building = false;
