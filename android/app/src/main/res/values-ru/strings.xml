@@ -323,6 +323,7 @@
     <string name="pages_too_large">Страница слишком велика для показа</string>
     <string name="pages_note_truncated">Страница очень сложная, часть её не показана.</string>
     <string name="pages_note_approx">Градиенты и узоры показаны плоским цветом, картинки — серыми прямоугольниками (нажмите, чтобы открыть), шрифты заменены.</string>
+    <string name="fold_dock_label">Элементы управления у сгиба</string>
     <string name="image_show">Показать картинку</string>
     <string name="image_hide">Скрыть картинку</string>
     <string name="image_loading">Картинка раскодируется в песочнице…</string>

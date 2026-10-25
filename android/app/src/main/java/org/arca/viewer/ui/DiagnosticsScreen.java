@@ -257,7 +257,7 @@ public final class DiagnosticsScreen extends Screen {
         }
         return w + " × " + h + " dp, " + cls + (Adaptive.isShort(act) ? ", short" : "")
             + (Adaptive.isLandscape(act) ? ", landscape" : ", portrait")
-            + (Adaptive.twoPane(act) ? ", two-pane" : "");
+            + (Adaptive.twoPane(act) ? ", two-pane" : "") + "; " + Hinge.describe();
     }
 
     private String report() {

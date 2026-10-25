@@ -26,6 +26,14 @@ public final class PagesScreen extends Screen {
         super(act);
     }
 
+    /** The page controls, when the window is folded (see {@link #dock()}). */
+    private View dockView;
+
+    @Override
+    public View dock() {
+        return dockView;
+    }
+
     @Override
     public View build() {
         final Session s = Session.get();
@@ -60,7 +68,12 @@ public final class PagesScreen extends Screen {
         nav.addView(pos, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         pos.setGravity(android.view.Gravity.CENTER);
         nav.addView(next);
-        col.addView(nav, ui.fillWidth());
+        if (Hinge.hasDock()) {
+            // Folded window (tabletop or book): the page is on one part, the page controls on the other.
+            dockView = dockPane(nav);
+        } else {
+            col.addView(nav, ui.fillWidth());
+        }
 
         if (st.running) {
             col.addView(ui.text(R.string.pages_loading, Ui.BODY));

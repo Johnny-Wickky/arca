@@ -8,12 +8,13 @@ package org.arca.viewer.core;
  * functions, so that the rules can be tested without a device.
  *
  * <p>The platform's public API (the app has no AndroidX, so no Jetpack WindowManager) tells the
- * hinge <em>angle</em> (a sensor, Android 11+) but not where the fold lies. The position is
- * inferred: a foldable folds in the middle of its inner display, along the long side when the
+ * hinge <em>angle</em> (a sensor, Android 11+) but, for a flexible screen, not where the fold
+ * lies; only a dual-screen hinge is reported (as a display cutout, see {@link Fold}). The
+ * position of a flexible fold is inferred: a foldable folds in the middle of its inner display, along the long side when the
  * display is nearly square (a book, like the Galaxy Z Fold or the Pixel Fold) and across it when
  * the display is tall and narrow (a flip phone). Rotation turns the fold line with the window.
  * This is a heuristic, written down here so that it can be argued with; it only applies while the
- * device reports a half-open hinge.
+ * device reports a half-open hinge. The areas around the fold are computed by {@link FoldLayout}.
  */
 public final class Posture {
     private Posture() {}
@@ -36,7 +37,7 @@ public final class Posture {
 
     /** The width of the band around the fold that is left empty, in dp. */
     public static final int GAP_DP = 24;
-    /** Below this size (dp) along the fold a split would leave too little to read. */
+    /** Below this size (dp) across a bend that hides nothing a split would leave too little to read. */
     static final int MIN_SPLIT_DP = 480;
     /** A display at least this close to square folds like a book. */
     static final float BOOK_RATIO = 0.7f;
@@ -68,28 +69,5 @@ public final class Posture {
         boolean bookLike = hi > 0 && (float) lo / hi >= BOOK_RATIO;
         boolean upright = (rotation & 1) == 0;
         return upright == bookLike;
-    }
-
-    /**
-     * The part of the window that stays clear of the fold while the device is half open:
-     * {@code {left, top, width, height}} in dp, or {@code null} when the whole window can be used
-     * (not half open, or too small to split). With a vertical fold it is one half, on the reading
-     * side ({@code rtl} chooses the right one); with a horizontal fold, the upper half.
-     */
-    public static int[] freeArea(int posture, int widthDp, int heightDp, boolean foldVertical, boolean rtl) {
-        if (posture != HALF_OPEN) {
-            return null;
-        }
-        if (foldVertical) {
-            if (widthDp < MIN_SPLIT_DP) {
-                return null;
-            }
-            int w = (widthDp - GAP_DP) / 2;
-            return new int[] {rtl ? widthDp - w : 0, 0, w, heightDp};
-        }
-        if (heightDp < MIN_SPLIT_DP) {
-            return null;
-        }
-        return new int[] {0, 0, widthDp, (heightDp - GAP_DP) / 2};
     }
 }

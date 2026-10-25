@@ -22,7 +22,7 @@ public final class Adaptive {
 
     /**
      * Width in dp of the part of the window the app uses: the whole window, or one half of it
-     * while a half-open foldable has its fold across it (see {@link Hinge}).
+     * while a fold or hinge lies across it (see {@link Hinge}).
      */
     public static int widthDp(Context c) {
         int[] free = Hinge.freeArea(c);

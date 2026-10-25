@@ -68,6 +68,26 @@ public final class Compat {
         return bars;
     }
 
+    /**
+     * The bounding rectangles of the display cutouts in these insets, {@code {left, top, right,
+     * bottom}} in pixels, in window coordinates (API 28+; none before). A dual-screen device
+     * reports its hinge as one of them; see {@link org.arca.viewer.core.Fold}.
+     */
+    public static int[][] cutoutRects(WindowInsets in) {
+        if (Build.VERSION.SDK_INT >= 28) {
+            return Api28.cutoutRects(in);
+        }
+        return new int[0][];
+    }
+
+    /**
+     * The size in pixels of this window and of the largest window the display allows,
+     * {@code {width, height, maxWidth, maxHeight}} (API 30+); {@code null} before.
+     */
+    public static int[] windowSizePx(Activity a) {
+        return Build.VERSION.SDK_INT >= 30 ? Api30.windowSize(a) : null;
+    }
+
     /** Keeps the window out of screenshots, screen recordings and the recents thumbnail. */
     public static void setSecure(Activity a, boolean secure) {
         if (secure) {
@@ -259,6 +279,20 @@ public final class Compat {
             lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             w.setAttributes(lp);
         }
+
+        static int[][] cutoutRects(WindowInsets in) {
+            android.view.DisplayCutout cut = in.getDisplayCutout();
+            if (cut == null) {
+                return new int[0][];
+            }
+            java.util.List<android.graphics.Rect> rects = cut.getBoundingRects();
+            int[][] out = new int[rects.size()][];
+            for (int i = 0; i < out.length; i++) {
+                android.graphics.Rect r = rects.get(i);
+                out[i] = new int[] {r.left, r.top, r.right, r.bottom};
+            }
+            return out;
+        }
     }
 
     /** API 29+ calls, isolated so that older devices never load them. */
@@ -324,6 +358,13 @@ public final class Compat {
         static int[] insets(WindowInsets in) {
             android.graphics.Insets i = in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             return new int[] {i.left, i.top, i.right, i.bottom};
+        }
+
+        static int[] windowSize(Activity a) {
+            android.view.WindowManager wm = a.getWindowManager();
+            android.graphics.Rect now = wm.getCurrentWindowMetrics().getBounds();
+            android.graphics.Rect max = wm.getMaximumWindowMetrics().getBounds();
+            return new int[] {now.width(), now.height(), max.width(), max.height()};
         }
     }
 

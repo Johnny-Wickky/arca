@@ -14,6 +14,8 @@ import org.arca.viewer.core.Capabilities;
 import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
+import org.arca.viewer.core.Fold;
+import org.arca.viewer.core.FoldLayout;
 import org.arca.viewer.core.ImageFacts;
 import org.arca.viewer.core.Json;
 import org.arca.viewer.core.Model;
@@ -652,19 +654,160 @@ public final class CoreTest {
         check(Posture.foldIsVertical(1080, 2640, 3), "flip, turned: the fold is vertical");
         check(!Posture.foldIsVertical(0, 0, 0), "an unknown display folds across");
 
-        // Free area: only while half open and only if the side along the fold is long enough.
-        check(Posture.freeArea(Posture.FLAT, 900, 700, true, false) == null, "flat: all of it");
-        check(Posture.freeArea(Posture.UNKNOWN, 900, 700, true, false) == null, "unknown: all of it");
-        check(Posture.freeArea(Posture.CLOSED, 900, 700, true, false) == null, "closed: all of it");
-        int[] left = Posture.freeArea(Posture.HALF_OPEN, 904, 750, true, false);
-        check(left != null && left[0] == 0 && left[1] == 0 && left[2] == 440 && left[3] == 750, "left half");
-        int[] right = Posture.freeArea(Posture.HALF_OPEN, 904, 750, true, true);
-        check(right != null && right[0] == 464 && right[2] == 440, "the right half when reading right to left");
-        check(left != null && left[2] <= (904 - Posture.GAP_DP) / 2, "the half stays clear of the gap");
-        int[] top = Posture.freeArea(Posture.HALF_OPEN, 412, 900, false, false);
-        check(top != null && top[1] == 0 && top[2] == 412 && top[3] == 438, "upper half across a horizontal fold");
-        check(Posture.freeArea(Posture.HALF_OPEN, 400, 700, true, false) == null, "too narrow to split");
-        check(Posture.freeArea(Posture.HALF_OPEN, 900, 400, false, false) == null, "too short to split");
+        // The inferred fold: only while half open; the area is worked out by FoldLayout.
+        check(Fold.inferred(Posture.FLAT, 900, 700, true) == null, "flat: no fold to keep clear of");
+        check(Fold.inferred(Posture.UNKNOWN, 900, 700, true) == null, "unknown: none");
+        check(Fold.inferred(Posture.CLOSED, 900, 700, true) == null, "closed: none");
+        FoldLayout left = FoldLayout.compute(904, 750, Fold.inferred(Posture.HALF_OPEN, 904, 750, true), false);
+        check(Arrays.equals(new int[] {0, 0, 440, 750}, left.primary), "left half");
+        FoldLayout right = FoldLayout.compute(904, 750, Fold.inferred(Posture.HALF_OPEN, 904, 750, true), true);
+        check(Arrays.equals(new int[] {464, 0, 440, 750}, right.primary), "the right half when reading right to left");
+        check(left.primary[2] <= (904 - Posture.GAP_DP) / 2, "the half stays clear of the gap");
+        FoldLayout top = FoldLayout.compute(412, 900, Fold.inferred(Posture.HALF_OPEN, 412, 900, false), false);
+        check(Arrays.equals(new int[] {0, 0, 412, 438}, top.primary), "upper half across a horizontal fold");
+        check(!FoldLayout.compute(400, 700, Fold.inferred(Posture.HALF_OPEN, 400, 700, true), false).split(), "too narrow to split");
+        check(!FoldLayout.compute(900, 400, Fold.inferred(Posture.HALF_OPEN, 900, 400, false), false).split(), "too short to split");
+    }
+
+    /** Whether {@code area} ({@code {left, top, width, height}}) comes within {@code margin} of the fold's band. */
+    private static boolean touches(int[] area, Fold f, int margin) {
+        int from = f.vertical ? area[0] : area[1];
+        int to = from + (f.vertical ? area[2] : area[3]);
+        return from < f.end + margin && to > f.start - margin;
+    }
+
+    static void fold() {
+        // Dual-screen hinge reported as a display cutout (dp, window coordinates).
+        Fold v = Fold.fromRect(657, 0, 693, 900, 1350, 900);
+        check(v != null && v.vertical && v.start == 657 && v.end == 693 && v.occluding && v.separating, "vertical hinge");
+        Fold h = Fold.fromRect(0, 657, 900, 693, 900, 1350);
+        check(h != null && !h.vertical && h.start == 657 && h.end == 693 && h.occluding, "horizontal hinge");
+        check(Fold.fromRect(400, 0, 440, 40, 900, 1350) == null, "a camera hole is not a hinge");
+        check(Fold.fromRect(0, 0, 900, 30, 900, 1350) == null, "a notch along the top edge is not a hinge");
+        check(Fold.fromRect(0, 0, 40, 900, 1350, 900) == null, "a band flush with the edge is not a hinge");
+        check(Fold.fromRect(300, 0, 900, 900, 1350, 900) == null, "thicker than a third of the window");
+        check(Fold.fromRect(657, 0, 693, 500, 1350, 900) == null, "not spanning the window");
+        check(Fold.fromRect(10, 10, 10, 20, 1350, 900) == null, "empty");
+        check(Fold.fromRect(657, 0, 693, 900, 0, 0) == null, "no window");
+
+        // From pixels: converted outward, the thickest candidate wins, rubbish is ignored.
+        Fold px = Fold.fromRectsPx(new int[][] {{900, 0, 1000, 60}, {961, 0, 1039, 1600}}, 2000, 1600, 2f);
+        check(px != null && px.vertical && px.start == 480 && px.end == 520, "pixels to dp, outward");
+        Fold two = Fold.fromRectsPx(new int[][] {null, {1, 2, 3}, {980, 0, 1020, 1600}, {950, 0, 1050, 1600}}, 2000, 1600, 2f);
+        check(two != null && two.start == 475 && two.end == 525, "the thickest hinge");
+        check(Fold.fromRectsPx(new int[0][], 2000, 1600, 2f) == null, "no cutout");
+        check(Fold.fromRectsPx(null, 2000, 1600, 2f) == null, "no list");
+        check(Fold.fromRectsPx(new int[][] {{961, 0, 1039, 1600}}, 2000, 1600, 0f) == null, "no density");
+
+        // Inferred fold and the choice between sources.
+        Fold inf = Fold.inferred(Posture.HALF_OPEN, 904, 750, true);
+        check(inf != null && inf.vertical && inf.start == 452 && inf.end == 452 && !inf.occluding && inf.separating, "inferred");
+        check(Fold.pick(v, inf) == v, "what the platform reported wins");
+        check(Fold.pick(null, inf) == inf, "else the guess");
+        check(Fold.pick(null, null) == null, "else nothing");
+        check(Fold.hinge(true, 10, 20).separating, "a hinge always separates");
+        check(Fold.hinge(true, 20, 10).start == 10, "the extent is ordered");
+
+        // No split: no fold, a fold that does not separate, a window that does not cross it.
+        FoldLayout none = FoldLayout.compute(900, 700, null, false);
+        check(!none.split() && none.kind == FoldLayout.NONE && !none.hasDock()
+            && Arrays.equals(new int[] {0, 0, 900, 700}, none.primary), "no fold, whole window");
+        check(!FoldLayout.compute(900, 700, Fold.hairline(true, 450, false), false).split(), "a flat fold does not split");
+        check(!FoldLayout.compute(900, 700, Fold.hairline(true, 1200, true), false).split(), "fold beyond the window");
+        check(!FoldLayout.compute(900, 700, Fold.hinge(true, 1000, 1036), false).split(), "hinge beyond the window");
+        check(!FoldLayout.compute(900, 700, Fold.hinge(true, -80, 0), false).split(), "hinge before the window");
+        check(!FoldLayout.compute(1000, 700, Fold.hinge(true, 0, 1000), false).split(), "a hinge over everything: nothing better exists");
+        check(!FoldLayout.compute(0, 0, v, false).split(), "no window");
+        eq("flat", none.describe(), "describe");
+
+        // Book: the dual-screen hinge, vertical, in the middle of 1350 x 900.
+        FoldLayout book = FoldLayout.compute(1350, 900, v, false);
+        check(book.kind == FoldLayout.BOOK && book.split() && book.hasDock(), "book");
+        check(Arrays.equals(new int[] {0, 0, 645, 900}, book.primary), "document on the left page");
+        check(Arrays.equals(new int[] {705, 0, 645, 900}, book.secondary), "controls on the right page");
+        eq(2, book.columns().size(), "two columns");
+        check(!touches(book.primary, v, Posture.GAP_DP / 2) && !touches(book.secondary, v, Posture.GAP_DP / 2),
+            "no column within the gap of the hinge");
+        FoldLayout rtl = FoldLayout.compute(1350, 900, v, true);
+        check(Arrays.equals(new int[] {705, 0, 645, 900}, rtl.primary) && Arrays.equals(new int[] {0, 0, 645, 900}, rtl.secondary),
+            "right to left: document on the right page");
+        eq("book", book.describe(), "describe book");
+
+        // The hinge hides pixels even in a window too small for a bend to split it.
+        Fold small = Fold.hinge(true, 190, 210);
+        FoldLayout tiny = FoldLayout.compute(400, 700, small, false);
+        check(tiny.kind == FoldLayout.BOOK && tiny.secondary == null && !touches(tiny.primary, small, 0), "small window, hinge still avoided");
+        check(!FoldLayout.compute(400, 700, Fold.hairline(true, 200, true), false).split(), "but a bend in it is not split");
+        eq("book (one page)", tiny.describe(), "describe one page");
+
+        // A hinge near an edge: the reading page is too narrow, so the document takes the wide one.
+        Fold near = Fold.hinge(true, 150, 186);
+        FoldLayout swap = FoldLayout.compute(1000, 800, near, false);
+        check(Arrays.equals(new int[] {198, 0, 802, 800}, swap.primary) && swap.secondary == null, "narrow reading page swapped for the wide one");
+        // The hinge reaches into the window from the left, or sits at its far edge.
+        FoldLayout cut = FoldLayout.compute(900, 800, Fold.hinge(true, -50, 300), false);
+        check(Arrays.equals(new int[] {312, 0, 588, 800}, cut.primary) && cut.secondary == null, "window starting inside the hinge");
+        FoldLayout far = FoldLayout.compute(900, 800, Fold.hinge(true, 850, 950), false);
+        check(Arrays.equals(new int[] {0, 0, 838, 800}, far.primary) && far.secondary == null, "window ending inside the hinge");
+
+        // Tabletop: document above, controls below; split ratios follow the fold.
+        FoldLayout table = FoldLayout.compute(412, 900, Fold.inferred(Posture.HALF_OPEN, 412, 900, false), false);
+        check(table.kind == FoldLayout.TABLETOP && Arrays.equals(new int[] {0, 0, 412, 438}, table.primary)
+            && Arrays.equals(new int[] {0, 462, 412, 438}, table.secondary), "tabletop, fold in the middle");
+        check(FoldLayout.compute(412, 900, Fold.inferred(Posture.HALF_OPEN, 412, 900, false), true).primary[1] == 0, "rtl does not turn a tabletop over");
+        eq("tabletop", table.describe(), "describe tabletop");
+        FoldLayout third = FoldLayout.compute(800, 1000, Fold.hairline(false, 300, true), false);
+        check(Arrays.equals(new int[] {0, 0, 800, 288}, third.primary) && Arrays.equals(new int[] {0, 312, 800, 688}, third.secondary),
+            "fold at 30 percent: 288 above, 688 below");
+        FoldLayout high = FoldLayout.compute(800, 1000, Fold.hairline(false, 150, true), false);
+        check(Arrays.equals(new int[] {0, 162, 800, 838}, high.primary) && high.secondary == null, "fold at 15 percent: the document takes the lower part");
+        FoldLayout low = FoldLayout.compute(800, 1000, Fold.hairline(false, 880, true), false);
+        check(Arrays.equals(new int[] {0, 0, 800, 868}, low.primary) && low.secondary == null, "fold at 88 percent: no room for controls");
+        Fold bar = Fold.hinge(false, 440, 470);
+        FoldLayout hb = FoldLayout.compute(900, 900, bar, false);
+        check(Arrays.equals(new int[] {0, 0, 900, 428}, hb.primary) && Arrays.equals(new int[] {0, 482, 900, 418}, hb.secondary)
+            && !touches(hb.primary, bar, 12) && !touches(hb.secondary, bar, 12), "a horizontal hinge band");
+
+        // Sweep: whatever the window, fold, direction and locale, no column reaches the fold.
+        String bad = null;
+        int[] sizes = {200, 320, 412, 480, 600, 720, 904, 1350};
+        int[] places = {-40, 0, 30, 100, 160, 300, 450, 700, 880, 1349};
+        int[] widths = {0, 12, 36, 120};
+        for (int w : sizes) {
+            for (int hgt : sizes) {
+                for (int pos : places) {
+                    for (int thick : widths) {
+                        for (int mode = 0; mode < 8 && bad == null; mode++) {
+                            boolean vert = (mode & 1) != 0;
+                            boolean rt = (mode & 2) != 0;
+                            boolean occl = (mode & 4) != 0;
+                            Fold f = occl ? Fold.hinge(vert, pos, pos + thick) : Fold.hairline(vert, pos, true);
+                            FoldLayout l = FoldLayout.compute(w, hgt, f, rt);
+                            String id = " window " + w + "x" + hgt + " fold " + (vert ? "v" : "h") + pos + "+" + thick
+                                + (occl ? " hinge" : " bend") + (rt ? " rtl" : "");
+                            for (int[] c : l.columns()) {
+                                if (c[2] <= 0 || c[3] <= 0 || c[0] < 0 || c[1] < 0 || c[0] + c[2] > w || c[1] + c[3] > hgt) {
+                                    bad = "column outside the window" + id;
+                                } else if (l.split() && touches(c, f, Posture.GAP_DP / 2)) {
+                                    bad = "column within the gap of the fold" + id;
+                                }
+                            }
+                            if (bad == null && l.secondary != null) {
+                                int[] p = l.primary;
+                                int[] s = l.secondary;
+                                if (p[0] < s[0] + s[2] && s[0] < p[0] + p[2] && p[1] < s[1] + s[3] && s[1] < p[1] + p[3]) {
+                                    bad = "columns overlap" + id;
+                                }
+                            }
+                            if (bad == null && !l.split() && (l.secondary != null || l.primary[2] != w || l.primary[3] != hgt)) {
+                                bad = "a window left whole must be whole" + id;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        check(bad == null, bad == null ? "sweep" : bad);
     }
 
     static void needsPassword() {
@@ -1211,7 +1354,7 @@ public final class CoreTest {
 
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "pageDrawing", "images", "syntheticText", "noticeDetails"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "fold", "pageDrawing", "images", "syntheticText", "noticeDetails"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -1231,6 +1374,7 @@ public final class CoreTest {
                     case "numericLooking": numericLooking(); break;
                     case "needsPassword": needsPassword(); break;
                     case "posture": posture(); break;
+                    case "fold": fold(); break;
                     case "pageDrawing": pageDrawing(); break;
                     case "images": images(); break;
                     case "syntheticText": syntheticText(); break;

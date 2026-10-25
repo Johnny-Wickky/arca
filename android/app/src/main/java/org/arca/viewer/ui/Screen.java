@@ -34,6 +34,16 @@ public abstract class Screen {
     /** Builds the full view of the screen. */
     public abstract View build();
 
+    /**
+     * The controls this screen moved out of {@link #build()} into the part of a folded window apart
+     * from the document (below the fold of a tabletop, beside it in a book), or {@code null}.
+     * Asked right after {@code build()}, and only when {@link Hinge#hasDock()}: a screen that left
+     * controls out because there is a dock must return them here.
+     */
+    public View dock() {
+        return null;
+    }
+
     /** Called when the session or the engine changed (main thread). */
     public void onSessionChanged() {}
 
@@ -88,6 +98,13 @@ public abstract class Screen {
         sv.addView(ui.column(content, maxDp), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT));
         return sv;
+    }
+
+    /** Wraps controls for the dock of a folded window: scrolling, centred, and named for screen readers. */
+    protected View dockPane(View content) {
+        View pane = scrollColumn(content, 480, 12);
+        pane.setContentDescription(ui.str(R.string.fold_dock_label));
+        return pane;
     }
 
     /** Centres {@code content} both ways (progress, errors). */

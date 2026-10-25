@@ -199,6 +199,14 @@ public final class PreviewScreen extends Screen {
         return page(header(ui.str(R.string.preview_title), true), centered(col, 480));
     }
 
+    /** The section chips, when the window is folded and they have a part of it to themselves (see {@link #dock()}). */
+    private View dockView;
+
+    @Override
+    public View dock() {
+        return dockView;
+    }
+
     // ---- content ------------------------------------------------------------------------------
 
     private View content(final Session s, final Session.PreviewState st) {
@@ -264,10 +272,14 @@ public final class PreviewScreen extends Screen {
             return page(head, body);
         }
 
-        boolean rail = Adaptive.twoPane(act) && meta.sections.size() > 1;
+        // Folded window with room for controls apart from the document: the sections go there.
+        boolean docked = Hinge.hasDock() && meta.sections.size() > 1;
+        boolean rail = Adaptive.twoPane(act) && meta.sections.size() > 1 && !docked;
         LinearLayout main = ui.hbox();
         main.setGravity(Gravity.TOP);
-        if (meta.sections.size() > 1) {
+        if (docked) {
+            dockView = dockPane(sectionColumn(meta));
+        } else if (meta.sections.size() > 1) {
             if (rail) {
                 main.addView(sectionRail(meta), new LinearLayout.LayoutParams(ui.dp(240), ViewGroup.LayoutParams.MATCH_PARENT));
                 main.addView(ui.divider(), new LinearLayout.LayoutParams(Math.max(1, ui.dp(1)), ViewGroup.LayoutParams.MATCH_PARENT));
@@ -854,6 +866,12 @@ public final class PreviewScreen extends Screen {
 
     private View sectionRail(final Model.PreviewMeta meta) {
         ScrollView sv = new ScrollView(act);
+        sv.addView(sectionColumn(meta));
+        return sv;
+    }
+
+    /** The sections as a column of chips. */
+    private LinearLayout sectionColumn(final Model.PreviewMeta meta) {
         LinearLayout col = ui.vbox();
         col.setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8));
         for (int i = 0; i < meta.sections.size(); i++) {
@@ -871,8 +889,7 @@ public final class PreviewScreen extends Screen {
             lp.bottomMargin = ui.dp(6);
             col.addView(c, lp);
         }
-        sv.addView(col);
-        return sv;
+        return col;
     }
 
     // ---- the item list ----------------------------------------------------------------------
