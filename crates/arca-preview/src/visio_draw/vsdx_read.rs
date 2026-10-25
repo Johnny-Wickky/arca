@@ -237,7 +237,7 @@ impl Build {
             if (r.t == "NURBSTo" && name == "E") || (r.t == "PolylineTo" && name == "A") {
                 r.args = tag.attr("F").and_then(|f| formula_numbers(&f));
             }
-            if matches!(name, "Label" | "Value" | "Prompt" | "Address" | "SubAddress" | "Description" | "Name")
+            if matches!(name, "LayerMember" | "Label" | "Value" | "Prompt" | "Address" | "SubAddress" | "Description" | "Name")
                 && let Some(raw) = v
             {
                 let s: String = raw.chars().take(MAX_NAME).collect();

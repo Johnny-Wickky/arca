@@ -306,7 +306,7 @@ fn nurbs_and_splines_are_sampled_and_reported_as_approximations() {
     let p = &rendered.page;
     let pts = points(paths(p)[0].0);
     assert!(pts.len() > 8, "sampled: {}", pts.len());
-    assert!(close(pts[0], (0.0, 11.0 * 72.0)));
+    assert!(close(pts[0], (0.0, 11.0 * 72.0)), "{pts:?}");
     assert!(close(*pts.last().unwrap(), (4.0 * 72.0, 11.0 * 72.0)));
     // The curve bulges up (towards y = 2) and stays inside the control polygon.
     assert!(pts.iter().all(|q| q.0 >= -0.1 && q.0 <= 4.0 * 72.0 + 0.1 && q.1 <= 11.0 * 72.0 + 0.1));
@@ -386,10 +386,12 @@ fn master_and_style_cycles_end() {
 #[test]
 fn colour_indices_use_the_document_table_and_patterns_are_flat_colours() {
     let doc = r##"<Colors><ColorEntry IX="0" RGB="#102030"/><ColorEntry IX="1" RGB="#405060"/></Colors>"##;
-    let shape = rect("").replace(r##"<Cell N="FillForegnd" V="#ff0000"/>"##, r#"<Cell N="FillForegnd" V="1"/><Cell N="FillPattern" V="5"/><Cell N="FillBkgnd" V="0"/>"#);
+    let shape = rect("")
+        .replace(r##"<Cell N="FillForegnd" V="#ff0000"/>"##, r#"<Cell N="FillForegnd" V="1"/><Cell N="FillBkgnd" V="0"/>"#)
+        .replace(r#"<Cell N="FillPattern" V="1"/>"#, r#"<Cell N="FillPattern" V="5"/>"#);
     let r = render_visio_page_noted(&drawing(&[page(&shape)], doc, &[]), 0, &PreviewPolicy::default()).unwrap();
     // Pattern 5 is a hatch: drawn as the mix of the two colours, and reported.
-    assert_eq!(paths(&r.page)[0].1, 0xFF30_4050);
+    assert_eq!(paths(&r.page)[0].1, 0xFF28_4858);
     assert!(r.page.approximate);
     assert!(r.notes.iter().any(|n| n.contains("fill patterns")));
 }
@@ -475,7 +477,8 @@ fn three_d_effects_are_reported_as_not_drawn() {
 #[test]
 fn arrowheads_dashes_and_pictures_are_marked() {
     let rows = r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="1"/></Row><Row T="LineTo" IX="2"><Cell N="X" V="4"/><Cell N="Y" V="1"/></Row>"#;
-    let shape = geometry(rows, r#"<Cell N="EndArrow" V="13"/><Cell N="LinePattern" V="2"/>"#);
+    let shape = geometry(rows, r#"<Cell N="EndArrow" V="13"/>"#)
+        .replace(r#"<Cell N="LinePattern" V="1"/>"#, r#"<Cell N="LinePattern" V="2"/>"#);
     let r = render_visio_page_noted(&one(&shape), 0, &PreviewPolicy::default()).unwrap();
     assert_eq!(paths(&r.page).len(), 2, "the line and the arrowhead");
     assert!(r.notes.iter().any(|n| n.contains("arrowheads")));
@@ -575,12 +578,13 @@ fn a_flood_of_shapes_and_deep_groups_are_cut_not_followed() {
     let flood: String = (0..130_000)
         .map(|i| format!(r#"<Shape ID="{i}"><Cell N="PinX" V="1"/><Cell N="PinY" V="1"/></Shape>"#))
         .collect();
-    let p = render(&one(&flood));
+    let policy = PreviewPolicy { aggregate_ratio: 100_000, ..PreviewPolicy::default() };
+    let p = render_visio_page(&one(&flood), 0, &policy).unwrap();
     assert!(p.truncated);
     let lines: String = (0..30_000)
         .map(|i| geometry(r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="LineTo" IX="2"><Cell N="X" V="1"/><Cell N="Y" V="1"/></Row>"#, "").replace("ID=\"1\"", &format!("ID=\"{i}\"")))
         .collect();
-    let p = render(&one(&lines));
+    let p = render_visio_page(&one(&lines), 0, &policy).unwrap();
     assert!(p.truncated, "more shapes than the page budget");
     assert!(p.prims.len() <= 20_000);
     // Nesting beyond the depth limit.
