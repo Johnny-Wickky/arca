@@ -33,7 +33,9 @@
 pub mod fork;
 pub mod integrity;
 pub mod passport;
+pub mod reminder;
 pub mod screen;
+pub mod support;
 pub mod upstream;
 
 pub use fork::{ForkAttribution, ForkConfigError};

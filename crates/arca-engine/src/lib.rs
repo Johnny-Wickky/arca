@@ -23,7 +23,10 @@
 mod host;
 pub mod json;
 pub mod render;
+pub mod schedule;
 pub mod selftest;
+pub mod stats;
+pub mod support;
 
 pub use host::{Engine, EngineConfig, Handle, Host, RunOutput, Status, guest_digest_of, op};
 pub use render::{Counters, PreviewIndex};
