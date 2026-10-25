@@ -616,3 +616,26 @@ fn property_lists_of_the_catalog_are_read() {
     });
     assert_eq!(sizes.len(), 1);
 }
+
+#[test]
+fn zz_debug_dump_columns() {
+    let Ok(path) = std::env::var("ARCA_DEBUG_FILE") else { return };
+    let data = std::fs::read(path).unwrap();
+    let db = Db::open(&data).unwrap();
+    let mut out = String::new();
+    for o in db.catalog().unwrap() {
+        if o.kind != 1 || o.name.starts_with("MSys") {
+            continue;
+        }
+        let t = db.table(o.page).unwrap();
+        out.push_str(&format!("table {}\n", o.name));
+        for c in &t.columns {
+            out.push_str(&format!("  {:?}\n", c));
+        }
+        db.rows(&t, |v| {
+            out.push_str(&format!("  row {v:?}\n"));
+            true
+        });
+    }
+    std::fs::write(std::env::var("ARCA_DEBUG_OUT").unwrap(), out).unwrap();
+}
