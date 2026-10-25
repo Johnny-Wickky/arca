@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use arca_engine::render::{self, lang_from_code};
-use arca_engine::{Engine, EngineConfig, Handle, Host, Status, selftest};
+use arca_engine::{Engine, EngineConfig, Handle, Host, Status, schedule, selftest, stats};
 
 mod guest {
     include!(concat!(env!("OUT_DIR"), "/guest.rs"));
@@ -301,6 +301,87 @@ pub fn passport_update(record: &[u8], today: i32, trackers: i32, active: i32) ->
         u32::try_from(trackers).unwrap_or(0),
         u32::try_from(active).unwrap_or(0),
     )
+}
+
+// ---- local statistics and reminder rules (see arca_engine::stats / schedule) ----
+
+/// The statistics blob after one scan (`verdict` is the wire tag of the X-ray verdict).
+#[must_use]
+pub fn stats_record_scan(blob: &[u8], day: i32, verdict: i32, trackers: i32, active: i32) -> Vec<u8> {
+    stats::blob_record_scan(blob, day, verdict, trackers, active)
+}
+
+/// The statistics blob after a sterile copy (`1`) or an opened picture (`2`).
+#[must_use]
+pub fn stats_record_event(blob: &[u8], day: i32, event: i32) -> Vec<u8> {
+    stats::blob_record_event(blob, day, event)
+}
+
+/// The week, month and all-time totals of the blob as JSON.
+#[must_use]
+pub fn stats_summary(blob: &[u8], today: i32) -> Vec<u8> {
+    stats::blob_summary_json(blob, today)
+}
+
+/// The blob with the counters of the older app versions folded into the all-time total.
+#[must_use]
+pub fn stats_fold_legacy(blob: &[u8], passport: &[u8], documents: i64, threats: i64, today: i32) -> Vec<u8> {
+    stats::blob_fold_legacy(blob, passport, documents, threats, today)
+}
+
+/// The Patron Passport as JSON, built from the statistics blob.
+#[must_use]
+pub fn stats_passport(lang: i32, blob: &[u8], today: i32) -> Vec<u8> {
+    stats::blob_passport_json(lang, blob, today)
+}
+
+/// The planned time of the next reminder (epoch milliseconds).
+#[must_use]
+pub fn reminder_plan(now_ms: i64, offset_ms: i32, rnd: i32) -> i64 {
+    schedule::plan_next(now_ms, offset_ms, rnd)
+}
+
+/// A planned time corrected for the UTC offset at that time.
+#[must_use]
+pub fn reminder_refine(target_ms: i64, offset_used_ms: i32, offset_at_target_ms: i32) -> i64 {
+    schedule::refine(target_ms, offset_used_ms, offset_at_target_ms)
+}
+
+/// What to do when the reminder alarm fires, as JSON.
+#[must_use]
+pub fn reminder_on_fire(
+    now_ms: i64,
+    offset_ms: i32,
+    last_shown_ms: i64,
+    enabled: i32,
+    can_post: i32,
+    rnd: i32,
+) -> Vec<u8> {
+    schedule::on_fire_json(now_ms, offset_ms, last_shown_ms, enabled, can_post, rnd)
+}
+
+/// What to do with the stored reminder time when the app starts, as JSON.
+#[must_use]
+pub fn reminder_on_start(next_ms: i64, now_ms: i64, offset_ms: i32, enabled: i32, rnd: i32) -> Vec<u8> {
+    schedule::on_start_json(next_ms, now_ms, offset_ms, enabled, rnd)
+}
+
+/// The reminder text to show: `index | (uses << 8)`.
+#[must_use]
+pub fn reminder_pick(seq: i32, documents: i64, threats: i64) -> i32 {
+    schedule::pick(seq, documents, threats)
+}
+
+/// The number of reminder texts the app must have.
+#[must_use]
+pub fn reminder_item_count() -> i32 {
+    schedule::item_count()
+}
+
+/// The extra support addresses (wallets, Boosty) as JSON; an empty list until configured.
+#[must_use]
+pub fn extra_support() -> Vec<u8> {
+    arca_engine::support::extra_support_json()
 }
 
 /// A licence text (see [`render::license_text`]).

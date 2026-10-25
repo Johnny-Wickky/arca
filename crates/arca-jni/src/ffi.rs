@@ -495,6 +495,146 @@ pub extern "system" fn Java_org_arca_viewer_Native_passportUpdate(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_statsRecordScan(
+    env: Env,
+    _class: JObject,
+    blob: JObject,
+    day: JInt,
+    verdict: JInt,
+    trackers: JInt,
+    active: JInt,
+) -> JObject {
+    bytes_result(env, || {
+        Some(api::stats_record_scan(&optional_bytes(env, blob), day, verdict, trackers, active))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_statsRecordEvent(
+    env: Env,
+    _class: JObject,
+    blob: JObject,
+    day: JInt,
+    event: JInt,
+) -> JObject {
+    bytes_result(env, || Some(api::stats_record_event(&optional_bytes(env, blob), day, event)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_statsSummary(
+    env: Env,
+    _class: JObject,
+    blob: JObject,
+    today: JInt,
+) -> JObject {
+    bytes_result(env, || Some(api::stats_summary(&optional_bytes(env, blob), today)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_statsFoldLegacy(
+    env: Env,
+    _class: JObject,
+    blob: JObject,
+    passport: JObject,
+    documents: JLong,
+    threats: JLong,
+    today: JInt,
+) -> JObject {
+    bytes_result(env, || {
+        Some(api::stats_fold_legacy(
+            &optional_bytes(env, blob),
+            &optional_bytes(env, passport),
+            documents,
+            threats,
+            today,
+        ))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_statsPassport(
+    env: Env,
+    _class: JObject,
+    lang: JInt,
+    blob: JObject,
+    today: JInt,
+) -> JObject {
+    bytes_result(env, || Some(api::stats_passport(lang, &optional_bytes(env, blob), today)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_reminderPlan(
+    _env: Env,
+    _class: JObject,
+    now_ms: JLong,
+    offset_ms: JInt,
+    rnd: JInt,
+) -> JLong {
+    guard(0, || api::reminder_plan(now_ms, offset_ms, rnd))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_reminderRefine(
+    _env: Env,
+    _class: JObject,
+    target_ms: JLong,
+    offset_used_ms: JInt,
+    offset_at_target_ms: JInt,
+) -> JLong {
+    guard(target_ms, || api::reminder_refine(target_ms, offset_used_ms, offset_at_target_ms))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_reminderOnFire(
+    env: Env,
+    _class: JObject,
+    now_ms: JLong,
+    offset_ms: JInt,
+    last_shown_ms: JLong,
+    enabled: JInt,
+    can_post: JInt,
+    rnd: JInt,
+) -> JObject {
+    bytes_result(env, || {
+        Some(api::reminder_on_fire(now_ms, offset_ms, last_shown_ms, enabled, can_post, rnd))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_reminderOnStart(
+    env: Env,
+    _class: JObject,
+    next_ms: JLong,
+    now_ms: JLong,
+    offset_ms: JInt,
+    enabled: JInt,
+    rnd: JInt,
+) -> JObject {
+    bytes_result(env, || Some(api::reminder_on_start(next_ms, now_ms, offset_ms, enabled, rnd)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_reminderPick(
+    _env: Env,
+    _class: JObject,
+    seq: JInt,
+    documents: JLong,
+    threats: JLong,
+) -> JInt {
+    guard(0, || api::reminder_pick(seq, documents, threats))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_reminderItemCount(_env: Env, _class: JObject) -> JInt {
+    guard(0, api::reminder_item_count)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_extraSupport(env: Env, _class: JObject) -> JObject {
+    bytes_result(env, || Some(api::extra_support()))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_arca_viewer_Native_licenseText(
     env: Env,
     _class: JObject,

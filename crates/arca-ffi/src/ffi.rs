@@ -487,6 +487,140 @@ pub unsafe extern "C" fn arca_passport_update(
     buffer_result_direct(out, || api::passport_update(rec, today, trackers, active))
 }
 
+/// Local statistics: the blob after one scan (verdict = wire tag 0..4), written into `out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_stats_record_scan(
+    blob: *const u8,
+    blob_len: usize,
+    day: i32,
+    verdict: i32,
+    trackers: i32,
+    active: i32,
+    out: *mut ArcaBuffer,
+) -> i32 {
+    let b = (unsafe { slice_from_raw(blob, blob_len) }).unwrap_or(&[]);
+    buffer_result_direct(out, || api::stats_record_scan(b, day, verdict, trackers, active))
+}
+
+/// Local statistics: the blob after a sterile copy (1) or an opened picture (2).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_stats_record_event(
+    blob: *const u8,
+    blob_len: usize,
+    day: i32,
+    event: i32,
+    out: *mut ArcaBuffer,
+) -> i32 {
+    let b = (unsafe { slice_from_raw(blob, blob_len) }).unwrap_or(&[]);
+    buffer_result_direct(out, || api::stats_record_event(b, day, event))
+}
+
+/// Local statistics: week / month / all-time totals as JSON.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_stats_summary(
+    blob: *const u8,
+    blob_len: usize,
+    today: i32,
+    out: *mut ArcaBuffer,
+) -> i32 {
+    let b = (unsafe { slice_from_raw(blob, blob_len) }).unwrap_or(&[]);
+    buffer_result_direct(out, || api::stats_summary(b, today))
+}
+
+/// Local statistics: folds the counters of an older app version into the all-time total.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_stats_fold_legacy(
+    blob: *const u8,
+    blob_len: usize,
+    passport: *const u8,
+    passport_len: usize,
+    documents: i64,
+    threats: i64,
+    today: i32,
+    out: *mut ArcaBuffer,
+) -> i32 {
+    let b = (unsafe { slice_from_raw(blob, blob_len) }).unwrap_or(&[]);
+    let p = (unsafe { slice_from_raw(passport, passport_len) }).unwrap_or(&[]);
+    buffer_result_direct(out, || api::stats_fold_legacy(b, p, documents, threats, today))
+}
+
+/// Local statistics: the Patron Passport JSON built from the statistics blob.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_stats_passport(
+    lang: i32,
+    blob: *const u8,
+    blob_len: usize,
+    today: i32,
+    out: *mut ArcaBuffer,
+) -> i32 {
+    let b = (unsafe { slice_from_raw(blob, blob_len) }).unwrap_or(&[]);
+    buffer_result_direct(out, || api::stats_passport(lang, b, today))
+}
+
+/// Reminder rules: the planned time of the next reminder (epoch milliseconds).
+#[unsafe(no_mangle)]
+pub extern "C" fn arca_reminder_plan(now_ms: i64, offset_ms: i32, rnd: i32) -> i64 {
+    guard(0, || api::reminder_plan(now_ms, offset_ms, rnd))
+}
+
+/// Reminder rules: a planned time corrected for the UTC offset at that time.
+#[unsafe(no_mangle)]
+pub extern "C" fn arca_reminder_refine(
+    target_ms: i64,
+    offset_used_ms: i32,
+    offset_at_target_ms: i32,
+) -> i64 {
+    guard(target_ms, || api::reminder_refine(target_ms, offset_used_ms, offset_at_target_ms))
+}
+
+/// Reminder rules: what to do when the reminder fires, as JSON.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_reminder_on_fire(
+    now_ms: i64,
+    offset_ms: i32,
+    last_shown_ms: i64,
+    enabled: i32,
+    can_post: i32,
+    rnd: i32,
+    out: *mut ArcaBuffer,
+) -> i32 {
+    buffer_result_direct(out, || {
+        api::reminder_on_fire(now_ms, offset_ms, last_shown_ms, enabled, can_post, rnd)
+    })
+}
+
+/// Reminder rules: what to do with the stored time when the app starts, as JSON.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_reminder_on_start(
+    next_ms: i64,
+    now_ms: i64,
+    offset_ms: i32,
+    enabled: i32,
+    rnd: i32,
+    out: *mut ArcaBuffer,
+) -> i32 {
+    buffer_result_direct(out, || api::reminder_on_start(next_ms, now_ms, offset_ms, enabled, rnd))
+}
+
+/// Reminder rules: the text to show, `index | (uses << 8)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn arca_reminder_pick(seq: i32, documents: i64, threats: i64) -> i32 {
+    guard(0, || api::reminder_pick(seq, documents, threats))
+}
+
+/// Reminder rules: the number of reminder texts the app must have.
+#[unsafe(no_mangle)]
+pub extern "C" fn arca_reminder_item_count() -> i32 {
+    guard(0, api::reminder_item_count)
+}
+
+/// Writes the extra support addresses (wallets, Boosty) as JSON into `out`; the list is empty
+/// until the owner configures it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arca_extra_support(out: *mut ArcaBuffer) -> i32 {
+    buffer_result_direct(out, api::extra_support)
+}
+
 /// Writes license text into `out` (`0` = AGPLv3, `1` = Additional Terms Ru, `2` = En).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn arca_license_text(which: i32, out: *mut ArcaBuffer) -> i32 {
