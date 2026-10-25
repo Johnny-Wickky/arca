@@ -94,7 +94,7 @@ pub(super) fn render(data: &[u8]) -> PageModel {
 }
 
 /// A path as points `(x, y)` of its move, line and curve-end operations.
-pub(super) fn points(ops: &[f32]) -> Vec<(f32, f32)> {
+pub(crate) fn points(ops: &[f32]) -> Vec<(f32, f32)> {
     let mut out = Vec::new();
     let mut i = 0;
     while let Some(&code) = ops.get(i) {

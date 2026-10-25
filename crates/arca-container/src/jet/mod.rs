@@ -99,6 +99,9 @@ const CATALOG_PAGE: u32 = 2;
 
 /// Most pages of one table definition (it continues in further pages when it is long).
 const MAX_TDEF_PAGES: usize = 64;
+/// The column types a calculated column may have as its result.
+const RESULT_TYPES: [u8; 13] =
+    [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0C, 0x0F, 0x10, 0x13];
 /// Most indexes of a table that are read (Access allows 32).
 const MAX_INDEXES: usize = 256;
 /// Most columns of one index (Access allows 10).
@@ -661,8 +664,53 @@ impl<'a> Db<'a> {
         // logical ones (which real index they use and what they are for), then their names. A
         // damaged list loses only the indexes, never the table.
         let indexes = self.indexes(&def, names_at, nidx, &columns).unwrap_or_default();
+        self.apply_result_types(page_no, &mut columns);
         columns.sort_by_key(|c| c.number);
         Some(Table { columns, row_count, owned, truncated, indexes })
+    }
+
+    /// A calculated column is stored under a placeholder type; the type of its result is the
+    /// property `ResultType` of the column, in the property list of the table's catalog entry
+    /// (the open-source Jackcess library documents this in `ColumnImpl.create`). Sets the type of
+    /// each calculated column from it. A column without the property keeps the stored type.
+    fn apply_result_types(&self, page_no: u32, columns: &mut [Column]) {
+        if page_no == CATALOG_PAGE || !columns.iter().any(Column::is_calculated) {
+            return;
+        }
+        let Some(catalog) = self.table(CATALOG_PAGE) else { return };
+        let col = |n: &str| catalog.columns.iter().position(|c| c.name == n);
+        let (Some(at_id), Some(at_kind), Some(at_prop)) =
+            (col("Id"), col("Type"), col("LvProp"))
+        else {
+            return;
+        };
+        let mut list = None;
+        self.rows_raw(&catalog, |vals| {
+            if let (Some(Value::Int(id)), Some(Value::Int(kind)), Some(Value::Blob(b))) =
+                (vals.get(at_id), vals.get(at_kind), vals.get(at_prop))
+                && *kind == 1
+                && u32::try_from(id & 0x00FF_FFFF) == Ok(page_no)
+            {
+                list = Some(props::parse(b, &|raw| self.name_text(raw)));
+                return false;
+            }
+            true
+        });
+        for c in columns.iter_mut().filter(|c| c.is_calculated()) {
+            let found = list.iter().flatten().find_map(|p| match &p.value {
+                PropValue::Int(t)
+                    if p.map_kind == 1
+                        && p.name.eq_ignore_ascii_case("ResultType")
+                        && p.scope.eq_ignore_ascii_case(&c.name) =>
+                {
+                    u8::try_from(*t).ok()
+                }
+                _ => None,
+            });
+            if let Some(t) = found.filter(|t| RESULT_TYPES.contains(t)) {
+                c.ty = t;
+            }
+        }
     }
 
     /// The logical indexes of a table definition whose real-index blocks start at `at`.
@@ -1011,6 +1059,7 @@ impl<'a> Db<'a> {
             }
             ty::OLE => Value::Ole(long_value_len(d)),
             ty::GUID => guid(d).map_or(Value::Null, Value::Guid),
+            ty::NUMERIC if c.is_calculated() => calc_numeric(d).map_or(Value::Null, Value::Numeric),
             ty::NUMERIC => numeric(d, c.scale).map_or(Value::Null, Value::Numeric),
             ty::COMPLEX => {
                 d.get(..4)
@@ -1192,6 +1241,31 @@ fn numeric(d: &[u8], scale: u8) -> Option<String> {
         let word = u32_le(d, 1 + 4 * w)?;
         v = (v << 32) | u128::from(word);
     }
+    Some(decimal(negative, v, scale))
+}
+
+/// The result of a calculated decimal column. Behind the calculated-value header (already
+/// removed) it holds a 2-byte length of what follows, the scale, the sign and the magnitude as
+/// 1 to 4 little-endian words, most significant first (the open-source Jackcess library documents
+/// this as `CalcNumericColImpl`). An empty result is no value.
+fn calc_numeric(d: &[u8]) -> Option<String> {
+    let total = i16::from_le_bytes([*d.first()?, *d.get(1)?]);
+    let after = d.get(2..)?;
+    let counted = usize::try_from(total).ok().filter(|t| *t > 0).unwrap_or(after.len());
+    // The length counts the scale and the sign; only whole words are magnitude.
+    let words = (counted.checked_sub(2)? / 4 * 4).min(16);
+    let scale = *after.first()?;
+    let negative = *after.get(1)? != 0;
+    let magnitude = after.get(2..2usize.checked_add(words)?)?;
+    let mut v: u128 = 0;
+    for w in magnitude.chunks_exact(4) {
+        v = (v << 32) | u128::from(u32_le(w, 0)?);
+    }
+    Some(decimal(negative, v, scale))
+}
+
+/// Writes a decimal number with `scale` digits after the point; zero is never negative.
+fn decimal(negative: bool, v: u128, scale: u8) -> String {
     let digits = v.to_string();
     let scale = usize::from(scale).min(38);
     let body = if scale == 0 {
@@ -1201,7 +1275,7 @@ fn numeric(d: &[u8], scale: u8) -> Option<String> {
         let (int, frac) = padded.split_at(padded.len() - scale);
         format!("{int}.{frac}")
     };
-    Some(if negative && v != 0 { format!("-{body}") } else { body })
+    if negative && v != 0 { format!("-{body}") } else { body }
 }
 
 /// Howard Hinnant's calendar conversions.
