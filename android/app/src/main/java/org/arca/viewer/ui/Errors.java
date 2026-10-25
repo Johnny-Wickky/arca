@@ -11,6 +11,30 @@ import org.arca.viewer.Session;
 public final class Errors {
     private Errors() {}
 
+    /**
+     * Whether a failure is about a picture that could not be decoded. The engine says "failed"
+     * (the picture was understood well enough to be refused), and for a picture "the document was
+     * rejected" would be the wrong thing to tell: it names a file the person never called a document.
+     */
+    private static boolean undecodable(int status, boolean picture) {
+        return picture && (status == Native.FAILED || status == Native.REJECTED);
+    }
+
+    /** Title for a failure status; {@code picture}: the thing that failed is a picture. */
+    public static int title(int status, boolean picture) {
+        return undecodable(status, picture) ? R.string.err_picture_title : title(status);
+    }
+
+    /** Explanation for a failure status; {@code picture}: the thing that failed is a picture. */
+    public static int text(int status, boolean picture) {
+        return undecodable(status, picture) ? R.string.err_picture_text : text(status);
+    }
+
+    /** Explanation of why one picture of a document is not shown. */
+    public static int pictureText(int status) {
+        return status == Native.UNSUPPORTED ? R.string.image_unsupported : text(status, true);
+    }
+
     /** Title string resource for a failure status. */
     public static int title(int status) {
         switch (status) {

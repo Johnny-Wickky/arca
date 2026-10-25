@@ -61,7 +61,6 @@ import org.arca.viewer.core.PageCache;
 import org.arca.viewer.core.Zoom;
 
 import java.util.List;
-import java.util.Locale;
 
 /**
  * The safe preview: text, tables, spreadsheet grids and slides extracted inside the sandbox and
@@ -276,7 +275,7 @@ public final class PreviewScreen extends Screen {
                 body.addView(sectionChips(meta), ui.fillWidth());
             }
         }
-        main.addView(sectionContent(s, meta, outcome), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        main.addView(withLegend(sectionContent(s, meta, outcome)), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         body.addView(main, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return page(head, body);
     }
@@ -806,12 +805,7 @@ public final class PreviewScreen extends Screen {
     }
 
     private String noticeText(Model.Notice n) {
-        String template = Labels.notice(act, n.kind);
-        try {
-            return String.format(Locale.getDefault(), template, n.count, Fmt.safe(n.detail));
-        } catch (java.util.IllegalFormatException e) {
-            return template;
-        }
+        return Labels.noticeText(act, n.kind, n.count, n.detail);
     }
 
     // ---- sections ---------------------------------------------------------------------------
@@ -972,6 +966,34 @@ public final class PreviewScreen extends Screen {
         return pinchable(outer);
     }
 
+    /** The one-line explanation of text the viewer composed; it appears (and stays) once such a line has been drawn. */
+    private TextView syntheticLegend;
+
+    private View withLegend(View content) {
+        LinearLayout col = ui.vbox();
+        TextView legend = ui.text(R.string.preview_synthetic_legend, Ui.CAPTION);
+        int pad = ui.dp(Adaptive.padding(act));
+        legend.setPadding(pad, ui.dp(4), pad, ui.dp(4));
+        legend.setVisibility(View.GONE);
+        syntheticLegend = legend;
+        col.addView(legend, ui.fillWidth());
+        col.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        return col;
+    }
+
+    private void showSyntheticLegend() {
+        final TextView legend = syntheticLegend;
+        if (legend != null && legend.getVisibility() != View.VISIBLE) {
+            // Not during the layout pass that is binding the row.
+            legend.post(new Runnable() {
+                @Override
+                public void run() {
+                    legend.setVisibility(View.VISIBLE);
+                }
+            });
+        }
+    }
+
     /** Makes a two-finger pinch on {@code content} change the text zoom. */
     private View pinchable(View content) {
         PinchFrame frame = new PinchFrame(act, Prefs.zoom(act), new PinchFrame.Listener() {
@@ -1111,11 +1133,6 @@ public final class PreviewScreen extends Screen {
         return f;
     }
 
-    /** Picture formats: a document that is itself a picture is shown without a further tap. */
-    private static boolean isPictureFormat(String format) {
-        return "Png".equals(format) || "Jpeg".equals(format) || "Gif".equals(format) || "Bmp".equals(format);
-    }
-
     /** Pictures the reader folded away, so that "show pictures at once" does not bring them back. */
     private static final java.util.Set<Integer> FOLDED = new java.util.HashSet<>();
 
@@ -1133,7 +1150,7 @@ public final class PreviewScreen extends Screen {
     private void fillImageRow(final FrameLayout holder, final Model.ImageItem img) {
         final Session s = Session.get();
         Model.PreviewMeta meta = s.preview().meta;
-        boolean file = meta != null && isPictureFormat(meta.format);
+        boolean file = meta != null && Model.isPictureFormat(meta.format);
         boolean can = img.id >= 0 && !img.external;
         boolean folded = FOLDED.contains(img.id);
         Session.ImageResult have = can ? s.cachedImage(img.id) : null;
@@ -1155,17 +1172,40 @@ public final class PreviewScreen extends Screen {
         FOLDED.remove(img.id);
         holder.removeAllViews();
         holder.addView(imageCard(holder, img, 1, 0), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        Session.get().loadImage(img.id, new Session.ImageCallback() {
+        final Session.ImageCallback[] callback = new Session.ImageCallback[1];
+        final View.OnAttachStateChangeListener[] detach = new View.OnAttachStateChangeListener[1];
+        callback[0] = new Session.ImageCallback() {
             @Override
             public void onImage(int id, Session.ImageResult r) {
+                holder.removeOnAttachStateChangeListener(detach[0]);
                 holder.removeAllViews();
                 if (r.bitmap != null) {
                     holder.addView(pictureView(holder, img, r), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                } else if (r.failure != null && r.failure.status == Native.CANCELLED) {
+                    // Dropped from a full queue: the reader may ask again.
+                    holder.addView(imageCard(holder, img, 0, 0), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                 } else {
                     holder.addView(imageCard(holder, img, 2, r.failure == null ? 0 : r.failure.status), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                 }
             }
-        });
+        };
+        // A row that scrolls away (or is rebuilt) withdraws its request, so that a fast scroll
+        // through a long document does not leave a queue of pictures nobody looks at.
+        detach[0] = new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {}
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                holder.removeOnAttachStateChangeListener(this);
+                if (Session.get().cancelImage(img.id, callback[0])) {
+                    holder.removeAllViews();
+                    holder.addView(imageCard(holder, img, 0, 0), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                }
+            }
+        };
+        holder.addOnAttachStateChangeListener(detach[0]);
+        Session.get().loadImage(img.id, callback[0]);
     }
 
     /**
@@ -1193,7 +1233,7 @@ public final class PreviewScreen extends Screen {
             text.addView(ui.text(R.string.image_loading, Ui.SMALL));
         } else if (state == 2) {
             text.addView(ui.space(4));
-            text.addView(ui.text(status == Native.UNSUPPORTED ? ui.str(R.string.image_unsupported) : ui.str(Errors.text(status)), Ui.SMALL));
+            text.addView(ui.text(ui.str(Errors.pictureText(status)), Ui.SMALL));
         }
         row.addView(text, ui.weight(1f));
         card.addView(row, ui.fillWidth());
@@ -1318,6 +1358,7 @@ public final class PreviewScreen extends Screen {
 
     /** Builds the styled text of a paragraph; links are underlined and open a copy dialog. */
     private CharSequence render(Model.Para p) {
+        boolean synthetic = false;
         SpannableStringBuilder sb = new SpannableStringBuilder();
         if (!p.marker.isEmpty()) {
             sb.append(Fmt.clip(Fmt.safe(p.marker), 16)).append(' ');
@@ -1358,6 +1399,12 @@ public final class PreviewScreen extends Screen {
                 sb.setSpan(new ForegroundColorSpan(ui.color(R.color.arca_hidden_text)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 sb.setSpan(new StyleSpan(Typeface.ITALIC), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
+            if ((st & Model.SYNTHETIC) != 0) {
+                // The viewer's own words (a rebuilt query, a diagram link): never in the colour or face of the document's text.
+                synthetic = true;
+                sb.setSpan(new ForegroundColorSpan(ui.color(R.color.arca_on_surface_variant)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sb.setSpan(new StyleSpan(Typeface.ITALIC), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
             if ((st & Model.DELETED) != 0) {
                 sb.setSpan(new ForegroundColorSpan(ui.color(R.color.arca_deleted)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 sb.setSpan(new StrikethroughSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1383,6 +1430,9 @@ public final class PreviewScreen extends Screen {
                     }
                 }, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
+        }
+        if (synthetic) {
+            showSyntheticLegend();
         }
         return highlighted(sb);
     }

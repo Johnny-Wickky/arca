@@ -663,3 +663,38 @@ fn a_sterile_copy_of_a_picture_gets_a_picture_budget_and_nothing_else_does() {
     );
     assert_eq!(adjusted(Op::Scan, 0, &png).fuel, engine.policy_for(Op::Scan, len, 0).fuel);
 }
+
+#[test]
+fn a_picture_says_how_many_bytes_it_cannot_explain_and_whether_it_has_free_text() {
+    let facts = arca_image::Facts {
+        format: arca_image::ImageFormat::Png,
+        width: 2,
+        height: 1,
+        bits: 8,
+        flags: 0,
+        frames: 1,
+        trailing: 0,
+        metadata_bytes: 0,
+        unaccounted: 4_000_000_000,
+        exif: Some(arca_image::ExifFacts { free_text: true, ..Default::default() }),
+    };
+    let img = arca_image::Image { width: 2, height: 1, rgba: vec![0; 8], facts };
+    let v = json(&render::image_json(&img));
+    assert_eq!(v.get("unaccounted").and_then(Value::num), Some(4_000_000_000.0));
+    let exif = v.get("exif").expect("exif");
+    assert!(matches!(exif.get("freeText"), Some(Value::Bool(true))));
+    assert!(matches!(exif.get("gps"), Some(Value::Bool(false))));
+}
+
+#[test]
+fn a_page_picture_id_travels_as_a_decimal_string() {
+    let page = arca_preview::page::PageModel {
+        width: 10.0,
+        height: 10.0,
+        prims: vec![arca_preview::page::Prim::Image { m: [1.0; 6], label: "x".into(), id: 16_777_217 }],
+        ..Default::default()
+    };
+    let v = json(&render::page_json(&page));
+    let prim = v.get("p").and_then(|p| p.at(0)).expect("a primitive");
+    assert_eq!(prim.at(8).and_then(Value::str), Some("16777217"));
+}

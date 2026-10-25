@@ -18,6 +18,7 @@ import org.arca.viewer.core.ImageFacts;
 import org.arca.viewer.core.Json;
 import org.arca.viewer.core.Model;
 import org.arca.viewer.core.Names;
+import org.arca.viewer.core.NoticeDetails;
 import org.arca.viewer.core.PageCache;
 import org.arca.viewer.core.PageDrawing;
 import org.arca.viewer.core.Posture;
@@ -1040,6 +1041,18 @@ public final class CoreTest {
         eq(7, d.prims.get(2).id, "the id of an openable picture");
         PageDrawing none = PageDrawing.parse("{\"w\":10,\"h\":10,\"p\":[[\"I\",1,0,0,1,0,0,\"x\",4294967295]]}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
         eq(-1, none.prims.get(0).id, "a picture that cannot be opened has no id");
+        // Ids travel as decimal strings: a float would round 2^24 + 1.
+        PageDrawing big = PageDrawing.parse(("{\"w\":10,\"h\":10,\"p\":[[\"I\",1,0,0,1,0,0,\"x\",\"16777217\"],"
+            + "[\"I\",1,0,0,1,0,0,\"x\",\"2147483646\"],[\"I\",1,0,0,1,0,0,\"x\",\"2147483648\"],"
+            + "[\"I\",1,0,0,1,0,0,\"x\",\"-1\"],[\"I\",1,0,0,1,0,0,\"x\",\"12ab\"],[\"I\",1,0,0,1,0,0,\"x\",\"\"],"
+            + "[\"I\",1,0,0,1,0,0,\"x\",\"99999999999999999999\"],[\"I\",1,0,0,1,0,0,\"x\",16777217]]}")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        eq(16777217, big.prims.get(0).id, "an id above 2^24 keeps every digit");
+        eq(2147483646, big.prims.get(1).id, "the largest id the app carries");
+        for (int i = 2; i <= 6; i++) {
+            eq(-1, big.prims.get(i).id, "an id the app cannot carry is no id (" + i + ")");
+        }
+        eq(16777217, big.prims.get(7).id, "a plain number is read as a long, not a float");
         eq(PageDrawing.CLIP, d.prims.get(4).kind, "a clip");
         for (String bad : new String[] {"{}", "{\"w\":0,\"h\":10,\"p\":[]}", "{\"w\":1e9,\"h\":10,\"p\":[]}",
             "[1]"}) {
@@ -1079,6 +1092,13 @@ public final class CoreTest {
         eq(6, f.exif.orientation, "orientation");
         check(f.exif.isPrivate(), "private");
 
+        ImageFacts unexplained = ImageFacts.parse(("{\"format\":\"Png\",\"width\":4,\"height\":3,\"srcWidth\":4,\"srcHeight\":3,"
+            + "\"bits\":8,\"flags\":0,\"frames\":1,\"trailing\":0,\"metadataBytes\":0,\"unaccounted\":4000000000,\"exif\":null}").getBytes(StandardCharsets.UTF_8));
+        eq(4000000000L, unexplained.unaccounted, "unaccounted bytes");
+        check(unexplained.hasHiddenParts(), "bytes no decoder could explain are a hidden part");
+        ImageFacts texty = ImageFacts.parse(("{\"format\":\"Jpeg\",\"exif\":{\"freeText\":true}}").getBytes(StandardCharsets.UTF_8));
+        check(texty.exif.freeText && texty.exif.isPrivate() && texty.hasHiddenParts(), "free text in the EXIF block is private");
+        eq(0L, f.unaccounted, "an older engine says nothing about unaccounted bytes");
         // A plain picture carries nothing.
         ImageFacts plain = ImageFacts.parse(("{\"format\":\"Png\",\"width\":4,\"height\":3,\"srcWidth\":4,\"srcHeight\":3,"
             + "\"bits\":8,\"flags\":0,\"frames\":1,\"trailing\":0,\"metadataBytes\":0,\"exif\":null}").getBytes(StandardCharsets.UTF_8));
@@ -1097,9 +1117,101 @@ public final class CoreTest {
         check(((Model.ImageItem) items.get(1)).external, "external");
     }
 
+
+    // ---- synthetic text and notice details ------------------------------------------------------
+
+    static void syntheticText() {
+        check(Model.SYNTHETIC == 1 << 10 && Model.STYLE_MASK == (1 << 11) - 1, "the bit and the mask mirror arca_preview::model::style");
+        List<Model.Item> list = Model.parseItems(("[{\"k\":\"p\",\"s\":\"Code\",\"a\":0,\"l\":0,\"m\":\"\",\"r\":["
+            + "[\"SELECT 1\"," + (Model.MONO | Model.SYNTHETIC) + "],[\"own\"," + Model.BOLD + "],[\"future\"," + ((1 << 11) | Model.ITALIC) + "]]}]")
+            .getBytes(StandardCharsets.UTF_8));
+        Model.Para p = ((Model.ParaItem) list.get(0)).para;
+        eq(Model.MONO | Model.SYNTHETIC, p.runs.get(0).style, "the synthetic bit is accepted");
+        check(p.hasSynthetic(), "a paragraph with a composed run says so");
+        eq(Model.BOLD, p.runs.get(1).style, "a document run stays plain");
+        eq(Model.ITALIC, p.runs.get(2).style, "a bit this app does not know is dropped");
+        Model.Para plain = new Model.Para();
+        check(!plain.hasSynthetic(), "an empty paragraph has none");
+    }
+
+    private static List<String> lines(String path) throws java.io.IOException {
+        return java.nio.file.Files.readAllLines(java.nio.file.Paths.get(path), StandardCharsets.UTF_8);
+    }
+
+    /** name to value of the {@code notice_d_*} strings of a resource file. */
+    private static Map<String, String> noticeStrings(String path) throws java.io.IOException {
+        Map<String, String> out = new java.util.TreeMap<>();
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("<string name=\"(notice_d_[a-z0-9_]+)\">(.*?)</string>");
+        for (String line : lines(path)) {
+            java.util.regex.Matcher m = p.matcher(line);
+            if (m.find()) {
+                check(out.put(m.group(1), m.group(2)) == null, path + ": " + m.group(1) + " defined twice");
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Every detail the engine emits (android/core-test/notice_details.txt, checked against the Rust
+     * sources by a test in arca-preview) has a text in English and in Russian.
+     */
+    static void noticeDetails() throws java.io.IOException {
+        Map<String, String> en = noticeStrings("android/app/src/main/res/values/strings_notices.xml");
+        Map<String, String> ru = noticeStrings("android/app/src/main/res/values-ru/strings_notices.xml");
+        eq(en.keySet(), ru.keySet(), "both languages have the same notice details");
+        java.util.Set<String> used = new java.util.HashSet<>();
+        int listed = 0;
+        for (String line : lines("android/core-test/notice_details.txt")) {
+            if (line.trim().isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+            listed++;
+            int bar = line.indexOf('|');
+            check(bar > 0, "a line has kind|detail: " + line);
+            String kind = line.substring(0, bar);
+            String template = line.substring(bar + 1).trim();
+            if (kind.equals("*")) {
+                kind = "HiddenShown";
+            }
+            int holes = template.split("[{][}]", -1).length - 1;
+            String example = template.replace("{}", "7");
+            NoticeDetails.Lookup l = NoticeDetails.lookup(kind, example);
+            check(l != null, "no lookup for " + line);
+            if (l == null) {
+                continue;
+            }
+            eq(NoticeDetails.key(kind, template), l.key, "the key of the example equals the key of the template: " + line);
+            eq(holes, l.args.length, "values taken out of the detail: " + line);
+            if (holes > 0) {
+                eq("7", l.args[0], "the value: " + line);
+            }
+            check(en.containsKey(l.key), "values/strings_notices.xml lacks " + l.key + " for " + line);
+            check(ru.containsKey(l.key), "values-ru/strings_notices.xml lacks " + l.key + " for " + line);
+            if (holes > 0 && en.containsKey(l.key) && ru.containsKey(l.key)) {
+                check(en.get(l.key).contains("%1$s") && ru.get(l.key).contains("%1$s"), "the text takes the value (%1$s): " + l.key);
+            }
+            check(used.add(l.key) || kind.startsWith("Hidden"), "two details share the key " + l.key + ": " + line);
+            check(l.key.length() <= 80, "the key stays short: " + l.key);
+        }
+        check(listed > 60, "the list was read (" + listed + " lines)");
+        for (String key : en.keySet()) {
+            check(used.contains(key), key + " is not a detail the engine emits (dead text)");
+        }
+        for (String key : ru.keySet()) {
+            check(!ru.get(key).trim().isEmpty() && !ru.get(key).equals(en.get(key)), "values-ru is translated: " + key);
+        }
+        // A detail from a newer engine has no text: the caller falls back to the raw detail.
+        NoticeDetails.Lookup unknown = NoticeDetails.lookup("Unsupported", "a thing from the future");
+        check(unknown != null && !en.containsKey(unknown.key), "an unknown detail finds no text");
+        check(NoticeDetails.lookup("Unsupported", "") == null && NoticeDetails.lookup("Truncated", null) == null, "no detail, no lookup");
+        eq("notice_d_hidden_text", NoticeDetails.key("HiddenOmitted", "text"), "both hidden kinds share the nouns");
+        eq("notice_d_skipped_table_n", NoticeDetails.lookup("Skipped", "table Orders").key, "a table name is a value, not part of the key");
+        eq("Orders", NoticeDetails.lookup("Skipped", "table Orders").args[0], "the table name");
+    }
+
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "pageDrawing", "images"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "pageDrawing", "images", "syntheticText", "noticeDetails"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -1121,6 +1233,8 @@ public final class CoreTest {
                     case "posture": posture(); break;
                     case "pageDrawing": pageDrawing(); break;
                     case "images": images(); break;
+                    case "syntheticText": syntheticText(); break;
+                    case "noticeDetails": noticeDetails(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

@@ -1,0 +1,88 @@
+# Details of preview notices emitted by crates/arca-preview (kind|detail; * = HiddenShown or HiddenOmitted).
+# Checked against the Rust sources by crates/arca-preview/src/tests_notice_details.rs and against
+# the Android texts by android/core-test/CoreTest.java. {} stands for a number or a name.
+*|columns
+*|sections
+*|sheets
+*|slides
+BestEffort|a quoted field is never closed: the rest is one cell
+BestEffort|access: SELECT text is reconstructed from MSysQueries and not verified against Access
+BestEffort|binary Visio
+BestEffort|code page
+BestEffort|damaged presentation structure
+BestEffort|excel 5/95
+BestEffort|markdown: markup of very long lines is not interpreted
+BestEffort|pdf
+BestEffort|pdf page tree rebuilt
+BestEffort|pdf structure rebuilt
+BestEffort|pdf text mapping differs from the font encoding
+BestEffort|text-encoding=cp{}
+BestEffort|word 6/95 or damaged structure
+HiddenOmitted|rows
+HiddenOmitted|text
+HiddenShown|objects
+HiddenShown|text
+Skipped|PDF objects beyond the first 2000000
+Skipped|[Content_Types].xml
+Skipped|content.xml
+Skipped|content.xml (styles)
+Skipped|damaged PDF stream
+Skipped|damaged Word text
+Skipped|macro text
+Skipped|object stream
+Skipped|older revisions of slides: {}
+Skipped|query {}: no definition rows
+Skipped|rtf body
+Skipped|styles.xml
+Skipped|table {}
+Skipped|{} slide part(s) that the presentation does not list
+Skipped|{} worksheet part(s) that the workbook does not list
+Truncated|attached messages inside attached messages
+Truncated|blocks
+Truncated|character formatting
+Truncated|characters
+Truncated|grid
+Truncated|hyperlinks
+Truncated|items
+Truncated|link address (too long, link dropped)
+Truncated|list marker
+Truncated|message streams (read budget)
+Truncated|nesting
+Truncated|objects
+Truncated|pages
+Truncated|paragraph formatting
+Truncated|pdf content limits
+Truncated|picture description
+Truncated|queries
+Truncated|repeated cells
+Truncated|repeated rows
+Truncated|runs per paragraph
+Truncated|section name
+Truncated|sections
+Truncated|shape data, texts and connections
+Truncated|shapes
+Truncated|shared strings
+Truncated|table
+Truncated|text length
+Unsupported|access: queries other than plain SELECT are shown as their stored rows, not as SQL
+Unsupported|attachments are listed, not opened
+Unsupported|charts
+Unsupported|charts, SmartArt and embedded objects
+Unsupported|drawing geometry
+Unsupported|drawing geometry, stencils and pictures
+Unsupported|drawings and charts
+Unsupported|drawings and shapes
+Unsupported|elements in a foreign namespace were ignored
+Unsupported|embedded objects
+Unsupported|embedded objects and drawings
+Unsupported|embedded objects and macros
+Unsupported|excel 4.0 macro sheets (formulas not shown)
+Unsupported|forms, reports, macros and modules are listed, not shown or run; queries are shown as stored rows and, for plain SELECT, as reconstructed text that is never run
+Unsupported|macros and modules are code and are never run
+Unsupported|pdf fonts without a text mapping
+Unsupported|pictures and embedded objects
+Unsupported|shared formulas too long to be shown for every cell
+Unsupported|visio connections between shapes are not read
+Unsupported|visio hyperlinks are not read
+Unsupported|visio masters (stencils) are not read
+Unsupported|visio shape data are not read

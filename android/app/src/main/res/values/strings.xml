@@ -86,6 +86,9 @@
     <string name="err_engine_text">The isolated engine did not start, so no document can be checked safely. Nothing was opened. See Diagnostics for the reason.</string>
     <string name="err_failed_title">Checking failed</string>
     <string name="err_failed_text">An unexpected error stopped the check. The document was not opened and nothing was run.</string>
+    <string name="err_picture_title">Picture could not be decoded</string>
+    <string name="err_picture_text">The picture could not be decoded: it is damaged or built in a way that no picture program produces. Nothing of it was shown.</string>
+    <string name="preview_synthetic_legend">Grey italic text was composed by Arca from the data of the file (for example a rebuilt SQL query or a link between shapes). It is not text of the document.</string>
 
     <!-- Result: verdicts -->
     <string name="result_title">Threat X-Ray</string>
@@ -344,6 +347,8 @@
     <string name="image_info_thumbnail">An embedded small copy of the picture</string>
     <string name="image_info_metadata">%1$s of metadata (comments, XMP, profiles)</string>
     <string name="image_info_trailing">%1$s of data after the end of the picture</string>
+    <string name="image_info_free_text">Free text (a description, comment, title or keywords) is recorded</string>
+    <string name="image_info_unaccounted">%1$s that no decoder could explain (private blocks, gaps or padding that carries values)</string>
     <string name="image_description">Picture: %1$s</string>
     <string name="settings_images">Show pictures at once</string>
     <string name="settings_images_desc">Pictures inside documents are decoded in the sandbox only when you tap them. Turn on to show them as soon as a document opens.</string>

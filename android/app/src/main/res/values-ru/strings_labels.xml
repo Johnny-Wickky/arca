@@ -149,18 +149,18 @@
     <string name="action_converted_content_type">Изменён тип содержимого</string>
 
     <!-- Чего нет в просмотре (NoticeKind). %1$d — количество, %2$s — подробность. -->
-    <string name="notice_truncated">Документ длиннее предела просмотра; остальное не показано.</string>
+    <string name="notice_truncated">Достигнут предел; остальное не показано (%2$s).</string>
     <string name="notice_unsupported">Просмотр не поддерживает: %2$s.</string>
     <string name="notice_skipped">Пропущено (не удалось прочитать или устарело): %2$s.</string>
     <string name="notice_invisible_removed">Невидимые символы и символы, меняющие направление текста, помечены: %1$d.</string>
     <string name="notice_images_not_shown">Картинки, которые нельзя показать (удалённые или такого вида, который не раскодируется), остались заглушками: %1$d.</string>
-    <string name="notice_hidden_shown">Скрытое содержимое показано и помечено как скрытое: %1$d.</string>
+    <string name="notice_hidden_shown">Скрытое содержимое показано и помечено как скрытое — %2$s: %1$d.</string>
     <string name="notice_tracked_changes">В документе есть исправления: удалённое зачёркнуто, вставленное подчёркнуто: %1$d.</string>
     <string name="notice_formulas_not_evaluated">Формулы не пересчитываются; показан результат, сохранённый в файле, а если его нет — сама формула: %1$d.</string>
     <string name="notice_formulas_calculated">Формулы без сохранённого результата вычислены Arca и показаны курсивом: %1$d.</string>
-    <string name="notice_best_effort">Текст восстановлен из старого двоичного формата как удалось; вёрстка и часть содержимого могут отсутствовать.</string>
+    <string name="notice_best_effort">Прочитано как удалось; результат может отличаться от документа (%2$s).</string>
     <string name="notice_deleted_records">Удалённые из базы записи всё ещё хранятся в файле и не показаны (сжатие базы их убирает): %1$d.</string>
-    <string name="notice_hidden_omitted">Скрытое содержимое не показано (включите «Показать скрытое», чтобы увидеть его): %1$d.</string>
+    <string name="notice_hidden_omitted">Скрытое содержимое не показано (включите «Показать скрытое», чтобы увидеть его) — %2$s: %1$d.</string>
     <string name="format_bmp">Картинка BMP</string>
     <string name="format_gif">Картинка GIF</string>
     <string name="format_jpeg">Картинка JPEG</string>

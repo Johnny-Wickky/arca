@@ -243,7 +243,7 @@ pub fn report_json_within(report: &XRayReport, max_bytes: usize) -> Option<Vec<u
 ///   (alpha `0` means none); `ops` is a flat list: `0 x y` move, `1 x y` line,
 ///   `2 x1 y1 x2 y2 x y` curve, `3` close;
 /// * `["T", x, y, size, angle, width, style, color, "text"]`;
-/// * `["I", a, b, c, d, e, f, "label"]`;
+/// * `["I", a, b, c, d, e, f, "label", "id"]` — the id is a decimal string;
 /// * `["S"]` save, `["R"]` restore, `["C", x, y, w, h]` clip.
 #[must_use]
 pub fn page_json(page: &PageModel) -> Vec<u8> {
@@ -292,7 +292,8 @@ pub fn page_json(page: &PageModel) -> Vec<u8> {
                     w.f32(*v);
                 }
                 w.label(label, LABEL_CHARS);
-                w.u64(u64::from(*id));
+                // A decimal string: a reader that parses numbers as floats would round big ids.
+                w.string(&id.to_string());
             }
             Prim::Save => w.string("S"),
             Prim::Restore => w.string("R"),
@@ -924,9 +925,9 @@ pub fn premultiplied(mut rgba: Vec<u8>) -> Vec<u8> {
 ///
 /// ```text
 /// {"format":"Jpeg","width":2048,"height":1536,"srcWidth":4000,"srcHeight":3000,"bits":8,
-///  "flags":260,"frames":1,"trailing":0,"metadataBytes":1234,
+///  "flags":260,"frames":1,"trailing":0,"metadataBytes":1234,"unaccounted":0,
 ///  "exif":{"make":"Acme","model":"…","software":"","datetime":"…","artist":"","copyright":"",
-///          "owner":"","orientation":1,"serial":false,"makerNote":false,"thumbnail":true,
+///          "owner":"","orientation":1,"serial":false,"makerNote":false,"freeText":false,"thumbnail":true,
 ///          "gps":true,"position":"55.75833, 37.61730"}}
 /// ```
 ///
@@ -947,6 +948,7 @@ pub fn image_json(img: &arca_image::Image) -> Vec<u8> {
     w.field_u64("frames", u64::from(f.frames));
     w.field_u64("trailing", f.trailing);
     w.field_u64("metadataBytes", f.metadata_bytes);
+    w.field_u64("unaccounted", f.unaccounted);
     w.key("exif");
     match &f.exif {
         None => w.null(),
@@ -962,6 +964,7 @@ pub fn image_json(img: &arca_image::Image) -> Vec<u8> {
             w.field_u64("orientation", u64::from(e.orientation));
             w.field_bool("serial", e.serial);
             w.field_bool("makerNote", e.maker_note);
+            w.field_bool("freeText", e.free_text);
             w.field_bool("thumbnail", e.thumbnail);
             w.field_bool("gps", e.gps);
             if e.has_position {

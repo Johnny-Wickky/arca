@@ -246,6 +246,11 @@ public final class Session {
         return wrongPassword;
     }
 
+    /** Whether the open document is itself a picture (so a failure is a picture's, not a document's). */
+    public boolean isPicture() {
+        return report != null && Model.isPictureFormat(report.format);
+    }
+
     public Model.Report report() {
         return report;
     }
@@ -1013,6 +1018,25 @@ public final class Session {
     private final java.util.Map<Integer, List<ImageCallback>> imageWaiting = new java.util.HashMap<>();
     private final java.util.Set<Long> imageJobs = new java.util.HashSet<>();
 
+    /** Most pictures that may wait for the sandbox at once (the one being decoded included). */
+    static final int MAX_IMAGE_PENDING = 4;
+
+    /** A request for a picture that has not finished. Guarded by {@code lock} where it says so. */
+    private static final class ImageTask {
+        final int id;
+        /** The worker has begun to decode it (it can then only be stopped through its job). */
+        boolean started;
+        /** Dropped while it was still queued: the worker skips it. */
+        boolean cancelled;
+
+        ImageTask(int id) {
+            this.id = id;
+        }
+    }
+
+    /** Requests that have not finished, oldest first (main thread). */
+    private final java.util.LinkedHashMap<Integer, ImageTask> imageTasks = new java.util.LinkedHashMap<>();
+
     /** Bytes of pixels held by the cached pictures (main thread). */
     private long imageBytes() {
         long total = 0;
@@ -1057,11 +1081,24 @@ public final class Session {
         waiting = new ArrayList<>();
         waiting.add(callback);
         imageWaiting.put(id, waiting);
+        if (imageTasks.containsKey(id)) {
+            // Asked for again while it is being decoded (the row that asked first went away): the result is delivered to the new waiter.
+            return;
+        }
+        makeRoomForImage();
+        final ImageTask task = new ImageTask(id);
+        imageTasks.put(id, task);
         final int ep = epoch;
         final long d = docHandle();
         imager.execute(guarded(new Runnable() {
             @Override
             public void run() {
+                synchronized (lock) {
+                    if (task.cancelled) {
+                        return;
+                    }
+                    task.started = true;
+                }
                 long j = Native.jobNew();
                 synchronized (lock) {
                     if (ep == epoch) {
@@ -1104,6 +1141,9 @@ public final class Session {
                         if (!current(ep)) {
                             return;
                         }
+                        if (imageTasks.get(id) == task) {
+                            imageTasks.remove(id);
+                        }
                         List<ImageCallback> callbacks = imageWaiting.remove(id);
                         boolean cancelled = result.failure != null && result.failure.status == Native.CANCELLED;
                         if (result.bitmap != null) {
@@ -1133,6 +1173,9 @@ public final class Session {
                         if (!current(ep)) {
                             return;
                         }
+                        if (imageTasks.get(id) == task) {
+                            imageTasks.remove(id);
+                        }
                         List<ImageCallback> callbacks = imageWaiting.remove(id);
                         if (callbacks != null) {
                             for (ImageCallback cb : callbacks) {
@@ -1160,6 +1203,64 @@ public final class Session {
         return bitmap;
     }
 
+    /**
+     * Makes room for one more request: while {@link #MAX_IMAGE_PENDING} are pending, the oldest one
+     * that the worker has not begun is dropped (its waiters are told it was cancelled and may ask
+     * again). What the reader is looking at is asked for last, so it is what stays.
+     */
+    private void makeRoomForImage() {
+        while (imageTasks.size() >= MAX_IMAGE_PENDING) {
+            ImageTask oldest = null;
+            synchronized (lock) {
+                for (ImageTask t : imageTasks.values()) {
+                    if (!t.started) {
+                        oldest = t;
+                        break;
+                    }
+                }
+                if (oldest != null) {
+                    oldest.cancelled = true;
+                }
+            }
+            if (oldest == null) {
+                return;
+            }
+            imageTasks.remove(oldest.id);
+            List<ImageCallback> callbacks = imageWaiting.remove(oldest.id);
+            if (callbacks != null) {
+                ImageResult r = new ImageResult(null, null, new Failure(Native.CANCELLED, "queue"));
+                for (ImageCallback cb : callbacks) {
+                    cb.onImage(oldest.id, r);
+                }
+            }
+        }
+    }
+
+    /**
+     * Withdraws a request made with {@link #loadImage} (the row that asked for the picture went
+     * away). A request nobody waits for any more is dropped while it is still queued; one that is
+     * being decoded finishes and its picture is kept. Returns whether the callback was waiting.
+     */
+    public boolean cancelImage(int id, ImageCallback callback) {
+        List<ImageCallback> waiting = imageWaiting.get(id);
+        if (waiting == null || !waiting.remove(callback)) {
+            return false;
+        }
+        if (waiting.isEmpty()) {
+            imageWaiting.remove(id);
+            ImageTask t = imageTasks.get(id);
+            if (t != null) {
+                synchronized (lock) {
+                    if (!t.started) {
+                        t.cancelled = true;
+                        imageTasks.remove(id);
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
     /** Stops the pictures that are being loaded. */
     public void cancelImages() {
         long[] running;
@@ -1176,6 +1277,14 @@ public final class Session {
     }
 
     private void resetImages() {
+        synchronized (lock) {
+            for (ImageTask t : imageTasks.values()) {
+                if (!t.started) {
+                    t.cancelled = true;
+                }
+            }
+        }
+        imageTasks.clear();
         cancelImages();
         images.clear();
         imageWaiting.clear();

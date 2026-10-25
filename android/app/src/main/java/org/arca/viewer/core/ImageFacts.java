@@ -41,6 +41,8 @@ public final class ImageFacts {
         public int orientation = 1;
         public boolean serial;
         public boolean makerNote;
+        /** A free-text field (description, user comment, Windows title/author/keywords/subject) is present. */
+        public boolean freeText;
         public boolean thumbnail;
         public boolean gps;
         /** "latitude, longitude" in degrees, or empty. */
@@ -66,7 +68,7 @@ public final class ImageFacts {
 
         /** Whether the block says anything that a person may not want to share. */
         public boolean isPrivate() {
-            return gps || serial || thumbnail || makerNote || !artist.isEmpty() || !owner.isEmpty()
+            return gps || serial || thumbnail || makerNote || freeText || !artist.isEmpty() || !owner.isEmpty()
                 || !copyright.isEmpty();
         }
     }
@@ -84,6 +86,8 @@ public final class ImageFacts {
     public int frames = 1;
     public long trailing;
     public long metadataBytes;
+    /** Bytes of the file that no decoder could explain (private chunks, gaps, padding that carries values). */
+    public long unaccounted;
     /** The EXIF block, or {@code null}. */
     public Exif exif;
 
@@ -93,7 +97,7 @@ public final class ImageFacts {
 
     /** Whether the file carries anything that is not shown and that the reader should know of. */
     public boolean hasHiddenParts() {
-        return trailing > 0 || metadataBytes > 0 || (exif != null && exif.isPrivate());
+        return trailing > 0 || metadataBytes > 0 || unaccounted > 0 || (exif != null && exif.isPrivate());
     }
 
     /** Parses the JSON of {@code Native.imageInfo}. */
@@ -110,6 +114,7 @@ public final class ImageFacts {
         f.frames = Math.max(1, Json.integer(root, "frames"));
         f.trailing = Json.num(root, "trailing");
         f.metadataBytes = Json.num(root, "metadataBytes");
+        f.unaccounted = Json.num(root, "unaccounted");
         Object e = root.get("exif");
         if (e instanceof Map) {
             Map<String, Object> m = Json.obj(e);
@@ -124,6 +129,7 @@ public final class ImageFacts {
             x.orientation = Math.max(1, Math.min(8, Json.integer(m, "orientation")));
             x.serial = Json.bool(m, "serial");
             x.makerNote = Json.bool(m, "makerNote");
+            x.freeText = Json.bool(m, "freeText");
             x.thumbnail = Json.bool(m, "thumbnail");
             x.gps = Json.bool(m, "gps");
             x.position = Json.str(m, "position");

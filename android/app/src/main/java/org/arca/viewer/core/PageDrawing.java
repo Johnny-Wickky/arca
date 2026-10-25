@@ -52,7 +52,7 @@ public final class PageDrawing {
         /** Image: matrix {@code a b c d e f} of the unit square; clip: {@code x y w h}. */
         public float[] m;
         public String label = "";
-        /** Image: what to ask the engine for to see it, or -1. */
+        /** Image: what to ask the engine for to see it, or -1 (also for an id the app cannot carry). */
         public int id = -1;
         /** Cached platform object (an {@code android.graphics.Path}); the view's business. */
         public Object cache;
@@ -65,6 +65,30 @@ public final class PageDrawing {
     public boolean truncated;
     public boolean approximate;
     public final List<Prim> prims = new ArrayList<>();
+
+    /**
+     * A picture id: the engine writes it as a decimal string so that it never passes through a
+     * float (which holds integers exactly only up to 2^24); a plain JSON number is read as a long.
+     * -1 for anything else.
+     */
+    static long idOf(Object o) {
+        if (o instanceof String) {
+            String s = (String) o;
+            if (s.isEmpty() || s.length() > 10) {
+                return -1L;
+            }
+            long v = 0;
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c < '0' || c > '9') {
+                    return -1L;
+                }
+                v = v * 10 + (c - '0');
+            }
+            return v;
+        }
+        return Json.num(o, -1L);
+    }
 
     private static float f(Object o) {
         if (o instanceof Number) {
@@ -145,7 +169,7 @@ public final class PageDrawing {
                     }
                     p.label = Json.str(a.get(7), "");
                     if (a.size() > 8) {
-                        long id = (long) f(a.get(8));
+                        long id = idOf(a.get(8));
                         p.id = id >= 0 && id < Integer.MAX_VALUE ? (int) id : -1;
                     }
                     break;

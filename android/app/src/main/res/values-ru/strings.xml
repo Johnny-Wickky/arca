@@ -84,6 +84,9 @@
     <string name="err_engine_text">Изолированный движок не запустился, поэтому безопасно проверить документ нельзя. Ничего не открывалось. Причина — в разделе «Диагностика».</string>
     <string name="err_failed_title">Проверка не удалась</string>
     <string name="err_failed_text">Неожиданная ошибка остановила проверку. Документ не открывался, ничего не запускалось.</string>
+    <string name="err_picture_title">Картинку не удалось раскодировать</string>
+    <string name="err_picture_text">Картинку не удалось раскодировать: она повреждена или устроена так, как не делает ни одна программа для картинок. Ничего из неё не показано.</string>
+    <string name="preview_synthetic_legend">Серый курсив — текст, который Arca составила сама из данных файла (например, восстановленный запрос SQL или связь между фигурами). Это не текст документа.</string>
 
     <!-- Результат: вердикты -->
     <string name="result_title">Рентген угроз</string>
@@ -340,6 +343,8 @@
     <string name="image_info_thumbnail">Встроенная уменьшенная копия картинки</string>
     <string name="image_info_metadata">%1$s метаданных (комментарии, XMP, профили)</string>
     <string name="image_info_trailing">%1$s данных после конца картинки</string>
+    <string name="image_info_free_text">В файле записан свободный текст (описание, комментарий, заголовок или ключевые слова)</string>
+    <string name="image_info_unaccounted">%1$s, которые не смог объяснить ни один из разборщиков (частные блоки, промежутки или заполнение, несущее значения)</string>
     <string name="image_description">Картинка: %1$s</string>
     <string name="settings_images">Показывать картинки сразу</string>
     <string name="settings_images_desc">Картинки внутри документов раскодируются в песочнице только по нажатию. Включите, чтобы они показывались сразу при открытии документа.</string>

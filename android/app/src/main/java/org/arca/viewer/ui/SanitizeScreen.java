@@ -240,7 +240,7 @@ public final class SanitizeScreen extends Screen {
                 t.setTextColor(ui.color(R.color.arca_danger));
                 bad.addView(t);
                 bad.addView(ui.space(4));
-                bad.addView(ui.text(Errors.text(st.saveFailure.status), Ui.BODY));
+                bad.addView(ui.text(Errors.text(st.saveFailure.status, org.arca.viewer.Session.get().isPicture()), Ui.BODY));
                 bad.addView(ui.space(4));
                 String tech = Errors.code(st.saveFailure.status)
                     + (st.saveFailure.technical.isEmpty() ? "" : ": " + Fmt.safe(st.saveFailure.technical));

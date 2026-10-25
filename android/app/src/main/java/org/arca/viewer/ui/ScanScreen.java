@@ -144,12 +144,12 @@ public final class ScanScreen extends Screen {
         head.addView(ui.icon(status == Native.ENCRYPTED ? R.drawable.ic_lock
             : status == Native.UNSUPPORTED ? R.drawable.ic_verdict_unknown : R.drawable.ic_verdict_danger, fg, 32));
         head.addView(ui.hspace(12));
-        TextView title = ui.heading(ui.str(Errors.title(status)), Ui.TITLE);
+        TextView title = ui.heading(ui.str(Errors.title(status, org.arca.viewer.Session.get().isPicture())), Ui.TITLE);
         title.setTextColor(ui.color(fg));
         head.addView(title, ui.weight(1f));
         banner.addView(head);
         banner.addView(ui.space(8));
-        banner.addView(ui.text(Errors.text(status), Ui.BODY));
+        banner.addView(ui.text(Errors.text(status, org.arca.viewer.Session.get().isPicture()), Ui.BODY));
         if (status == Native.TOO_LARGE) {
             banner.addView(ui.space(6));
             banner.addView(ui.text(ui.str(R.string.err_too_large_limit, org.arca.viewer.Engine.maxInputMiB()), Ui.SMALL));

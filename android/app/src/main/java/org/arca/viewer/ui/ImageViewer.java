@@ -112,7 +112,7 @@ public final class ImageViewer {
             col.addView(t, ui.fillWidth());
         } else if (r.bitmap == null) {
             int status = r.failure == null ? 0 : r.failure.status;
-            TextView t = ui.text(status == org.arca.viewer.Native.UNSUPPORTED ? ui.str(R.string.image_unsupported) : ui.str(Errors.text(status)), Ui.BODY);
+            TextView t = ui.text(ui.str(Errors.pictureText(status)), Ui.BODY);
             t.setTextColor(0xFFE0E0E0);
             t.setPadding(ui.dp(24), ui.dp(32), ui.dp(24), ui.dp(8));
             col.addView(t, ui.fillWidth());
@@ -206,12 +206,18 @@ public final class ImageViewer {
             if (e.thumbnail) {
                 out.add(ui.str(R.string.image_info_thumbnail));
             }
+            if (e.freeText) {
+                out.add(ui.str(R.string.image_info_free_text));
+            }
         }
         if (f.metadataBytes > 0) {
             out.add(ui.str(R.string.image_info_metadata, Fmt.size(f.metadataBytes)));
         }
         if (f.trailing > 0) {
             out.add(ui.str(R.string.image_info_trailing, Fmt.size(f.trailing)));
+        }
+        if (f.unaccounted > 0) {
+            out.add(ui.str(R.string.image_info_unaccounted, Fmt.size(f.unaccounted)));
         }
         return out;
     }

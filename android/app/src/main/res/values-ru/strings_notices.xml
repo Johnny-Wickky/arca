@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only
+     Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+
+     Тексты подробностей замечаний просмотра (имена строит core/NoticeDetails.java). Каждый —
+     оборот, который встаёт в предложение своего вида (notice_truncated, notice_skipped, ...);
+     %1$s — значение, которое определяется во время работы. Список подробностей, которые выдаёт
+     движок, — android/core-test/notice_details.txt; тест ядра падает, если для одной из них здесь
+     или в values/ нет текста. -->
+<resources>
+    <!-- BestEffort -->
+    <string name="notice_d_best_effort_a_quoted_field_is_never_closed_the_rest_is_one_cell">поле в кавычках не закрыто, поэтому остаток файла стал одной ячейкой</string>
+    <string name="notice_d_best_effort_access_select_text_is_reconstructed_from_msysqueries_and">текст запросов SELECT восстановлен из системных таблиц базы и не сверен с Access</string>
+    <string name="notice_d_best_effort_binary_visio">двоичный файл Visio</string>
+    <string name="notice_d_best_effort_code_page">часть символов не удалось перевести из кодовой страницы документа</string>
+    <string name="notice_d_best_effort_damaged_presentation_structure">повреждённая структура презентации</string>
+    <string name="notice_d_best_effort_excel_5_95">файл Excel 5.0 или 95</string>
+    <string name="notice_d_best_effort_markdown_markup_of_very_long_lines_is_not_interpreted">Markdown: разметка очень длинных строк не разбирается</string>
+    <string name="notice_d_best_effort_pdf">текст, извлечённый из PDF</string>
+    <string name="notice_d_best_effort_pdf_page_tree_rebuilt">дерево страниц PDF повреждено и восстановлено</string>
+    <string name="notice_d_best_effort_pdf_structure_rebuilt">структура PDF повреждена и восстановлена</string>
+    <string name="notice_d_best_effort_pdf_text_mapping_differs_from_the_font_encoding">местами текст PDF может отличаться от знаков на странице</string>
+    <string name="notice_d_best_effort_text_encoding_cp_n">текст не в UTF-8; он прочитан как кодовая страница %1$s</string>
+    <string name="notice_d_best_effort_word_6_95_or_damaged_structure">файл Word 6/95 или повреждённая структура</string>
+
+    <!-- HiddenShown, HiddenOmitted -->
+    <string name="notice_d_hidden_columns">столбцы</string>
+    <string name="notice_d_hidden_objects">объекты базы</string>
+    <string name="notice_d_hidden_rows">строки</string>
+    <string name="notice_d_hidden_sections">разделы</string>
+    <string name="notice_d_hidden_sheets">листы</string>
+    <string name="notice_d_hidden_slides">слайды</string>
+    <string name="notice_d_hidden_text">текст</string>
+
+    <!-- Skipped -->
+    <string name="notice_d_skipped_content_types_xml">список типов частей пакета ([Content_Types].xml)</string>
+    <string name="notice_d_skipped_content_xml">тело документа (content.xml)</string>
+    <string name="notice_d_skipped_content_xml_styles">стили внутри content.xml</string>
+    <string name="notice_d_skipped_damaged_pdf_stream">повреждённый поток PDF</string>
+    <string name="notice_d_skipped_damaged_word_text">повреждённый текст Word</string>
+    <string name="notice_d_skipped_macro_text">текст макросов (макросы никогда не запускаются)</string>
+    <string name="notice_d_skipped_n_slide_part_s_that_the_presentation_does_not_list">части слайдов, которых нет в списке презентации: %1$s</string>
+    <string name="notice_d_skipped_n_worksheet_part_s_that_the_workbook_does_not_list">части листов, которых нет в списке книги: %1$s</string>
+    <string name="notice_d_skipped_object_stream">поток объектов PDF</string>
+    <string name="notice_d_skipped_older_revisions_of_slides_n">старые версии слайдов: %1$s</string>
+    <string name="notice_d_skipped_pdf_objects_beyond_the_first_2000000">объекты PDF после первых 2000000</string>
+    <string name="notice_d_skipped_query_n_no_definition_rows">запрос %1$s (в файле нет его определения)</string>
+    <string name="notice_d_skipped_rtf_body">тело письма в формате RTF</string>
+    <string name="notice_d_skipped_styles_xml">стили (styles.xml)</string>
+    <string name="notice_d_skipped_table_n">таблица %1$s</string>
+
+    <!-- Truncated -->
+    <string name="notice_d_truncated_attached_messages_inside_attached_messages">вложенные письма внутри вложенных писем</string>
+    <string name="notice_d_truncated_blocks">абзацы, таблицы и другие блоки сверх предела</string>
+    <string name="notice_d_truncated_character_formatting">форматирование символов старого формата Word</string>
+    <string name="notice_d_truncated_characters">текст сверх предела по числу символов</string>
+    <string name="notice_d_truncated_grid">ячейки сверх предела по строкам и столбцам</string>
+    <string name="notice_d_truncated_hyperlinks">гиперссылки сверх предела</string>
+    <string name="notice_d_truncated_items">элементы сверх предела</string>
+    <string name="notice_d_truncated_link_address_too_long_link_dropped">адрес ссылки был слишком длинным, ссылка отброшена</string>
+    <string name="notice_d_truncated_list_marker">слишком длинный маркер списка</string>
+    <string name="notice_d_truncated_message_streams_read_budget">части письма сверх предела чтения</string>
+    <string name="notice_d_truncated_nesting">слишком глубоко вложенные группы</string>
+    <string name="notice_d_truncated_objects">объекты базы сверх предела</string>
+    <string name="notice_d_truncated_pages">страницы сверх предела</string>
+    <string name="notice_d_truncated_paragraph_formatting">форматирование абзацев старого формата Word</string>
+    <string name="notice_d_truncated_pdf_content_limits">содержимое страниц PDF сверх пределов обработки</string>
+    <string name="notice_d_truncated_picture_description">слишком длинное описание картинки</string>
+    <string name="notice_d_truncated_queries">запросы базы сверх предела</string>
+    <string name="notice_d_truncated_repeated_cells">повторяющиеся ячейки сверх предела</string>
+    <string name="notice_d_truncated_repeated_rows">повторяющиеся строки сверх предела</string>
+    <string name="notice_d_truncated_runs_per_paragraph">фрагменты форматированного текста в абзаце сверх предела</string>
+    <string name="notice_d_truncated_section_name">слишком длинное название раздела</string>
+    <string name="notice_d_truncated_sections">разделы сверх предела</string>
+    <string name="notice_d_truncated_shape_data_texts_and_connections">данные фигур, тексты и связи сверх предела</string>
+    <string name="notice_d_truncated_shapes">фигуры сверх предела</string>
+    <string name="notice_d_truncated_shared_strings">строки таблицы сверх предела</string>
+    <string name="notice_d_truncated_table">строки таблицы сверх предела</string>
+    <string name="notice_d_truncated_text_length">слишком длинный текст</string>
+
+    <!-- Unsupported -->
+    <string name="notice_d_unsupported_access_queries_other_than_plain_select_are_shown_as_thei">запросы, кроме простого SELECT, как SQL (показаны их сохранённые строки)</string>
+    <string name="notice_d_unsupported_attachments_are_listed_not_opened">открытие вложений (они только перечислены)</string>
+    <string name="notice_d_unsupported_charts">диаграммы</string>
+    <string name="notice_d_unsupported_charts_smartart_and_embedded_objects">диаграммы, SmartArt и встроенные объекты</string>
+    <string name="notice_d_unsupported_drawing_geometry">геометрия рисунков</string>
+    <string name="notice_d_unsupported_drawing_geometry_stencils_and_pictures">геометрия рисунков, трафареты и картинки</string>
+    <string name="notice_d_unsupported_drawings_and_charts">рисунки и диаграммы</string>
+    <string name="notice_d_unsupported_drawings_and_shapes">рисунки и фигуры</string>
+    <string name="notice_d_unsupported_elements_in_a_foreign_namespace_were_ignored">элементы из чужого пространства имён XML (они пропущены)</string>
+    <string name="notice_d_unsupported_embedded_objects">встроенные объекты</string>
+    <string name="notice_d_unsupported_embedded_objects_and_drawings">встроенные объекты и рисунки</string>
+    <string name="notice_d_unsupported_embedded_objects_and_macros">встроенные объекты и макросы</string>
+    <string name="notice_d_unsupported_excel_4_0_macro_sheets_formulas_not_shown">листы макросов Excel 4.0 (их формулы не показаны)</string>
+    <string name="notice_d_unsupported_forms_reports_macros_and_modules_are_listed_not_shown_or">формы, отчёты, макросы и модули: они только перечислены, не показываются и не запускаются; запросы показаны как сохранённые строки, а простой SELECT — ещё и как восстановленный текст, который никогда не выполняется</string>
+    <string name="notice_d_unsupported_macros_and_modules_are_code_and_are_never_run">запуск макросов и модулей (это код, он никогда не выполняется)</string>
+    <string name="notice_d_unsupported_pdf_fonts_without_a_text_mapping">шрифты PDF без таблицы соответствия тексту (их текст не прочитать)</string>
+    <string name="notice_d_unsupported_pictures_and_embedded_objects">картинки и встроенные объекты</string>
+    <string name="notice_d_unsupported_shared_formulas_too_long_to_be_shown_for_every_cell">общие формулы, слишком длинные, чтобы показывать их в каждой ячейке</string>
+    <string name="notice_d_unsupported_visio_connections_between_shapes_are_not_read">связи между фигурами Visio</string>
+    <string name="notice_d_unsupported_visio_hyperlinks_are_not_read">гиперссылки Visio</string>
+    <string name="notice_d_unsupported_visio_masters_stencils_are_not_read">мастера (трафареты) Visio</string>
+    <string name="notice_d_unsupported_visio_shape_data_are_not_read">данные фигур Visio</string>
+</resources>

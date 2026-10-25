@@ -151,18 +151,18 @@
     <string name="action_converted_content_type">Converted content type</string>
 
     <!-- What a preview leaves out (NoticeKind). %1$d is a count, %2$s a detail. -->
-    <string name="notice_truncated">The document is longer than the preview limit; the rest is not shown.</string>
+    <string name="notice_truncated">A limit was reached; the rest is not shown (%2$s).</string>
     <string name="notice_unsupported">This preview does not support: %2$s.</string>
     <string name="notice_skipped">Skipped (could not be read or not current): %2$s.</string>
     <string name="notice_invisible_removed">Invisible and direction-changing characters were marked: %1$d.</string>
     <string name="notice_images_not_shown">Pictures that cannot be shown (remote, or a kind that is not decoded) stay placeholders: %1$d.</string>
-    <string name="notice_hidden_shown">Hidden content is shown and marked as hidden: %1$d.</string>
+    <string name="notice_hidden_shown">Hidden content is shown and marked as hidden — %2$s: %1$d.</string>
     <string name="notice_tracked_changes">The document has tracked changes; deletions are struck through, insertions are underlined: %1$d.</string>
     <string name="notice_formulas_not_evaluated">Formulas are not recalculated; the result stored in the file is shown, or the formula itself when none is stored: %1$d.</string>
     <string name="notice_formulas_calculated">Formulas with no stored result were calculated by Arca and are shown in italics: %1$d.</string>
-    <string name="notice_best_effort">The text was recovered from an old binary format as well as possible; layout and some content may be missing.</string>
+    <string name="notice_best_effort">Read as well as possible; the result may differ from the document (%2$s).</string>
     <string name="notice_deleted_records">Records deleted from the database are still stored in the file and are not shown (compacting the database removes them): %1$d.</string>
-    <string name="notice_hidden_omitted">Hidden content is not shown (turn on Show hidden content to see it): %1$d.</string>
+    <string name="notice_hidden_omitted">Hidden content is not shown (turn on Show hidden content to see it) — %2$s: %1$d.</string>
     <string name="format_bmp">Bitmap picture (BMP)</string>
     <string name="format_gif">GIF picture</string>
     <string name="format_jpeg">JPEG picture</string>

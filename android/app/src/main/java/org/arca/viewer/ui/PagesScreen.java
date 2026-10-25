@@ -65,7 +65,7 @@ public final class PagesScreen extends Screen {
         if (st.running) {
             col.addView(ui.text(R.string.pages_loading, Ui.BODY));
         } else if (st.failure != null) {
-            col.addView(ui.text(Errors.text(st.failure.status), Ui.BODY));
+            col.addView(ui.text(Errors.text(st.failure.status, org.arca.viewer.Session.get().isPicture()), Ui.BODY));
             col.addView(ui.text(R.string.pages_failed, Ui.SMALL));
         } else if (d != null) {
             if (d.truncated) {

@@ -115,12 +115,12 @@ public abstract class Screen {
         head.addView(ui.icon(status == org.arca.viewer.Native.ENCRYPTED ? R.drawable.ic_lock
             : soft ? R.drawable.ic_verdict_unknown : R.drawable.ic_verdict_danger, fg, 32));
         head.addView(ui.hspace(12));
-        TextView t = ui.heading(ui.str(Errors.title(status)), Ui.TITLE);
+        TextView t = ui.heading(ui.str(Errors.title(status, org.arca.viewer.Session.get().isPicture())), Ui.TITLE);
         t.setTextColor(ui.color(fg));
         head.addView(t, ui.weight(1f));
         banner.addView(head);
         banner.addView(ui.space(8));
-        banner.addView(ui.text(Errors.text(status), Ui.BODY));
+        banner.addView(ui.text(Errors.text(status, org.arca.viewer.Session.get().isPicture()), Ui.BODY));
         col.addView(banner, ui.fillWidth());
         col.addView(ui.space(12));
         String technical = Errors.code(status)

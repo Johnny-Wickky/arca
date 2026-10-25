@@ -8,6 +8,10 @@ import android.content.Context;
 import org.arca.viewer.R;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Names;
+import org.arca.viewer.core.NoticeDetails;
+
+import java.util.IllegalFormatException;
+import java.util.Locale;
 
 /**
  * Localised names for the engine's identifiers. Each identifier maps to a string resource named
@@ -79,6 +83,37 @@ public final class Labels {
 
     public static String notice(Context c, String kind) {
         return of(c, "notice_", kind, c.getString(R.string.notice_unknown));
+    }
+
+    /**
+     * The sentence for a notice of the preview: the text of its kind with the count and the detail.
+     * A detail the app knows ({@link NoticeDetails}) is shown in the reader's language; one it does
+     * not know (an engine newer than the app) is shown as the engine worded it, escaped, so that
+     * nothing is hidden.
+     */
+    public static String noticeText(Context c, String kind, long count, String detail) {
+        String template = notice(c, kind);
+        String phrase = Fmt.safe(detail);
+        NoticeDetails.Lookup l = NoticeDetails.lookup(kind, detail);
+        if (l != null) {
+            int res = c.getResources().getIdentifier(l.key, "string", c.getPackageName());
+            if (res != 0) {
+                try {
+                    Object[] args = new Object[l.args.length];
+                    for (int i = 0; i < args.length; i++) {
+                        args[i] = Fmt.clip(Fmt.safe(l.args[i]), 80);
+                    }
+                    phrase = String.format(Locale.getDefault(), c.getString(res), args);
+                } catch (IllegalFormatException e) {
+                    phrase = Fmt.safe(detail);
+                }
+            }
+        }
+        try {
+            return String.format(Locale.getDefault(), template, count, phrase);
+        } catch (IllegalFormatException e) {
+            return template;
+        }
     }
 
     /** Colour resource for a severity name. */

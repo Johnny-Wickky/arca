@@ -31,6 +31,15 @@ public final class Model {
     public static final int HIDDEN = 128;
     public static final int DELETED = 256;
     public static final int INSERTED = 512;
+    /** Text the viewer composed from the document's data (a rebuilt SQL query, a diagram link): drawn apart from the document's own text. */
+    public static final int SYNTHETIC = 1024;
+    /** All bits the engine defines; others (from a newer engine) are dropped. */
+    public static final int STYLE_MASK = (1 << 11) - 1;
+
+    /** Whether the engine's format name is a picture the app decodes in the sandbox. */
+    public static boolean isPictureFormat(String format) {
+        return "Png".equals(format) || "Jpeg".equals(format) || "Gif".equals(format) || "Bmp".equals(format);
+    }
 
     // ---- cell kinds -------------------------------------------------------------------------
     public static final int CELL_TEXT = 0;
@@ -351,6 +360,16 @@ public final class Model {
         public String marker = "";
         public List<Run> runs = new ArrayList<>();
 
+        /** Whether any run was composed by the viewer ({@link Model#SYNTHETIC}). */
+        public boolean hasSynthetic() {
+            for (Run r : runs) {
+                if ((r.style & SYNTHETIC) != 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /** The paragraph's plain text. */
         public String plain() {
             if (runs.size() == 1) {
@@ -488,7 +507,7 @@ public final class Model {
                 continue;
             }
             String text = Json.str(run.get(0), "");
-            int style = run.size() > 1 ? (int) Json.num(run.get(1), 0L) : 0;
+            int style = run.size() > 1 ? (int) (Json.num(run.get(1), 0L) & STYLE_MASK) : 0;
             String href = run.size() > 2 ? Json.str(run.get(2), "") : "";
             p.runs.add(new Run(text, style, href));
         }
