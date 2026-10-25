@@ -241,7 +241,11 @@ fn notices_of(sheet: &Sheet, pages: &Pages, reveal: bool, painted_truncated: boo
         });
     }
     if sheet.approximate {
-        out.push(Notice { kind: NoticeKind::BestEffort, count: 0, detail: "sheet layout".to_owned() });
+        out.push(Notice {
+            kind: NoticeKind::BestEffort,
+            count: 0,
+            detail: "sheet layout".to_owned(),
+        });
     }
     out
 }

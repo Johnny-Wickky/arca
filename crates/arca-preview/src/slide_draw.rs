@@ -70,7 +70,6 @@ fn fade(color: u32, k: f64) -> u32 {
     (a.min(255) << 24) | (color & 0x00FF_FFFF)
 }
 
-
 /// An affine transform; `then` applies `self` first (same convention as the PDF recorder).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Mat {
@@ -170,7 +169,7 @@ impl Canvas {
     }
 
     /// Says that the page is only approximate, and why.
-    pub(super) fn note(&mut self, why: &'static str) {
+    pub(super) fn approximated(&mut self, why: &'static str) {
         self.approximate = true;
         if !self.notes.contains(&why) {
             self.notes.push(why);
@@ -203,7 +202,7 @@ impl Canvas {
         let mut counts = CleanCounts::default();
         let cleaned = clean_text(s, &mut counts);
         if counts.total() > 0 {
-            self.note("characters removed from the text");
+            self.approximated("characters removed from the text");
         }
         cleaned.chars().map(|c| if matches!(c, '\n' | '\t') { ' ' } else { c }).collect()
     }
@@ -229,7 +228,8 @@ impl Canvas {
                 Seg::C(..) => 7,
                 Seg::Z => 1,
             };
-            if ops.len() + need > MAX_PATH_NUMBERS || self.numbers + ops.len() + need > MAX_PAGE_NUMBERS
+            if ops.len() + need > MAX_PATH_NUMBERS
+                || self.numbers + ops.len() + need > MAX_PAGE_NUMBERS
             {
                 self.full = true;
                 break;
@@ -286,7 +286,7 @@ impl Canvas {
         damaged: bool,
     ) -> Rendered {
         if damaged {
-            self.note("a damaged part was read as far as it goes");
+            self.approximated("a damaged part was read as far as it goes");
         }
         let page = PageModel {
             width: f32c(width),
@@ -508,12 +508,7 @@ fn tokens(p: &Para, scale: f64) -> Vec<Tok> {
                         t.text.push(' ');
                         t.w += w;
                     }
-                    _ => out.push(Tok {
-                        text: " ".to_owned(),
-                        piece: pi,
-                        w,
-                        kind: TokKind::Space,
-                    }),
+                    _ => out.push(Tok { text: " ".to_owned(), piece: pi, w, kind: TokKind::Space }),
                 }
             } else if is_wide(c) {
                 flush(&mut word, &mut word_w, &mut out);
@@ -716,14 +711,7 @@ pub(super) fn layout(tb: &TextBody, w: f64, cv: &mut Canvas) -> Laid {
 }
 
 /// Draws a laid-out body in the frame `0..w × 0..h`, which `mt` maps to the page.
-pub(super) fn draw_laid(
-    cv: &mut Canvas,
-    tb: &TextBody,
-    laid: &Laid,
-    w: f64,
-    h: f64,
-    mt: &Mat,
-) {
+pub(super) fn draw_laid(cv: &mut Canvas, tb: &TextBody, laid: &Laid, w: f64, h: f64, mt: &Mat) {
     let scale = if tb.scale.is_finite() { tb.scale.clamp(0.1, 1.0) } else { 1.0 };
     let inner_w = (w - tb.ins[0] - tb.ins[2]).max(0.0);
     let inner_h = (h - tb.ins[1] - tb.ins[3]).max(0.0);
@@ -748,10 +736,11 @@ pub(super) fn draw_laid(
                 && !piece.text.is_empty()
             {
                 let x = tb.ins[0] + bx;
-                put_text(cv, mt, angle, x, base, scale, &piece.text, &piece.st, piece.st.size * scale);
+                let bw = text_width(&piece.text, &piece.st) * scale;
+                put_text(cv, mt, angle, x, base, scale, &piece.text, &piece.st, bw);
             }
             for f in &line.frags {
-                let x = tb.ins[0] + line.x0 + shift.max(-1.0e6) + f.x;
+                let x = tb.ins[0] + line.x0 + shift + f.x;
                 put_text(cv, mt, angle, x, base, scale, &f.text, &f.st, f.w);
             }
             y += line.pitch;
@@ -1015,11 +1004,8 @@ pub(super) fn parse(
                 if let Some(top) = stack.last_mut()
                     && keep_text.contains(&top.name.as_str())
                 {
-                    let s = if is_cdata {
-                        Ok(std::borrow::Cow::Borrowed(raw))
-                    } else {
-                        unescape(raw)
-                    };
+                    let s =
+                        if is_cdata { Ok(std::borrow::Cow::Borrowed(raw)) } else { unescape(raw) };
                     match s {
                         Ok(s) if !s.is_empty() => {
                             count += 1;

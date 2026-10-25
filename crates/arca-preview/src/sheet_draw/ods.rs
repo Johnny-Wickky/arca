@@ -254,7 +254,8 @@ impl OdsH {
         let fill_id = if fill == 0 { 0 } else { self.out.push_fill(fill) };
         let border_id = if has_edges { self.out.push_border(edges) } else { 0 };
         let font_id = self.out.push_font(font);
-        let indent = s.margin.map_or(0, |m| u8::try_from(u32_of((m / 7.0).round()).min(15)).unwrap_or(0));
+        let indent =
+            s.margin.map_or(0, |m| u8::try_from(u32_of((m / 7.0).round()).min(15)).unwrap_or(0));
         let xf = if self.xf_cache.len() >= MAX_STYLES {
             self.out.over = true;
             0
@@ -326,7 +327,9 @@ fn apply_props(tag: &Tag<'_>, s: &mut RawStyle) {
                 let spec = border_spec(&b);
                 s.edges = [spec; 4];
             }
-            for (k, name) in [(0, "border-left"), (1, "border-top"), (2, "border-right"), (3, "border-bottom")] {
+            for (k, name) in
+                [(0, "border-left"), (1, "border-top"), (2, "border-right"), (3, "border-bottom")]
+            {
                 if let (Some(b), Some(slot)) = (tag.attr(name), s.edges.get_mut(k)) {
                     *slot = border_spec(&b);
                 }
@@ -470,14 +473,16 @@ impl Handler for OdsH {
                     p.w = tag.attr("page-width").as_deref().and_then(length);
                     p.h = tag.attr("page-height").as_deref().and_then(length);
                     p.landscape = tag.attr("print-orientation").as_deref() == Some("landscape");
-                    for (k, n) in ["margin-left", "margin-top", "margin-right", "margin-bottom"].iter().enumerate() {
+                    for (k, n) in ["margin-left", "margin-top", "margin-right", "margin-bottom"]
+                        .iter()
+                        .enumerate()
+                    {
                         if let Some(slot) = p.margins.get_mut(k) {
                             *slot = tag.attr(n).as_deref().and_then(length);
                         }
                     }
-                    p.scale = tag
-                        .attr("scale-to")
-                        .and_then(|v| number(v.trim().trim_end_matches('%')));
+                    p.scale =
+                        tag.attr("scale-to").and_then(|v| number(v.trim().trim_end_matches('%')));
                     let x = tag.attr("scale-to-X").and_then(|v| v.trim().parse::<u32>().ok());
                     let y = tag.attr("scale-to-Y").and_then(|v| v.trim().parse::<u32>().ok());
                     let n = tag.attr("scale-to-pages").and_then(|v| v.trim().parse::<u32>().ok());
@@ -557,8 +562,12 @@ impl Handler for OdsH {
                 if let Some(tb) = self.tb.as_mut() {
                     tb.col = 0;
                     tb.row_rep = rep;
-                    tb.row_default = tag.attr("default-cell-style-name").unwrap_or_default().into_owned();
-                    if (size.is_some() || hidden) && tb.row < MAX_ROWS && tb.lay.rows.len() < MAX_RUNS {
+                    tb.row_default =
+                        tag.attr("default-cell-style-name").unwrap_or_default().into_owned();
+                    if (size.is_some() || hidden)
+                        && tb.row < MAX_ROWS
+                        && tb.lay.rows.len() < MAX_RUNS
+                    {
                         let last = tb.row.saturating_add(rep - 1).min(MAX_ROWS - 1);
                         tb.lay.rows.push(RawRun { first: tb.row, last, size, hidden });
                     }
@@ -682,10 +691,21 @@ impl OdsH {
                 name.clone_from(&d.2);
             }
         }
-        let cs = tag.attr("number-columns-spanned").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(1);
-        let rs = tag.attr("number-rows-spanned").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(1);
+        let cs = tag
+            .attr("number-columns-spanned")
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        let rs =
+            tag.attr("number-rows-spanned").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(1);
         let merge = (cs > 1 || rs > 1)
-            .then(|| Merge::new(row, col, row.saturating_add(rs.max(1) - 1), col.saturating_add(cs.max(1) - 1)))
+            .then(|| {
+                Merge::new(
+                    row,
+                    col,
+                    row.saturating_add(rs.max(1) - 1),
+                    col.saturating_add(cs.max(1) - 1),
+                )
+            })
             .flatten();
         if let Some(m) = merge
             && let Some(tb) = self.tb.as_mut()

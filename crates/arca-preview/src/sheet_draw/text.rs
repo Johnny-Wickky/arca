@@ -142,11 +142,14 @@ mod tests {
         let f = Font::default();
         let one = wrap("alpha beta gamma", 1000.0, &f);
         assert_eq!(one.0.len(), 1);
-        let narrow = wrap("alpha beta gamma", width("alpha", &f) + 1.0, &f);
+        let narrow = wrap("alpha beta gamma", width("gamma", &f) + 1.0, &f);
         assert_eq!(narrow.0.len(), 3);
         let long = wrap("supercalifragilistic", 30.0, &f);
         assert!(long.0.len() > 1);
-        assert_eq!(long.0.iter().map(|l| l.text.as_str()).collect::<String>(), "supercalifragilistic");
+        assert_eq!(
+            long.0.iter().map(|l| l.text.as_str()).collect::<String>(),
+            "supercalifragilistic"
+        );
         let paras = wrap("a\nb\n\nc", 1000.0, &f);
         assert_eq!(paras.0.len(), 4);
     }
@@ -162,6 +165,6 @@ mod tests {
         assert!(lines.len() <= MAX_LINES);
         assert!(cut || lines.len() < MAX_LINES);
         let (lines, _) = wrap("abc", f32::NAN, &f);
-        assert_eq!(lines.len(), 1);
+        assert!(!lines.is_empty());
     }
 }

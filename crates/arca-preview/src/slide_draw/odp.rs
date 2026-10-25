@@ -135,7 +135,9 @@ impl<'a> Styles<'a> {
                     };
                     let mut props = Props::new();
                     for k in &st.kids {
-                        if PROPERTY_ELEMENTS.contains(&k.name.as_str()) || k.name.ends_with("-properties") {
+                        if PROPERTY_ELEMENTS.contains(&k.name.as_str())
+                            || k.name.ends_with("-properties")
+                        {
                             for (n, v) in k.attrs_iter() {
                                 props.insert(n.to_owned(), v.to_owned());
                             }
@@ -157,10 +159,9 @@ impl<'a> Styles<'a> {
                             "list-level-style-bullet" => {
                                 let c = lv.attr("text:bullet-char").unwrap_or("•");
                                 // Symbol-font code points would draw as boxes.
-                                let c = c
-                                    .chars()
-                                    .next()
-                                    .filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c) && *c != '●');
+                                let c = c.chars().next().filter(|c| {
+                                    !('\u{E000}'..='\u{F8FF}').contains(c) && *c != '●'
+                                });
                                 Label::Bullet(c.map_or_else(|| "•".to_owned(), String::from))
                             }
                             "list-level-style-number" => Label::Number {
@@ -185,8 +186,7 @@ impl<'a> Styles<'a> {
                     self.lists.insert(name.to_owned(), levels);
                 }
                 "gradient" => {
-                    if let (Some(n), Some(c)) =
-                        (st.attr("draw:name"), st.attr("draw:start-color"))
+                    if let (Some(n), Some(c)) = (st.attr("draw:name"), st.attr("draw:start-color"))
                     {
                         self.gradients.insert(n.to_owned(), c.to_owned());
                     }
@@ -438,10 +438,7 @@ impl Draw<'_, '_> {
                         *c = c.saturating_add(1);
                         *c
                     });
-                    format!(
-                        "{prefix}{}{suffix}",
-                        crate::listfmt::counter(format, n.unwrap_or(1))
-                    )
+                    format!("{prefix}{}{suffix}", crate::listfmt::counter(format, n.unwrap_or(1)))
                 }
             };
             if !text.is_empty() {
@@ -470,7 +467,14 @@ impl Draw<'_, '_> {
 
     /// The runs of a paragraph or span. White space collapses as ODF says: runs of it are one
     /// space, and none starts a paragraph.
-    fn runs(&mut self, n: &Node, st: &RunStyle, out: &mut Vec<Piece>, at_start: &mut bool, depth: usize) {
+    fn runs(
+        &mut self,
+        n: &Node,
+        st: &RunStyle,
+        out: &mut Vec<Piece>,
+        at_start: &mut bool,
+        depth: usize,
+    ) {
         if depth > 16 || out.len() > super::MAX_LINES * 8 {
             return;
         }
@@ -603,14 +607,14 @@ impl Draw<'_, '_> {
         let fill = match p.get("draw:fill").map(String::as_str) {
             Some("solid") => p.get("draw:fill-color").and_then(|v| color(v)).unwrap_or(0xFF72_9FCF),
             Some("gradient") => {
-                self.cv.note("a gradient is drawn with its first colour");
+                self.cv.approximated("a gradient is drawn with its first colour");
                 p.get("draw:fill-gradient-name")
                     .and_then(|n| self.styles.gradients.get(n))
                     .and_then(|c| color(c))
                     .unwrap_or(0)
             }
             Some("hatch" | "bitmap") => {
-                self.cv.note("a hatch or picture fill is not drawn");
+                self.cv.approximated("a hatch or picture fill is not drawn");
                 0
             }
             _ => 0,
@@ -620,7 +624,7 @@ impl Draw<'_, '_> {
         let stroked = match stroke_kind {
             Some("none") => false,
             Some("dash") => {
-                self.cv.note("dashed lines are drawn solid");
+                self.cv.approximated("dashed lines are drawn solid");
                 true
             }
             Some(_) => true,
@@ -763,7 +767,7 @@ impl Draw<'_, '_> {
             }
             "ellipse" | "circle" => {
                 if n.attr("draw:kind").is_some_and(|k| k != "full") {
-                    self.cv.note("an ellipse section or arc is drawn as a full ellipse");
+                    self.cv.approximated("an ellipse section or arc is drawn as a full ellipse");
                 }
                 presets::ellipse(w, h)
             }
@@ -772,7 +776,7 @@ impl Draw<'_, '_> {
                 let (x1, y1) = (get("svg:x1").unwrap_or(0.0), get("svg:y1").unwrap_or(0.0));
                 let (x2, y2) = (get("svg:x2").unwrap_or(0.0), get("svg:y2").unwrap_or(0.0));
                 if kind == "connector" && n.attr("draw:type").is_some_and(|t| t != "line") {
-                    self.cv.note("a connector is drawn as a straight line");
+                    self.cv.approximated("a connector is drawn as a straight line");
                 }
                 vec![Seg::M(x1 - x, y1 - y), Seg::L(x2 - x, y2 - y)]
             }
@@ -784,7 +788,7 @@ impl Draw<'_, '_> {
             "path" => {
                 let Some((segs, approx)) = path_data(n, w, h) else { return };
                 if approx {
-                    self.cv.note("a path uses commands that are only approximated");
+                    self.cv.approximated("a path uses commands that are only approximated");
                 }
                 segs
             }
@@ -815,7 +819,7 @@ impl Draw<'_, '_> {
         segs: &[Seg],
         line_only: bool,
     ) {
-        let (fill, stroke, width) = self.paint(props, line_only);
+        let (fill, stroke, width) = self.paint(props, line_only || n.name == "path");
         self.cv.path(segs, m, if line_only { 0 } else { fill }, stroke, width, false);
         let text_m = if n.name == "custom-shape" || n.name == "rect" || n.name == "caption" {
             // Text is not mirrored with the shape.
@@ -829,13 +833,14 @@ impl Draw<'_, '_> {
     /// The outline of a custom shape and the mirroring it asks for.
     fn custom(&mut self, n: &Node, w: f64, h: f64) -> (Vec<Seg>, Option<Mat>) {
         let Some(g) = n.child("enhanced-geometry") else {
-            self.cv.note("a custom shape without geometry is drawn as its frame");
+            self.cv.approximated("a custom shape without geometry is drawn as its frame");
             return (presets::rect(w, h), None);
         };
         let mirror_h = truthy(g.attr("draw:mirror-horizontal"));
         let mirror_v = truthy(g.attr("draw:mirror-vertical"));
-        let mirror = (mirror_h || mirror_v)
-            .then(|| Mat::scale(if mirror_h { -1.0 } else { 1.0 }, if mirror_v { -1.0 } else { 1.0 }));
+        let mirror = (mirror_h || mirror_v).then(|| {
+            Mat::scale(if mirror_h { -1.0 } else { 1.0 }, if mirror_v { -1.0 } else { 1.0 })
+        });
         let ty = g.attr("draw:type").unwrap_or_default();
         let preset = match ty {
             "rectangle" | "ooxml-rect" => Some("rect"),
@@ -869,7 +874,7 @@ impl Draw<'_, '_> {
         {
             return (segs, mirror);
         }
-        self.cv.note("a shape outside the preset table is drawn as its frame");
+        self.cv.approximated("a shape outside the preset table is drawn as its frame");
         (presets::rect(w, h), mirror)
     }
 
@@ -899,7 +904,10 @@ impl Draw<'_, '_> {
             }
         }
         let rep = |n: &Node, k: &str| -> usize {
-            n.attr(k).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_TABLE_LINE)
+            n.attr(k)
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(1)
+                .clamp(1, MAX_TABLE_LINE)
         };
         let mut col_nodes = Vec::new();
         collect(tbl, "table-column", &mut col_nodes, 0);
@@ -937,9 +945,7 @@ impl Draw<'_, '_> {
                 .attr("table:style-name")
                 .map(|s| self.styles.resolve("table-row", s))
                 .and_then(|p| {
-                    p.get("style:row-height")
-                        .or(p.get("style:min-row-height"))
-                        .and_then(|v| len(v))
+                    p.get("style:row-height").or(p.get("style:min-row-height")).and_then(|v| len(v))
                 })
                 .unwrap_or(0.0);
             for _ in 0..rep(r, "table:number-rows-repeated") {
@@ -1016,12 +1022,14 @@ impl Draw<'_, '_> {
                 Anchor::Bottom => "bottom",
                 Anchor::Top => "top",
             };
-            props.entry("draw:textarea-vertical-align".to_owned()).or_insert_with(|| valign.to_owned());
+            props
+                .entry("draw:textarea-vertical-align".to_owned())
+                .or_insert_with(|| valign.to_owned());
             let width: f64 = cols.iter().skip(p.col).take(p.span).sum();
             let mut body = self.text_body(p.cell, &props);
             let laid = match body.as_mut() {
                 Some(b) => {
-                    if props.get("fo:padding").is_none() && props.get("fo:padding-left").is_none() {
+                    if !props.contains_key("fo:padding") && !props.contains_key("fo:padding-left") {
                         b.ins = [5.7, 2.8, 5.7, 2.8];
                     }
                     layout(b, width, self.cv)
@@ -1114,7 +1122,8 @@ fn numbers(s: &str) -> Vec<f64> {
             while let Some(&d) = b.get(i) {
                 let prev = b.get(i - 1).copied().unwrap_or(b' ');
                 let exp_sign = (d == b'-' || d == b'+') && (prev == b'e' || prev == b'E');
-                if d.is_ascii_digit() || d == b'.' && !s.get(start..i).unwrap_or("").contains('.')
+                if d.is_ascii_digit()
+                    || d == b'.' && !s.get(start..i).unwrap_or("").contains('.')
                     || d == b'e'
                     || d == b'E'
                     || exp_sign
@@ -1247,7 +1256,8 @@ fn path_data(n: &Node, w: f64, h: f64) -> Option<(Vec<Seg>, bool)> {
                     cy = oy + y;
                 }
                 ('S', [x2, y2, x, y]) => {
-                    let (c1x, c1y) = last_ctrl.map_or((cx, cy), |(lx, ly)| (2.0 * cx - lx, 2.0 * cy - ly));
+                    let (c1x, c1y) =
+                        last_ctrl.map_or((cx, cy), |(lx, ly)| (2.0 * cx - lx, 2.0 * cy - ly));
                     let (a1, b1) = map(c1x, c1y);
                     let (a2, b2) = map(ox + x2, oy + y2);
                     let (a3, b3) = map(ox + x, oy + y);
@@ -1411,7 +1421,7 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
         .and_then(|l| styles.layouts.get(l))
         .and_then(|(w, h)| Some((side((*w)?)?, side((*h)?)?)))
         .unwrap_or_else(|| {
-            cv.note("the page size is missing or not believable");
+            cv.approximated("the page size is missing or not believable");
             DEFAULT_SIZE
         });
     cv.push(Prim::Save);
@@ -1426,7 +1436,14 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
         merge(&mut bg_props, styles.resolve("drawing-page", s));
     }
     let pkg_ref: &Package<'_> = pkg;
-    let mut d = Draw { cv: &mut cv, styles: &styles, pkg: pkg_ref, reveal: policy.reveal_hidden, page_no: index + 1, master };
+    let mut d = Draw {
+        cv: &mut cv,
+        styles: &styles,
+        pkg: pkg_ref,
+        reveal: policy.reveal_hidden,
+        page_no: index + 1,
+        master,
+    };
     let (bg, _, _) = d.paint(&bg_props, false);
     if bg >> 24 != 0 && bg != 0xFFFF_FFFF {
         d.cv.path(&presets::rect(w, h), &Mat::ID, bg, 0, 0.0, false);

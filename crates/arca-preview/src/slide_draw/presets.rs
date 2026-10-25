@@ -116,7 +116,10 @@ pub(super) fn preset(name: &str, w: f64, h: f64, adj: [Option<f64>; 2]) -> Optio
     };
     let ss = w.min(h);
     Some(match name {
-        "rect" | "flowChartProcess" | "flowChartPredefinedProcess" | "flowChartInternalStorage"
+        "rect"
+        | "flowChartProcess"
+        | "flowChartPredefinedProcess"
+        | "flowChartInternalStorage"
         | "textBox" => closed(rect(w, h)),
         "roundRect" | "flowChartAlternateProcess" => {
             closed(round_rect(w, h, ss * a(0, 16_667.0, 0.5)))
@@ -125,9 +128,7 @@ pub(super) fn preset(name: &str, w: f64, h: f64, adj: [Option<f64>; 2]) -> Optio
         "ellipse" | "flowChartConnector" | "flowChartSummingJunction" | "flowChartOr" => {
             closed(ellipse(w, h))
         }
-        "triangle" => {
-            closed(poly(&[(0.0, h), (w * a(0, 50_000.0, 1.0), 0.0), (w, h)], true))
-        }
+        "triangle" => closed(poly(&[(0.0, h), (w * a(0, 50_000.0, 1.0), 0.0), (w, h)], true)),
         "rtTriangle" => closed(poly(&[(0.0, 0.0), (0.0, h), (w, h)], true)),
         "diamond" | "flowChartDecision" => {
             closed(poly(&[(w / 2.0, 0.0), (w, h / 2.0), (w / 2.0, h), (0.0, h / 2.0)], true))
@@ -244,11 +245,9 @@ pub(super) fn preset(name: &str, w: f64, h: f64, adj: [Option<f64>; 2]) -> Optio
                 rough: false,
             }
         }
-        "bentConnector2" => Preset {
-            segs: poly(&[(0.0, 0.0), (w, 0.0), (w, h)], false),
-            open: true,
-            rough: false,
-        },
+        "bentConnector2" => {
+            Preset { segs: poly(&[(0.0, 0.0), (w, 0.0), (w, h)], false), open: true, rough: false }
+        }
         "bentConnector3" => {
             let x = w * a(0, 50_000.0, 10.0);
             Preset {
@@ -259,15 +258,20 @@ pub(super) fn preset(name: &str, w: f64, h: f64, adj: [Option<f64>; 2]) -> Optio
         }
         // Other connectors: their path depends on adjust values and routing this table does not
         // model; the straight line between the ends is the closest cheap likeness.
-        n if n.starts_with("bentConnector") || n.starts_with("curvedConnector") => Preset {
-            segs: vec![Seg::M(0.0, 0.0), Seg::L(w, h)],
-            open: true,
-            rough: true,
-        },
+        n if n.starts_with("bentConnector") || n.starts_with("curvedConnector") => {
+            Preset { segs: vec![Seg::M(0.0, 0.0), Seg::L(w, h)], open: true, rough: true }
+        }
         // A cylinder, a block of text with a folded corner and the like: the frame is the
         // likeness.
-        "can" | "cube" | "foldedCorner" | "flowChartDocument" | "flowChartMultidocument"
-        | "flowChartMagneticDisk" | "snip1Rect" | "snip2SameRect" | "round1Rect"
+        "can"
+        | "cube"
+        | "foldedCorner"
+        | "flowChartDocument"
+        | "flowChartMultidocument"
+        | "flowChartMagneticDisk"
+        | "snip1Rect"
+        | "snip2SameRect"
+        | "round1Rect"
         | "round2SameRect" => rough(rect(w, h)),
         _ => return None,
     })

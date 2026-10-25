@@ -64,7 +64,9 @@ fn production_source(path: &Path) -> String {
     for (n, line) in lines.iter().enumerate() {
         // The test module at the end of the file: `#[cfg(test)]` before an inline `mod ... {`.
         if line.starts_with("#[cfg(test)]")
-            && lines.get(n + 1).is_some_and(|l| l.starts_with("mod ") && l.trim_end().ends_with('{'))
+            && lines
+                .get(n + 1)
+                .is_some_and(|l| l.starts_with("mod ") && l.trim_end().ends_with('{'))
         {
             break;
         }
@@ -214,7 +216,9 @@ fn emitted() -> BTreeSet<String> {
                 from = open + 1;
                 let args = arguments(b, open);
                 let found = match form {
-                    'T' => args.first().and_then(|a| literal(a)).map(|d| ("Truncated".to_owned(), d)),
+                    'T' => {
+                        args.first().and_then(|a| literal(a)).map(|d| ("Truncated".to_owned(), d))
+                    }
                     'S' => args.first().and_then(|a| literal(a)).map(|d| ("Skipped".to_owned(), d)),
                     _ => match args.as_slice() {
                         // `pdf.note("what")`: a part that could not be read.
@@ -245,8 +249,8 @@ fn emitted() -> BTreeSet<String> {
 }
 
 fn committed() -> BTreeSet<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../android/core-test/notice_details.txt");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../android/core-test/notice_details.txt");
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("android/core-test/notice_details.txt: {e}"));
     text.lines()

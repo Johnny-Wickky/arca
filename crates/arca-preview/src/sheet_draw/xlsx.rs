@@ -756,7 +756,13 @@ impl Handler for SheetH {
                         let hidden = on(tag, "hidden");
                         self.lay.cols.push(RawRun { first, last, size, hidden });
                         if let Some(xf) = num("style").filter(|&s| s != 0) {
-                            self.lay.wide.push(Wide { r1: 0, r2: MAX_ROWS - 1, c1: first, c2: last, xf });
+                            self.lay.wide.push(Wide {
+                                r1: 0,
+                                r2: MAX_ROWS - 1,
+                                c1: first,
+                                c2: last,
+                                xf,
+                            });
                         }
                     }
                 }
@@ -778,19 +784,24 @@ impl Handler for SheetH {
                         self.lay.rows.push(RawRun { first: row0, last: row0, size: ht, hidden });
                     }
                     if on(tag, "customFormat")
-                        && let Some(xf) =
-                            tag.attr("s").and_then(|v| v.trim().parse::<u32>().ok()).filter(|&s| s != 0)
+                        && let Some(xf) = tag
+                            .attr("s")
+                            .and_then(|v| v.trim().parse::<u32>().ok())
+                            .filter(|&s| s != 0)
                     {
-                        self.lay.wide.push(Wide { r1: row0, r2: row0, c1: 0, c2: MAX_COLS - 1, xf });
+                        self.lay.wide.push(Wide {
+                            r1: row0,
+                            r2: row0,
+                            c1: 0,
+                            c2: MAX_COLS - 1,
+                            xf,
+                        });
                     }
                 }
             }
             "c" => {
-                let col = tag
-                    .attr("r")
-                    .as_deref()
-                    .and_then(cell_ref)
-                    .map_or(self.next_col, |(c, _)| c);
+                let col =
+                    tag.attr("r").as_deref().and_then(cell_ref).map_or(self.next_col, |(c, _)| c);
                 self.next_col = col.saturating_add(1);
                 let xf = tag.attr("s").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
                 if self.row_ok && xf != 0 && col < MAX_COLS {
@@ -840,7 +851,8 @@ impl Handler for SheetH {
                 if let Some(h) = u("fitToHeight") {
                     self.fit.1 = h.min(1_000);
                 }
-                self.lay.setup.over_then_down = tag.attr("pageOrder").as_deref() == Some("overThenDown");
+                self.lay.setup.over_then_down =
+                    tag.attr("pageOrder").as_deref() == Some("overThenDown");
             }
             "printOptions" => self.lay.setup.print_grid = on(tag, "gridLines"),
             "rowBreaks" => self.in_row_breaks = true,

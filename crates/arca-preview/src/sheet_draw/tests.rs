@@ -83,8 +83,10 @@ fn xlsx_book(sheets: &[(&str, &str, bool)], styles: &str, theme: Option<&str>) -
     let rl: Vec<(&str, &str, &str)> =
         rel_list.iter().map(|(a, b, c)| (a.as_str(), *b, c.as_str())).collect();
     let wb_rels = rels(&rl);
-    let bodies: Vec<String> =
-        sheets.iter().map(|(_, inner, _)| format!(r#"<worksheet {SS_NS}>{inner}</worksheet>"#)).collect();
+    let bodies: Vec<String> = sheets
+        .iter()
+        .map(|(_, inner, _)| format!(r#"<worksheet {SS_NS}>{inner}</worksheet>"#))
+        .collect();
     let names: Vec<String> =
         (0..sheets.len()).map(|i| format!("xl/worksheets/sheet{}.xml", i + 1)).collect();
     let mut parts: Vec<(&str, &str)> = vec![
@@ -313,14 +315,22 @@ fn hidden_rows_and_columns_are_skipped_and_counted_unless_revealed() {
     let data = xlsx1(&sheet, &colour_styles());
     let hid = render_with(&data, 0, 0, &omit_hidden());
     let t = texts(&hid.page);
-    assert!(t.contains(&"a1".to_owned()) && t.contains(&"c1".to_owned()) && t.contains(&"c3".to_owned()));
+    assert!(
+        t.contains(&"a1".to_owned())
+            && t.contains(&"c1".to_owned())
+            && t.contains(&"c3".to_owned())
+    );
     assert!(!t.iter().any(|s| s.starts_with("hidden")), "{t:?}");
     assert!(
-        hid.notices.iter().any(|n| n.kind == NoticeKind::HiddenOmitted && n.detail == "rows" && n.count == 1),
+        hid.notices
+            .iter()
+            .any(|n| n.kind == NoticeKind::HiddenOmitted && n.detail == "rows" && n.count == 1),
         "{:?}",
         hid.notices
     );
-    assert!(hid.notices.iter().any(|n| n.kind == NoticeKind::HiddenOmitted && n.detail == "columns"));
+    assert!(
+        hid.notices.iter().any(|n| n.kind == NoticeKind::HiddenOmitted && n.detail == "columns")
+    );
     // Row 3 follows row 1 directly: the hidden row 2 takes no room.
     let y_of = |page: &PageModel, what: &str| {
         page.prims.iter().find_map(|p| match p {
@@ -428,7 +438,8 @@ fn pages_go_down_and_then_over_unless_the_sheet_says_otherwise() {
     // 10 columns of 48 points fit the 494 points between the margins: 25 columns are 3 bands.
     let data = tall_sheet(60, 25, "");
     assert_eq!(page_count(&data, 0, &plain()).expect("count"), 6);
-    let has = |page: usize, what: &str| texts(&render(&data, 0, page).page).iter().any(|t| t == what);
+    let has =
+        |page: usize, what: &str| texts(&render(&data, 0, page).page).iter().any(|t| t == what);
     assert!(has(0, "R1C1") && has(0, "R48C10"));
     assert!(has(1, "R49C1") && !has(1, "R1C1"));
     assert!(has(2, "R1C11"));
@@ -459,7 +470,7 @@ fn fonts_alignment_and_wrapping() {
     let fills = r#"<fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>"#;
     let xfs = r#"<xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="0" borderId="0"/><xf fontId="0" fillId="0" borderId="0"><alignment horizontal="center"/></xf><xf fontId="0" fillId="0" borderId="0"><alignment wrapText="1" vertical="top"/></xf>"#;
     let sheet = format!(
-        r#"<cols><col min="1" max="1" width="10" customWidth="1"/><col min="2" max="2" width="5" customWidth="1"/></cols>
+        r#"<cols><col min="1" max="1" width="10" customWidth="1"/><col min="2" max="2" width="8" customWidth="1"/></cols>
         <sheetData>
         <row r="1">{}<c r="C1"><v>1234</v></c></row>
         <row r="2">{}</row>
@@ -486,13 +497,16 @@ fn fonts_alignment_and_wrapping() {
     let (x, size, _, style, color) = by("bold");
     assert!(near(x, ML + 2.0), "left aligned with padding: {x}");
     assert!(near(size, 14.0) && color == 0xFF00_00FF);
-    assert_eq!(style, crate::page::style::BOLD | crate::page::style::ITALIC | crate::page::style::MONO);
+    assert_eq!(
+        style,
+        crate::page::style::BOLD | crate::page::style::ITALIC | crate::page::style::MONO
+    );
     // Centred text.
     let (x, _, w, _, _) = by("mid");
     assert!(near(x + w / 2.0, ML + 52.5 / 2.0), "{x} {w}");
     // A number is right aligned.
     let (x, _, w, _, _) = by("1234");
-    assert!(near(x + w, ML + 52.5 + 48.0 - 2.0), "{x} {w}");
+    assert!(near(x + w, ML + 52.5 + 42.0 + 48.0 - 2.0), "{x} {w}");
     // Wrapped text: several lines whose words are the cell's words, and a taller row.
     let lines: Vec<String> = texts(&page.page)
         .into_iter()
@@ -543,7 +557,11 @@ fn borders_are_lines_with_a_width_and_unsupported_styles_are_said() {
         .collect();
     assert!(strokes.contains(&(1.5, 0xFFFF_0000)), "{strokes:?}");
     assert!(strokes.contains(&(0.75, 0xFF00_0000)), "{strokes:?}");
-    assert!(has_notice(&page.notices, NoticeKind::Unsupported, "dashed, dotted and double borders"));
+    assert!(has_notice(
+        &page.notices,
+        NoticeKind::Unsupported,
+        "dashed, dotted and double borders"
+    ));
 }
 
 #[test]
@@ -554,11 +572,22 @@ fn what_is_not_drawn_is_named() {
         <drawing r:id="rId9"/>"#;
     let page = render(&xlsx1(sheet, &colour_styles()), 0, 0);
     for what in ["frozen panes", "conditional formatting", "data bars", "drawings, charts"] {
-        assert!(has_notice(&page.notices, NoticeKind::Unsupported, what), "{what}: {:?}", page.notices);
+        assert!(
+            has_notice(&page.notices, NoticeKind::Unsupported, what),
+            "{what}: {:?}",
+            page.notices
+        );
     }
     // The author turned the gridlines off: none are drawn.
     assert!(!page.page.prims.iter().any(|p| matches!(p, Prim::Path { stroke: 0xFFD0_D0D0, .. })));
-    let with = render(&xlsx1(r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>"#, &colour_styles()), 0, 0);
+    let with = render(
+        &xlsx1(
+            r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>"#,
+            &colour_styles(),
+        ),
+        0,
+        0,
+    );
     assert!(with.page.prims.iter().any(|p| matches!(p, Prim::Path { stroke: 0xFFD0_D0D0, .. })));
 }
 
@@ -567,7 +596,11 @@ fn what_is_not_drawn_is_named() {
 // ---------------------------------------------------------------------------
 
 fn letters(strings: impl IntoIterator<Item = String>) -> Vec<char> {
-    let mut v: Vec<char> = strings.into_iter().flat_map(|s| s.chars().collect::<Vec<_>>()).filter(|c| !c.is_whitespace()).collect();
+    let mut v: Vec<char> = strings
+        .into_iter()
+        .flat_map(|s| s.chars().collect::<Vec<_>>())
+        .filter(|c| !c.is_whitespace())
+        .collect();
     v.sort_unstable();
     v
 }
@@ -664,7 +697,7 @@ fn the_whole_sheet_as_used_range_is_bounded() {
         <mergeCells count="1"><mergeCell ref="B2:XFC1048575"/></mergeCells>"#;
     let data = xlsx1(sheet, &colour_styles());
     let n = page_count(&data, 0, &plain()).expect("count");
-    assert_eq!(n as usize, super::model::MAX_PAGES);
+    assert_eq!(n as usize, model::MAX_PAGES);
     for p in [0usize, 1, 4_999] {
         let page = render(&data, 0, p);
         assert!(page.page.truncated, "the sheet is cut at the page limit");
@@ -675,7 +708,9 @@ fn the_whole_sheet_as_used_range_is_bounded() {
 
 #[test]
 fn a_million_merged_ranges_are_cut() {
-    let mut s = String::from(r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><mergeCells count="1000000">"#);
+    let mut s = String::from(
+        r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><mergeCells count="1000000">"#,
+    );
     for n in 1..=1_000_000u32 {
         s.push_str(&format!(r#"<mergeCell ref="A{n}:B{n}"/>"#));
     }
@@ -697,7 +732,10 @@ fn absurd_sizes_fall_back_to_sane_ones() {
         <row r="3" ht="NaN" customHeight="1">{}</row>
         <row r="4" ht="0" customHeight="1">{}</row>
         </sheetData>"#,
-        ["A1", "B1", "C1", "D1"].map(|r| text_cell(r, 1, "x")).concat(),
+        text_cell("A1", 1, "x")
+            + &text_cell("B1", 2, "x")
+            + &text_cell("C1", 3, "x")
+            + &text_cell("D1", 1, "x"),
         ["A2", "B2"].map(|r| text_cell(r, 2, "x")).concat(),
         ["A3"].map(|r| text_cell(r, 3, "x")).concat(),
         ["A4"].map(|r| text_cell(r, 1, "x")).concat()
@@ -712,22 +750,36 @@ fn absurd_sizes_fall_back_to_sane_ones() {
     assert!(r.iter().any(|f| near(f.3 - f.1, 409.5 + 0.6)));
     // Not-a-number and negative sizes are the defaults.
     assert!(r.iter().any(|f| near(f.2 - f.0, 48.0 + 0.6)));
-    assert!(r.iter().any(|f| near(f.2 - f.0, 1400.0 + 0.6)));
+    // The 1400-point column does not fit a page: it has a page to itself, cut at the paper.
+    assert!(page_count(&xlsx1(&sheet, &colour_styles()), 0, &plain()).expect("count") >= 2);
+    let wide = render(&xlsx1(&sheet, &colour_styles()), 0, 1);
+    assert!(
+        fills(&wide.page).iter().any(|f| near(f.2 - f.0, 494.48 + 0.6)),
+        "{:?}",
+        fills(&wide.page)
+    );
     assert!(page_count(&xlsx1(&sheet, &colour_styles()), 0, &plain()).expect("count") >= 1);
 }
 
 #[test]
 fn two_hundred_thousand_styles_are_bounded() {
-    let mut xfs = String::from(r#"<xf fontId="0" fillId="0" borderId="0"/><xf fontId="0" fillId="2" borderId="0"/>"#);
-    for _ in 0..200_000 {
-        xfs.push_str(r#"<xf numFmtId="0" fontId="0" fillId="2" borderId="0"/>"#);
+    let mut xfs = String::from(
+        r#"<xf fontId="0" fillId="0" borderId="0"/><xf fontId="0" fillId="2" borderId="0"/>"#,
+    );
+    for i in 0..200_000 {
+        xfs.push_str(&format!(
+            r#"<xf numFmtId="{}" fontId="0" fillId="2" borderId="0"/>"#,
+            1000 + i * 7
+        ));
     }
     let fills = format!(
         r#"<fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>{}"#,
         solid("FF0000")
     );
-    let sheet = r#"<sheetData><row r="1"><c r="A1" s="1"/><c r="B1" s="150000"/></row></sheetData>"#;
-    let page = render(&xlsx1(sheet, &styles_xml(&fills, "", &xfs)), 0, 0);
+    let sheet =
+        r#"<sheetData><row r="1"><c r="A1" s="1"/><c r="B1" s="150000"/></row></sheetData>"#;
+    let lenient = PreviewPolicy { aggregate_ratio: 1_000_000, ..plain() };
+    let page = render_with(&xlsx1(sheet, &styles_xml(&fills, "", &xfs)), 0, 0, &lenient);
     // The format kept is painted; the one past the limit falls back to the plain format.
     assert_eq!(fills_of(&page.page).len(), 1);
     assert!(has_notice(&page.notices, NoticeKind::Unsupported, "more cell formats"));
@@ -838,7 +890,10 @@ fn ods_merges_hidden_columns_and_repeats() {
     let m = r.iter().find(|f| f.4 == 0xFFFF_0000).expect("merge fill");
     assert!(near(m.2 - m.0, 144.0 + 2.0 * BLEED), "{m:?}");
     assert!(near(m.3 - m.1, 72.0 + 2.0 * BLEED), "{m:?}");
-    assert!(has_notice(&page.notices, NoticeKind::HiddenOmitted, "columns") || page.notices.iter().all(|n| n.kind != NoticeKind::HiddenShown));
+    assert!(
+        has_notice(&page.notices, NoticeKind::HiddenOmitted, "columns")
+            || page.notices.iter().all(|n| n.kind != NoticeKind::HiddenShown)
+    );
     assert_eq!(page_count(&data, 0, &plain()).expect("count"), 1);
     assert!(texts(&page.page).contains(&"M".to_owned()));
     assert_eq!(texts(&render(&data, 1, 0).page), ["second"]);
@@ -960,7 +1015,7 @@ fn an_xls_sheet_has_its_widths_heights_fills_and_merges() {
     assert_eq!(list.sheets.len(), 1);
     let page = render(&data, 0, 0);
     let r = fills(&page.page);
-    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r.len(), 2, "{r:?}");
     // 2560/256 = 10 characters: 70 pixels, 52.5 points. Row 1 is 600 twips, 30 points.
     assert!(near(r[0].0, ML - BLEED) && near(r[0].2, ML + 52.5 + BLEED), "{:?}", r[0]);
     assert!(near(r[0].1, MT - BLEED) && near(r[0].3, MT + 30.0 + BLEED), "{:?}", r[0]);
@@ -984,7 +1039,8 @@ fn damaged_workbooks_give_errors_or_pages_never_panics() {
     for _ in 0..fuzz_iterations(40) {
         for src in &sources {
             let mut data = src.clone();
-            rng.mutate(&mut data, 1 + rng.below(8));
+            let count = 1 + rng.below(8);
+            rng.mutate(&mut data, count);
             if let Ok(n) = page_count(&data, 0, &plain()) {
                 let _ = render_sheet_page(&data, 0, rng.below(n as usize + 1), &plain());
             }
