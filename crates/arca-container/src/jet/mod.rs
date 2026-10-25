@@ -10,12 +10,20 @@
 //! pages) and data pages holding rows; long text and binary values live in other pages and are
 //! reached through a pointer stored in the row.
 //!
-//! Nothing here interprets queries, forms, macros or modules, and nothing is executed. Indexes
-//! are ignored: rows are read page by page.
+//! Nothing here interprets queries, forms, macros or modules, and nothing is executed. Indexes are
+//! listed (names and columns) but never used: rows are read page by page.
 
 use crate::bytes::{u16_le, u32_le};
 use crate::text::{CodePage, decode_codepage, utf16le_lossy};
 use std::cell::Cell;
+
+mod complex;
+mod props;
+#[cfg(test)]
+mod testdb;
+
+pub use complex::{ComplexData, ComplexItem, ComplexKind};
+pub use props::{PropValue, Property};
 
 /// Column types (the byte in the column definition).
 pub mod ty {
@@ -55,8 +63,22 @@ pub mod ty {
 
 /// Column flag: the column holds a fixed-length value.
 const FLAG_FIXED: u8 = 0x01;
+/// Column flag: the column is an automatic number (a counter or a random one).
+const FLAG_AUTO_NUMBER: u8 = 0x04;
+/// Column flag: the column is hidden in the datasheet (a complex column's history is).
+const FLAG_HIDDEN: u8 = 0x10;
+/// Column flag: an automatic number that is a GUID.
+const FLAG_AUTO_GUID: u8 = 0x40;
 /// Column flag: a memo column that holds hyperlinks.
 const FLAG_HYPERLINK: u8 = 0x80;
+/// Extended column flag (ACE): the column holds the key of a complex column's hidden table.
+const EXT_COMPLEX_FK: u8 = 0x08;
+/// Extended column flags (ACE 2010 and later): the column is calculated. Its stored value is
+/// wrapped in a header, see [`unwrap_calculated`].
+const EXT_CALCULATED: u8 = 0xC0;
+/// Where the length of the data of a calculated value is, and where the data starts.
+const CALC_LEN_AT: usize = 16;
+const CALC_DATA_AT: usize = 20;
 
 /// Row-location flags.
 const ROW_DELETED: u16 = 0x8000;
@@ -73,6 +95,10 @@ const CATALOG_PAGE: u32 = 2;
 
 /// Most pages of one table definition (it continues in further pages when it is long).
 const MAX_TDEF_PAGES: usize = 64;
+/// Most indexes of a table that are read (Access allows 32).
+const MAX_INDEXES: usize = 256;
+/// Most columns of one index (Access allows 10).
+const MAX_INDEX_COLUMNS: usize = 10;
 /// Most columns of a table (Access allows 255).
 const MAX_COLUMNS: usize = 255;
 /// Longest chain of overflow pointers followed for one row.
@@ -118,6 +144,15 @@ struct Layout {
     owned_pages: usize,
     index_def_block: usize,
     index_def_size: usize,
+    /// Number of logical indexes (a table lists more of them than real index structures).
+    num_logical: usize,
+    /// Bytes skipped at the start of a real-index block and of a logical-index entry.
+    index_skip: usize,
+    /// Size of the block that describes one real index, and where its flags byte is.
+    index_col_block: usize,
+    index_flags_at: usize,
+    /// Size of the entry that describes one logical index.
+    index_info_block: usize,
     column_header_size: usize,
     // Column definition.
     col_number: usize,
@@ -145,6 +180,11 @@ const JET3: Layout = Layout {
     owned_pages: 35,
     index_def_block: 43,
     index_def_size: 8,
+    num_logical: 27,
+    index_skip: 0,
+    index_col_block: 39,
+    index_flags_at: 38,
+    index_info_block: 20,
     column_header_size: 18,
     col_number: 1,
     col_var_index: 3,
@@ -169,6 +209,11 @@ const JET4: Layout = Layout {
     owned_pages: 55,
     index_def_block: 63,
     index_def_size: 12,
+    num_logical: 47,
+    index_skip: 4,
+    index_col_block: 52,
+    index_flags_at: 46,
+    index_info_block: 28,
     column_header_size: 25,
     col_number: 5,
     col_var_index: 7,
@@ -220,8 +265,12 @@ pub enum Value {
     Guid(String),
     /// A decimal number, already written out.
     Numeric(String),
-    /// An attachment or multi-value field (stored elsewhere; not read).
-    Complex,
+    /// A complex field (attachments, multiple values, a memo's version history): the key of its
+    /// values in a hidden table, see [`Db::complex_data`].
+    Complex(i64),
+    /// The bytes of an object column. Only produced while [`Db::properties_of`] reads the
+    /// property lists of the catalog; everywhere else an object is [`Value::Ole`].
+    Blob(Vec<u8>),
     /// A date with a wider range, already written out.
     ExtDate(String),
 }
@@ -240,6 +289,40 @@ pub struct Column {
     length: u16,
     scale: u8,
     flags: u8,
+    ext_flags: u8,
+    complex_id: u32,
+}
+
+impl Column {
+    /// Whether the column is calculated from other columns (the file keeps the result).
+    #[must_use]
+    pub fn is_calculated(&self) -> bool {
+        self.ext_flags & EXT_CALCULATED != 0
+    }
+
+    /// Whether the column is hidden in the datasheet.
+    #[must_use]
+    pub fn is_hidden(&self) -> bool {
+        self.flags & FLAG_HIDDEN != 0
+    }
+
+    /// Whether the column is an automatic number.
+    #[must_use]
+    pub fn is_auto_number(&self) -> bool {
+        self.flags & (FLAG_AUTO_NUMBER | FLAG_AUTO_GUID) != 0
+    }
+
+    /// Whether the column holds the key of a complex column's values (in the hidden table).
+    #[must_use]
+    pub fn is_complex_key(&self) -> bool {
+        self.ext_flags & EXT_COMPLEX_FK != 0
+    }
+
+    /// The identifier that ties a complex column to its row in `MSysComplexColumns`.
+    #[must_use]
+    pub fn complex_id(&self) -> u32 {
+        self.complex_id
+    }
 }
 
 /// A table definition.
@@ -254,6 +337,34 @@ pub struct Table {
     /// `true` if the usage map of the table leads outside the file, so some of its rows are
     /// missing and [`Db::rows`] reports the scan as stopped early.
     pub truncated: bool,
+    /// The indexes the definition lists (names and columns only; the index pages are not read).
+    pub indexes: Vec<Index>,
+}
+
+/// What an index is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexKind {
+    /// An ordinary index.
+    Normal,
+    /// The primary key.
+    Primary,
+    /// The index that backs the foreign-key side of a relationship.
+    Foreign,
+    /// A kind this reader does not know.
+    Other(u8),
+}
+
+/// A logical index of a table, as the table definition lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Index {
+    /// The index name.
+    pub name: String,
+    /// The indexed columns in order, each with `true` for ascending.
+    pub columns: Vec<(String, bool)>,
+    /// What the index is for.
+    pub kind: IndexKind,
+    /// Whether the index requires distinct values.
+    pub unique: bool,
 }
 
 /// An entry of the system catalog.
@@ -296,6 +407,8 @@ pub struct Db<'a> {
     work: Cell<u64>,
     /// The budget every scan starts with.
     work_limit: u64,
+    /// Whether object columns are returned as their bytes (see [`Value::Blob`]).
+    keep_blobs: Cell<bool>,
 }
 
 /// Reads the three-byte little-endian page number at `at`.
@@ -374,6 +487,7 @@ impl<'a> Db<'a> {
             code_page,
             work: Cell::new(MAX_SCAN_WORK),
             work_limit: MAX_SCAN_WORK,
+            keep_blobs: Cell::new(false),
         })
     }
 
@@ -519,20 +633,96 @@ impl<'a> Db<'a> {
             let name =
                 if lay.jet3 { decode_codepage(raw, self.code_page) } else { utf16le_lossy(raw) };
             let flags = *def.get(h + lay.col_flags)?;
+            let ty = *def.get(h)?;
+            // Access 97 has no extended flags; later formats keep them in the byte after the
+            // flags. Only a complex column has an identifier (in the bytes of the precision).
+            let ext_flags = if lay.jet3 { 0 } else { *def.get(h + lay.col_flags + 1)? };
+            let complex_id =
+                if ty == ty::COMPLEX && !lay.jet3 { u32_le(&def, h + 11).unwrap_or(0) } else { 0 };
             columns.push(Column {
                 name,
                 number: u16_le(&def, h + lay.col_number)?,
-                ty: *def.get(h)?,
+                ty,
                 variable: flags & FLAG_FIXED == 0,
                 var_index: u16_le(&def, h + lay.col_var_index)?,
                 fixed_offset: u16_le(&def, h + lay.col_fixed_offset)?,
                 length: u16_le(&def, h + lay.col_length)?,
                 scale: *def.get(h + lay.col_scale)?,
                 flags,
+                ext_flags,
+                complex_id,
             });
         }
+        // The indexes follow the column names: the real ones (columns and flags), then the
+        // logical ones (which real index they use and what they are for), then their names. A
+        // damaged list loses only the indexes, never the table.
+        let indexes = self.indexes(&def, names_at, nidx, &columns).unwrap_or_default();
         columns.sort_by_key(|c| c.number);
-        Some(Table { columns, row_count, owned, truncated })
+        Some(Table { columns, row_count, owned, truncated, indexes })
+    }
+
+    /// The logical indexes of a table definition whose real-index blocks start at `at`.
+    fn indexes(&self, def: &[u8], at: usize, real: usize, columns: &[Column]) -> Option<Vec<Index>> {
+        let lay = self.lay;
+        let logical = usize::try_from(u32_le(def, lay.num_logical)?).ok()?;
+        if logical > MAX_INDEXES || real > MAX_INDEXES {
+            return None;
+        }
+        // (column numbers with their ascending flag, unique)
+        let mut datas: Vec<(Vec<(u16, bool)>, bool)> = Vec::new();
+        let mut pos = at;
+        for _ in 0..real {
+            let block = def.get(pos..pos.checked_add(lay.index_col_block)?)?;
+            let mut cols = Vec::new();
+            for k in 0..MAX_INDEX_COLUMNS {
+                let o = lay.index_skip + 3 * k;
+                let number = u16_le(block, o)?;
+                if number != 0xFFFF {
+                    cols.push((number, block.get(o + 2)? & 1 == 1));
+                }
+            }
+            let unique = block.get(lay.index_flags_at)? & 1 == 1;
+            datas.push((cols, unique));
+            pos += lay.index_col_block;
+        }
+        let mut entries = Vec::new();
+        for _ in 0..logical {
+            let block = def.get(pos..pos.checked_add(lay.index_info_block)?)?;
+            let base = lay.index_skip;
+            let data = usize::try_from(u32_le(block, base + 4)?).ok()?;
+            let kind = *block.get(base + 19)?;
+            entries.push((data, kind));
+            pos += lay.index_info_block;
+        }
+        let mut out = Vec::with_capacity(logical);
+        for (data, kind) in entries {
+            let len = if lay.name_len_size == 1 {
+                usize::from(*def.get(pos)?)
+            } else {
+                usize::from(u16_le(def, pos)?)
+            };
+            let start = pos + lay.name_len_size;
+            let raw = def.get(start..start.checked_add(len)?)?;
+            pos = start + len;
+            let name =
+                if lay.jet3 { decode_codepage(raw, self.code_page) } else { utf16le_lossy(raw) };
+            let (cols, unique) = datas.get(data)?;
+            let columns = cols
+                .iter()
+                .map(|(n, asc)| {
+                    let name = columns.iter().find(|c| c.number == *n).map(|c| c.name.clone());
+                    (name.unwrap_or_default(), *asc)
+                })
+                .collect();
+            let kind = match kind {
+                0 | 3 => IndexKind::Normal,
+                1 => IndexKind::Primary,
+                2 => IndexKind::Foreign,
+                other => IndexKind::Other(other),
+            };
+            out.push(Index { name, columns, kind, unique: *unique });
+        }
+        Some(out)
     }
 
     /// The objects of the database (tables, queries, forms, ...).
@@ -576,6 +766,43 @@ impl<'a> Db<'a> {
             out.len() < MAX_CATALOG_OBJECTS
         });
         Some((out, stats))
+    }
+
+    /// The properties stored with the catalog object called `name` (case-insensitive): for the
+    /// database itself, the object `MSysDb`. `None` if there is no such object or no list.
+    pub fn properties_of(&self, name: &str) -> Option<Vec<Property>> {
+        let table = self.table(CATALOG_PAGE)?;
+        let col = |n: &str| table.columns.iter().position(|c| c.name == n);
+        let (at_name, at_prop) = (col("Name")?, col("LvProp")?);
+        let mut found = None;
+        self.keep_blobs.set(true);
+        self.rows(&table, |vals| {
+            if let (Some(Value::Text(n)), Some(Value::Blob(b))) =
+                (vals.get(at_name), vals.get(at_prop))
+                && n.eq_ignore_ascii_case(name)
+            {
+                found = Some(props::parse(b, &|raw| self.name_text(raw)));
+                return false;
+            }
+            true
+        });
+        self.keep_blobs.set(false);
+        found
+    }
+
+    /// Decodes a name or text value stored without compression.
+    fn name_text(&self, raw: &[u8]) -> String {
+        if self.lay.jet3 { decode_codepage(raw, self.code_page) } else { utf16le_lossy(raw) }
+    }
+
+    /// Like [`Db::rows`], but object and binary columns come back as their bytes
+    /// ([`Value::Blob`], at most 4 MiB each) instead of their size. For the system tables that
+    /// keep structured data in such a column (the sort key of a saved query, a property list).
+    pub fn rows_raw(&self, table: &Table, f: impl FnMut(&[Value]) -> bool) -> RowStats {
+        self.keep_blobs.set(true);
+        let stats = self.rows(table, f);
+        self.keep_blobs.set(false);
+        stats
     }
 
     /// Calls `f` with the values of every live row of `table`, in file order, until it returns
@@ -701,7 +928,9 @@ impl<'a> Db<'a> {
         let mut out = Vec::with_capacity(table.columns.len());
         for c in &table.columns {
             let present = bit(usize::from(c.number));
-            if c.ty == ty::BOOL {
+            // A calculated Yes/No column keeps its result in the row like any other fixed value
+            // and uses the null bit as "has a value".
+            if c.ty == ty::BOOL && !c.is_calculated() {
                 // A yes/no value is the bit itself.
                 out.push(Value::Bool(present));
                 continue;
@@ -734,8 +963,16 @@ impl<'a> Db<'a> {
     }
 
     fn value(&self, c: &Column, d: &[u8]) -> Value {
+        // The result of a calculated column sits behind a header, except in a long value, where
+        // the header is part of the stored bytes and is removed after they are fetched.
+        let d = if c.is_calculated() && c.ty != ty::MEMO && c.ty != ty::OLE {
+            unwrap_calculated(d)
+        } else {
+            d
+        };
         let arr = |n: usize| d.get(..n);
         match c.ty {
+            ty::BOOL => Value::Bool(d.first().is_some_and(|b| *b != 0)),
             ty::BYTE => d.first().map_or(Value::Null, |b| Value::Int(i64::from(*b))),
             ty::INT => arr(2)
                 .and_then(|b| <[u8; 2]>::try_from(b).ok())
@@ -760,14 +997,24 @@ impl<'a> Db<'a> {
                 .map_or(Value::Null, |b| Value::Date(f64::from_le_bytes(b))),
             ty::TEXT => Value::Text(self.text(d)),
             ty::MEMO => {
-                let text = self.long_value(d).map(|b| self.text(&b)).unwrap_or_default();
+                let bytes = self.long_value(d).unwrap_or_default();
+                let bytes = if c.is_calculated() { unwrap_calculated(&bytes) } else { &bytes };
+                let text = self.text(bytes);
                 if c.flags & FLAG_HYPERLINK != 0 { link(&text) } else { Value::Text(text) }
+            }
+            ty::OLE if self.keep_blobs.get() => {
+                Value::Blob(self.long_value(d).unwrap_or_default())
             }
             ty::OLE => Value::Ole(long_value_len(d)),
             ty::GUID => guid(d).map_or(Value::Null, Value::Guid),
             ty::NUMERIC => numeric(d, c.scale).map_or(Value::Null, Value::Numeric),
-            ty::COMPLEX => Value::Complex,
+            ty::COMPLEX => {
+                d.get(..4)
+                    .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                    .map_or(Value::Null, |b| Value::Complex(i64::from(i32::from_le_bytes(b))))
+            }
             ty::EXT_DATE => ext_date(d).map_or(Value::Null, Value::ExtDate),
+            ty::BINARY if self.keep_blobs.get() => Value::Blob(d.to_vec()),
             _ => Value::Binary(d.len()),
         }
     }
@@ -861,6 +1108,16 @@ impl<'a> Db<'a> {
             _ => None,
         }
     }
+}
+
+/// The result of a calculated column. Access (2010 and later) keeps it behind a 20-byte header
+/// whose last four bytes are the length of the result (the open-source Jackcess library documents
+/// this as `CalculatedColumnUtil`). A value too short to carry the header is returned as it is.
+fn unwrap_calculated(d: &[u8]) -> &[u8] {
+    let Some(len) = u32_le(d, CALC_LEN_AT) else { return d };
+    let Some(rest) = d.get(CALC_DATA_AT..) else { return d };
+    let len = usize::try_from(len).unwrap_or(usize::MAX);
+    rest.get(..len.min(rest.len())).unwrap_or(&[])
 }
 
 /// The size in bytes of a fixed-length value.
