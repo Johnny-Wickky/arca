@@ -51,6 +51,7 @@ public final class ImageViewer {
     /** Opens picture {@code id}, loading it first if it is not at hand. */
     static void show(final MainActivity act, final int id, final String title) {
         dismiss();
+        org.arca.viewer.Stats.recordPicture(act); // a local counter, nothing about the picture
         final Ui ui = new Ui(act);
         final FrameLayout overlay = new FrameLayout(act);
         overlay.setBackgroundColor(0xFF121212);

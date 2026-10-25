@@ -36,7 +36,6 @@
     <string name="home_no_network">This app has no network permission. Documents never leave your device.</string>
     <string name="passport_fallback_title">Patron Passport</string>
     <string name="passport_fallback_body">Arca is free software made by people who ask for nothing in return but support. See who they are and how to help.</string>
-    <string name="stat_documents">Documents checked</string>
     <string name="stat_trackers">Hidden trackers</string>
     <string name="stat_active">Active threats</string>
     <string name="stat_findings">Findings</string>
@@ -285,9 +284,6 @@
     <string name="settings_secure_desc">Hides the app in the recent-apps list and stops screenshots and screen recording. Turn off if you need to capture the screen.</string>
     <string name="settings_reveal">Show hidden content by default</string>
     <string name="settings_reveal_desc">Hidden text, sheets and slides appear in the preview marked as hidden. They can always be toggled there.</string>
-    <string name="settings_usage_reset">Reset local usage counters</string>
-    <string name="settings_usage_reset_desc">Clears the counters kept on this device only: documents checked, threats found and the Patron Passport. Nothing is sent anywhere.</string>
-    <string name="usage_reset_done">Counters cleared</string>
 
     <!-- Diagnostics -->
     <string name="diag_engine">Engine</string>
@@ -438,4 +434,39 @@
     <string name="push_wholesome_threat_shield_body">Every blocked tracker safeguards your privacy. If Arca protects your daily workflow, support the project on lava.top/pharosteam!</string>
     <string name="push_wholesome_foss_solidarity_title">Pure FOSS: %1$d documents, %2$d threats 🕊️</string>
     <string name="push_wholesome_foss_solidarity_body">No paywalls and no proprietary secrets. Authentic Open Source from Pharos students. Support independent development on lava.top/pharosteam!</string>
+
+    <!-- Local statistics (counted by the Rust core, kept only on this device) -->
+    <string name="stats_title">Statistics</string>
+    <string name="stats_period_label">Period</string>
+    <string name="stats_period_week">Week</string>
+    <string name="stats_period_month">Month</string>
+    <string name="stats_period_all">All time</string>
+    <string name="stats_opened">Documents opened</string>
+    <string name="stats_threats">Dangerous software neutralised</string>
+    <string name="stats_trackers">Trackers neutralised</string>
+    <string name="stats_rejected">Files rejected</string>
+    <string name="stats_unverified">Not fully verified</string>
+    <string name="stats_sterile">Sterile copies</string>
+    <string name="stats_pictures">Pictures opened</string>
+    <string name="stats_empty">Nothing counted yet for this period. Open a document and the numbers will appear here.</string>
+    <string name="stats_local_note">These numbers are counted and kept only on this device. They are never sent anywhere, and no file names or contents are stored.</string>
+    <string name="stats_off_note">Statistics are turned off, so nothing is counted. You can turn them on in Settings.</string>
+    <string name="stats_item_description">%1$s: %2$s</string>
+    <string name="stats_card_description">Statistics, %1$s</string>
+    <string name="settings_stats_title">Statistics</string>
+    <string name="settings_stats">Keep statistics</string>
+    <string name="settings_stats_desc">Counts per day what Arca did for you: documents opened, dangerous software and trackers neutralised, files rejected, sterile copies. The numbers stay on this device and are never sent anywhere. Turning this off deletes them and nothing more is counted.</string>
+    <string name="settings_stats_reset">Reset statistics</string>
+    <string name="settings_stats_reset_title">Delete all statistics?</string>
+    <string name="settings_stats_reset_message">The counters stored on this device are deleted. Your documents are not affected. This cannot be undone.</string>
+    <string name="settings_stats_reset_confirm">Delete</string>
+    <string name="settings_stats_reset_done">Statistics deleted</string>
+    <string name="settings_reminders_blocked">Notifications are blocked for Arca in the system settings. The reminder will appear once you allow them.</string>
+
+    <!-- Other ways to support (wallets, Boosty): the list is empty until the owner provides the addresses -->
+    <string name="about_extra_title">Other ways to support</string>
+    <string name="about_extra_hint">Tap an entry to see the full address first. Nothing is copied or opened until you choose to. After pasting an address, compare its beginning and its end with the one shown here.</string>
+    <string name="about_extra_network">Network: %1$s</string>
+    <string name="about_extra_memo">Memo / tag: %1$s</string>
+    <string name="about_extra_cleared">The copied address is removed from the clipboard after one minute where the system allows it.</string>
 </resources>

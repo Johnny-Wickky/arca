@@ -3,6 +3,8 @@
 
 package org.arca.viewer.ui;
 
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.view.View;
 import android.widget.CompoundButton;
 import android.widget.HorizontalScrollView;
@@ -13,6 +15,7 @@ import android.widget.TextView;
 import org.arca.viewer.MainActivity;
 import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
+import org.arca.viewer.Stats;
 
 /** Appearance, language and privacy options. Nothing here leaves the device. */
 public final class SettingsScreen extends Screen {
@@ -94,32 +97,59 @@ public final class SettingsScreen extends Screen {
                     Prefs.setAutoImages(act, on);
                 }
             }));
-        privacy.addView(ui.space(8));
-        privacy.addView(ui.text(R.string.settings_usage_reset_desc, Ui.CAPTION), ui.fillWidth());
-        privacy.addView(ui.button(R.string.settings_usage_reset, Ui.OUTLINE, 0, new View.OnClickListener() {
+        col.addView(privacy, ui.fillWidth());
+        col.addView(ui.space(12));
+
+        // ---- statistics (counted by the core, kept only on this device) ----
+        LinearLayout statistics = ui.card();
+        statistics.addView(ui.heading(ui.str(R.string.settings_stats_title), Ui.LABEL));
+        statistics.addView(ui.space(4));
+        statistics.addView(toggle(R.string.settings_stats, R.string.settings_stats_desc, Stats.enabled(act),
+            new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton b, boolean on) {
+                    if (on != Stats.enabled(act)) {
+                        // Off deletes everything that was counted and counts nothing from now on.
+                        Stats.setEnabled(act, on);
+                        act.refresh();
+                    }
+                }
+            }));
+        statistics.addView(ui.space(8));
+        statistics.addView(ui.button(R.string.settings_stats_reset, Ui.OUTLINE, 0, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Prefs.resetUsage(act);
-                android.widget.Toast.makeText(act, R.string.usage_reset_done, android.widget.Toast.LENGTH_SHORT).show();
+                confirmReset();
             }
-        }));
-        col.addView(privacy, ui.fillWidth());
+        }), ui.fillWidth());
+        col.addView(statistics, ui.fillWidth());
         col.addView(ui.space(12));
 
         // ---- reminders ----
         LinearLayout notif = ui.card();
         notif.addView(ui.heading(ui.str(R.string.settings_reminders_title), Ui.LABEL));
         notif.addView(ui.space(4));
-        notif.addView(toggle(R.string.settings_reminders, R.string.settings_reminders_desc, Prefs.reminders(act),
+        // On from Android 13 only with the permission the person granted; before that, notifications
+        // are allowed by default and the system switch is the only gate.
+        boolean remindersOn = Prefs.reminders(act)
+            && (android.os.Build.VERSION.SDK_INT < 33 || Compat.hasNotificationPermission(act));
+        notif.addView(toggle(R.string.settings_reminders, R.string.settings_reminders_desc, remindersOn,
             new CompoundButton.OnCheckedChangeListener() {
                 @Override
                 public void onCheckedChanged(CompoundButton b, boolean on) {
                     if (on) {
-                        if (!Compat.hasNotificationPermission(act)) {
+                        if (android.os.Build.VERSION.SDK_INT >= 33 && !Compat.hasNotificationPermission(act)) {
+                            // The only permission the app ever asks for, and only now, on this tap.
                             Compat.requestNotificationPermission(act, MainActivity.REQ_NOTIF_PERMISSION);
-                        } else {
-                            Prefs.setReminders(act, true);
-                            org.arca.viewer.Reminders.schedule(act);
+                            return;
+                        }
+                        Prefs.setReminders(act, true);
+                        org.arca.viewer.Reminders.ensureChannel(act);
+                        org.arca.viewer.Reminders.schedule(act);
+                        if (!Compat.hasNotificationPermission(act)) {
+                            // Before Android 13 there is nothing to ask: say where to allow them.
+                            android.widget.Toast.makeText(act, R.string.settings_reminders_blocked,
+                                android.widget.Toast.LENGTH_LONG).show();
                         }
                     } else {
                         Prefs.setReminders(act, false);
@@ -133,6 +163,23 @@ public final class SettingsScreen extends Screen {
         TextView net = ui.text(R.string.home_no_network, Ui.CAPTION);
         col.addView(net, ui.fillWidth());
         return page(header(ui.str(R.string.settings), true), scrollColumn(col, 640, Adaptive.padding(act)));
+    }
+
+    /** Asks before deleting the statistics; nothing happens on Cancel. */
+    private void confirmReset() {
+        Ui.showHardened(act, new AlertDialog.Builder(act)
+            .setTitle(R.string.settings_stats_reset_title)
+            .setMessage(R.string.settings_stats_reset_message)
+            .setPositiveButton(R.string.settings_stats_reset_confirm, new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int w) {
+                    Stats.reset(act);
+                    android.widget.Toast.makeText(act, R.string.settings_stats_reset_done,
+                        android.widget.Toast.LENGTH_SHORT).show();
+                    act.refresh();
+                }
+            })
+            .setNegativeButton(R.string.cancel, null));
     }
 
     private interface Choice {

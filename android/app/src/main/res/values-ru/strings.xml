@@ -34,7 +34,6 @@
     <string name="home_no_network">У приложения нет разрешения на сеть. Документы не покидают устройство.</string>
     <string name="passport_fallback_title">Паспорт мецената</string>
     <string name="passport_fallback_body">Arca — свободное ПО, его делают люди, которые просят в ответ только поддержки. Узнайте, кто они и как помочь.</string>
-    <string name="stat_documents">Проверено документов</string>
     <string name="stat_trackers">Скрытые трекеры</string>
     <string name="stat_active">Активные угрозы</string>
     <string name="stat_findings">Находки</string>
@@ -281,9 +280,6 @@
     <string name="settings_secure_desc">Скрывает приложение в списке недавних и запрещает снимки и запись экрана. Выключите, если нужно сделать снимок.</string>
     <string name="settings_reveal">Показывать скрытое по умолчанию</string>
     <string name="settings_reveal_desc">Скрытый текст, листы и слайды появятся в просмотре с пометкой. Переключить можно и там.</string>
-    <string name="settings_usage_reset">Сбросить локальные счётчики</string>
-    <string name="settings_usage_reset_desc">Очищает счётчики, которые хранятся только на этом устройстве: проверено документов, найдено угроз и Паспорт мецената. Ничего никуда не отправляется.</string>
-    <string name="usage_reset_done">Счётчики сброшены</string>
 
     <!-- Диагностика -->
     <string name="diag_engine">Движок</string>
@@ -434,4 +430,39 @@
     <string name="push_wholesome_threat_shield_body">Каждый заблокированный трекер — это сохранённая приватность. Если Arca помогает в вашей работе, поддержите проект на lava.top/pharosteam!</string>
     <string name="push_wholesome_foss_solidarity_title">Чистый FOSS: %1$d документов, %2$d угроз 🕊️</string>
     <string name="push_wholesome_foss_solidarity_body">Никаких пейволлов и закрытых исходников. Настоящий Open Source от студентов Pharos. Поддержите независимую разработку на lava.top/pharosteam!</string>
+
+    <!-- Local statistics (counted by the Rust core, kept only on this device) -->
+    <string name="stats_title">Статистика</string>
+    <string name="stats_period_label">Период</string>
+    <string name="stats_period_week">Неделя</string>
+    <string name="stats_period_month">Месяц</string>
+    <string name="stats_period_all">Всё время</string>
+    <string name="stats_opened">Открыто документов</string>
+    <string name="stats_threats">Обезврежено опасного ПО</string>
+    <string name="stats_trackers">Обезврежено трекеров</string>
+    <string name="stats_rejected">Отклонено файлов</string>
+    <string name="stats_unverified">Проверено не полностью</string>
+    <string name="stats_sterile">Стерильных копий</string>
+    <string name="stats_pictures">Открыто изображений</string>
+    <string name="stats_empty">За этот период пока ничего не посчитано. Откройте документ, и цифры появятся здесь.</string>
+    <string name="stats_local_note">Эти цифры считаются и хранятся только на этом устройстве. Они никуда не отправляются, имена и содержимое файлов не сохраняются.</string>
+    <string name="stats_off_note">Статистика выключена, поэтому ничего не считается. Включить её можно в настройках.</string>
+    <string name="stats_item_description">%1$s: %2$s</string>
+    <string name="stats_card_description">Статистика, %1$s</string>
+    <string name="settings_stats_title">Статистика</string>
+    <string name="settings_stats">Вести статистику</string>
+    <string name="settings_stats_desc">По дням считает, что Arca сделала для вас: открытые документы, обезвреженное опасное ПО и трекеры, отклонённые файлы, стерильные копии. Цифры остаются на этом устройстве и никуда не отправляются. Если выключить, они удаляются и больше не считаются.</string>
+    <string name="settings_stats_reset">Сбросить статистику</string>
+    <string name="settings_stats_reset_title">Удалить всю статистику?</string>
+    <string name="settings_stats_reset_message">Счётчики, которые хранятся на этом устройстве, будут удалены. Ваши документы не затрагиваются. Это нельзя отменить.</string>
+    <string name="settings_stats_reset_confirm">Удалить</string>
+    <string name="settings_stats_reset_done">Статистика удалена</string>
+    <string name="settings_reminders_blocked">Уведомления для Arca заблокированы в настройках системы. Напоминание появится, когда вы их разрешите.</string>
+
+    <!-- Other ways to support (wallets, Boosty): the list is empty until the owner provides the addresses -->
+    <string name="about_extra_title">Другие способы поддержки</string>
+    <string name="about_extra_hint">Нажмите на запись, чтобы сначала увидеть адрес целиком. Ничего не копируется и не открывается, пока вы сами этого не решите. После вставки адреса сверьте его начало и конец с показанным здесь.</string>
+    <string name="about_extra_network">Сеть: %1$s</string>
+    <string name="about_extra_memo">Memo / тег: %1$s</string>
+    <string name="about_extra_cleared">Скопированный адрес удаляется из буфера обмена через минуту, если система это позволяет.</string>
 </resources>

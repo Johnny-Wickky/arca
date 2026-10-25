@@ -20,7 +20,6 @@ import org.arca.viewer.core.Model;
 import java.io.FileNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -477,7 +476,7 @@ public final class Session {
         } finally {
             Native.outcomeFree(outcome);
         }
-        recordPassport(app, parsed);
+        recordStats(app, parsed);
         post(new Runnable() {
             @Override
             public void run() {
@@ -617,22 +616,15 @@ public final class Session {
         }
     }
 
-    /** Counts the document in the Patron Passport (local statistics only). */
-    private void recordPassport(Context app, Model.Report r) {
+    /**
+     * Counts the scan in the local statistics (counters per day, nothing about the document; does
+     * nothing when the person turned statistics off). Never lets a failure break the scan.
+     */
+    private void recordStats(Context app, Model.Report r) {
         try {
-            int day = Fmt.epochDay(System.currentTimeMillis(), TimeZone.getDefault().getOffset(System.currentTimeMillis()));
-            byte[] next = Native.passportUpdate(Prefs.passport(app), day,
-                (int) Math.min(r.trackers, Integer.MAX_VALUE), (int) Math.min(r.active, Integer.MAX_VALUE));
-            if (next != null && next.length == 36) {
-                Prefs.setPassport(app, next);
-            }
-            Prefs.incrementDocCount(app);
-            int threats = (int) Math.min(r.trackers + r.active, Integer.MAX_VALUE);
-            if (threats > 0) {
-                Prefs.addThreats(app, threats);
-            }
+            Stats.recordScan(app, r);
         } catch (RuntimeException ignored) {
-            // statistics are a courtesy; never let them break a scan
+            // statistics are a courtesy
         }
     }
 
@@ -1427,6 +1419,7 @@ public final class Session {
                         if (bytes >= 0) {
                             sanitize.saved = true;
                             sanitize.savedBytes = bytes;
+                            Stats.recordSterileCopy(app);
                         } else {
                             sanitize.saveFailure = new Failure((int) -bytes, why);
                         }
