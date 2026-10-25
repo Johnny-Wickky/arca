@@ -825,3 +825,5 @@ fn date(v: f64) -> String {
 mod tests;
 #[cfg(test)]
 mod synthetic_tests;
+#[cfg(test)]
+mod samples_tests;
