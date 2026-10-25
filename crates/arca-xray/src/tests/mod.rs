@@ -4,8 +4,10 @@
 
 mod access;
 mod adversarial;
+mod builders;
 mod corpus;
 pub(crate) mod fixtures;
+mod hardening;
 mod images;
 mod mutation;
 mod references;

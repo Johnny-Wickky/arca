@@ -386,6 +386,18 @@ pub fn looks_like_text(data: &[u8]) -> bool {
     bad == 0
 }
 
+/// `true` if the first element of the markup (after comments, processing instructions and the
+/// document type, however long) is one of HTML's: padding in front of the tag must not turn a web
+/// page into "some XML".
+fn is_html_root(text: &str) -> bool {
+    crate::textfmt::first_element(text).is_some_and(|name| {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            "html" | "head" | "body" | "script" | "iframe" | "frameset" | "hta:application"
+        )
+    })
+}
+
 /// Refines a text file into its likely sub-format.
 #[must_use]
 pub fn classify_text(text: &str) -> FileFormat {
@@ -398,6 +410,7 @@ pub fn classify_text(text: &str) -> FileFormat {
         || lower.starts_with("<hta:")
         || lower.contains("<html")
         || lower.starts_with("mime-version:")
+        || is_html_root(trimmed)
     {
         return FileFormat::Html;
     }

@@ -2,6 +2,7 @@
 
 mod excel;
 mod props;
+mod role;
 mod slides;
 mod word;
 
@@ -38,8 +39,10 @@ impl Rel {
 /// `[Content_Types].xml`.
 #[derive(Debug, Default)]
 pub(crate) struct ContentTypes {
-    defaults: BTreeMap<String, String>,
-    overrides: BTreeMap<String, String>,
+    /// Lower-case extension → content type.
+    pub(crate) defaults: BTreeMap<String, String>,
+    /// Lower-case part name (no leading slash) → content type.
+    pub(crate) overrides: BTreeMap<String, String>,
 }
 
 impl ContentTypes {
@@ -60,9 +63,51 @@ pub(crate) struct Package {
     pub(crate) content_types: ContentTypes,
     /// Source part (lowercase, no leading slash; `""` = package) → relationships.
     pub(crate) rels: BTreeMap<String, Vec<Rel>>,
+    /// Part (lowercase) → the role the relationship type that links to it implies.
+    rel_roles: BTreeMap<String, Role>,
+    /// Parts that relationships of different types claim as different things: part → the
+    /// role of the second claim.
+    rel_conflicts: BTreeMap<String, Role>,
 }
 
 impl Package {
+    /// Builds the package structure and derives the roles its relationships imply.
+    pub(crate) fn new(content_types: ContentTypes, rels: BTreeMap<String, Vec<Rel>>) -> Self {
+        let mut pkg = Self {
+            content_types,
+            rels,
+            rel_roles: BTreeMap::new(),
+            rel_conflicts: BTreeMap::new(),
+        };
+        let mut roles: BTreeMap<String, Role> = BTreeMap::new();
+        let mut conflicts: BTreeMap<String, Role> = BTreeMap::new();
+        for (source, rels) in &pkg.rels {
+            for rel in rels {
+                if reaches_outside(rel) {
+                    continue;
+                }
+                let (Some(role), Some(part)) =
+                    (by_relationship(rel.type_suffix()), resolve_target(source, &rel.target))
+                else {
+                    continue;
+                };
+                let part = part.to_ascii_lowercase();
+                match roles.get(&part) {
+                    Some(first) if *first != role => {
+                        conflicts.insert(part, role);
+                    }
+                    Some(_) => {}
+                    None => {
+                        roles.insert(part, role);
+                    }
+                }
+            }
+        }
+        pkg.rel_roles = roles;
+        pkg.rel_conflicts = conflicts;
+        pkg
+    }
+
     pub(crate) fn rels_of(&self, part: &str) -> &[Rel] {
         self.rels.get(&part.to_ascii_lowercase()).map_or(&[], Vec::as_slice)
     }
@@ -70,188 +115,23 @@ impl Package {
     pub(crate) fn rel(&self, part: &str, id: &str) -> Option<&Rel> {
         self.rels_of(part).iter().find(|r| r.id == id)
     }
+
+    /// The role of the part `name`: content type, then relationships, then name.
+    pub(crate) fn classify(&self, name: &str) -> Classified {
+        let lower = name.to_ascii_lowercase();
+        let ct = self.content_types.of(name);
+        let mut c = classify(name, &ct, self.rel_roles.get(&lower).copied());
+        if c.conflict.is_none() {
+            c.conflict = self.rel_conflicts.get(&lower).copied();
+        }
+        c
+    }
 }
 
-/// Role of a part, derived from its content type and, as a fallback, its path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Role {
-    Rels,
-    VbaProject,
-    VbaSignature,
-    VbaData,
-    ActiveX,
-    Embedding,
-    RibbonUi,
-    MacroSheet,
-    ExternalLink,
-    Connections,
-    PrinterSettings,
-    CoreProps,
-    AppProps,
-    CustomProps,
-    CustomXml,
-    Font,
-    People,
-    Comments,
-    Thumbnail,
-    WordBody,
-    WordSettings,
-    Workbook,
-    Worksheet,
-    Slide,
-    Presentation,
-    Visio,
-    Vml,
-    Svg,
-    Labels,
-    OtherXml,
-    Binary,
-}
-
-pub(crate) fn role(name: &str, ct: &str) -> Role {
-    let n = name.to_ascii_lowercase();
-    let file = n.rsplit('/').next().unwrap_or(&n);
-    let ct = ct.to_ascii_lowercase();
-    if n.ends_with(".rels") {
-        return Role::Rels;
-    }
-    if ct == "application/vnd.ms-office.vbaproject" || file == "vbaproject.bin" {
-        return Role::VbaProject;
-    }
-    if ct.starts_with("application/vnd.ms-office.vbaprojectsignature")
-        || file.starts_with("vbaprojectsignature")
-    {
-        return Role::VbaSignature;
-    }
-    if file == "vbadata.xml" || ct == "application/vnd.ms-word.vbadata+xml" {
-        return Role::VbaData;
-    }
-    if ct.contains("activex") || n.contains("activex/") {
-        return Role::ActiveX;
-    }
-    if n.contains("embeddings/")
-        || ct.ends_with("officedocument.oleobject")
-        || ct == "application/vnd.openxmlformats-officedocument.oleobject"
-    {
-        return Role::Embedding;
-    }
-    if n.starts_with("customui/") || n.contains("/customui/") {
-        return Role::RibbonUi;
-    }
-    if ct.contains("macrosheet") || n.contains("macrosheets/") {
-        return Role::MacroSheet;
-    }
-    if ct.contains("externallink") || n.contains("externallinks/") {
-        return if n.ends_with(".xml") { Role::ExternalLink } else { Role::Binary };
-    }
-    if ct.contains("spreadsheetml.connections") || file == "connections.xml" {
-        return Role::Connections;
-    }
-    if ct.contains("printersettings") || n.contains("printersettings/") {
-        return Role::PrinterSettings;
-    }
-    if ct == "application/vnd.openxmlformats-package.core-properties+xml"
-        || n == "docprops/core.xml"
-    {
-        return Role::CoreProps;
-    }
-    if ct == "application/vnd.openxmlformats-officedocument.extended-properties+xml"
-        || n == "docprops/app.xml"
-    {
-        return Role::AppProps;
-    }
-    if ct == "application/vnd.openxmlformats-officedocument.custom-properties+xml"
-        || n == "docprops/custom.xml"
-    {
-        return Role::CustomProps;
-    }
-    if ct.contains("classificationlabels") || n.ends_with("labelinfo.xml") {
-        return Role::Labels;
-    }
-    if n.starts_with("customxml/") {
-        return Role::CustomXml;
-    }
-    if ct.contains("obfuscatedfont")
-        || ct.contains("fontdata")
-        || ct.starts_with("application/x-font")
-        || ct.starts_with("font/")
-        || file.ends_with(".odttf")
-        || file.ends_with(".fntdata")
-    {
-        return Role::Font;
-    }
-    if ct.contains("people+xml")
-        || ct.contains("person+xml")
-        || file == "people.xml"
-        || n.contains("persons/")
-    {
-        return Role::People;
-    }
-    if ct.contains("comments") || ct.contains("commentauthors") || n.contains("comments") {
-        return Role::Comments;
-    }
-    if n.starts_with("docprops/thumbnail") {
-        return Role::Thumbnail;
-    }
-    if ct.contains("wordprocessingml.document.main")
-        || ct.contains("ms-word.document.macroenabled.main")
-        || ct.contains("wordprocessingml.template.main")
-        || ct.contains("ms-word.template.macroenabledtemplate.main")
-        || ct.contains("wordprocessingml.header")
-        || ct.contains("wordprocessingml.footer")
-        || ct.contains("wordprocessingml.footnotes")
-        || ct.contains("wordprocessingml.endnotes")
-        || ct.contains("document.glossary")
-    {
-        return Role::WordBody;
-    }
-    if ct.contains("wordprocessingml.settings") {
-        return Role::WordSettings;
-    }
-    if ct.contains("spreadsheetml.sheet.main")
-        || ct.contains("ms-excel.sheet.macroenabled.main")
-        || ct.contains("spreadsheetml.template.main")
-        || ct.contains("ms-excel.template.macroenabled.main")
-        || ct.contains("ms-excel.addin.macroenabled.main")
-    {
-        return Role::Workbook;
-    }
-    if ct.contains("spreadsheetml.worksheet")
-        || ct.contains("spreadsheetml.dialogsheet")
-        || ct.contains("spreadsheetml.chartsheet")
-    {
-        return Role::Worksheet;
-    }
-    if ct.contains("presentationml.slide+")
-        || ct.contains("presentationml.slidelayout")
-        || ct.contains("presentationml.slidemaster")
-        || ct.contains("presentationml.notesslide")
-        || ct.contains("presentationml.notesmaster")
-        || ct.contains("presentationml.handoutmaster")
-    {
-        return Role::Slide;
-    }
-    if ct.contains("presentationml.presentation.main")
-        || ct.contains("presentationml.slideshow.main")
-        || ct.contains("presentationml.template.main")
-        || ct.contains("ms-powerpoint.")
-    {
-        return Role::Presentation;
-    }
-    if ct.contains("ms-visio.") {
-        return Role::Visio;
-    }
-    if ct.contains("vmldrawing") || file.ends_with(".vml") {
-        return Role::Vml;
-    }
-    if ct == "image/svg+xml" || file.ends_with(".svg") {
-        return Role::Svg;
-    }
-    if ct.ends_with("+xml") || ct.ends_with("/xml") || file.ends_with(".xml") {
-        return Role::OtherXml;
-    }
-    Role::Binary
-}
+#[cfg(test)]
+pub(crate) use role::role;
+pub(crate) use role::{Classified, Role, by_relationship, classify, is_inert_media};
+pub(crate) use slides::visio_active_functions;
 
 /// Maps `dir/_rels/name.rels` to its source part (`""` for the package rels).
 pub(crate) fn rels_source(rels_path: &str) -> Option<String> {
@@ -294,24 +174,45 @@ pub(crate) fn resolve_target(source_part: &str, target: &str) -> Option<String> 
     Some(parts.join("/"))
 }
 
+/// `true` if the relationship leaves the package.
+///
+/// A relationship reaches outside the package if it says so *or* if its target does:
+/// `TargetMode="External"` is an attribute the author controls, and `//host/share/x.dotm` (an
+/// RFC 3986 network-path reference), `\\host\x`, `C:\x` or `scheme:` targets are not
+/// package-internal whatever it says. The sanitizer removes exactly the relationships this
+/// reports.
+pub(crate) fn reaches_outside(rel: &Rel) -> bool {
+    rel.external || url::leaves_package(&rel.target)
+}
+
 /// Scans an OPC package.
 pub(crate) fn scan(
     ctx: &mut Ctx<'_>,
     zip: &ZipArchive<'_>,
     location: &str,
 ) -> Result<FileFormat, Abort> {
-    let mut pkg = Package::default();
-
     // ---- [Content_Types].xml ----------------------------------------------
+    let mut content_types = ContentTypes::default();
     let ct_loc = Ctx::join(location, "[Content_Types].xml");
     if let Some(entry) = zip.entry("[Content_Types].xml")
         && let Some(bytes) = ctx.read_member(zip, entry, &ct_loc)?
     {
-        let mut v = ContentTypesVisitor { ct: &mut pkg.content_types };
+        let mut v = ContentTypesVisitor { ct: &mut content_types, conflicts: 0 };
         xmlwalk::walk(ctx, &bytes, &ct_loc, &mut v)?;
+        if v.conflicts > 0 {
+            ctx.report.add(
+                ThreatKind::ParserDifferential,
+                &ct_loc,
+                format!(
+                    "{} part(s) or extension(s) are given more than one content type; readers that keep the first and readers that keep the last disagree",
+                    v.conflicts
+                ),
+            );
+        }
     }
 
     // ---- all relationships (needed before parts are interpreted) ----------
+    let mut rels: BTreeMap<String, Vec<Rel>> = BTreeMap::new();
     for entry in zip.entries() {
         if !entry.name().to_ascii_lowercase().ends_with(".rels") || entry.is_dir() {
             continue;
@@ -328,8 +229,15 @@ pub(crate) fn scan(
         let Some(bytes) = ctx.read_member(zip, entry, &loc)? else { continue };
         let mut v = RelsVisitor { rels: Vec::new() };
         xmlwalk::walk(ctx, &bytes, &loc, &mut v)?;
-        pkg.rels.insert(source.to_ascii_lowercase(), v.rels);
+        if rels.insert(source.to_ascii_lowercase(), v.rels).is_some() {
+            ctx.report.add(
+                ThreatKind::ParserDifferential,
+                &loc,
+                "two relationship parts describe the same source part (names differing only in case)",
+            );
+        }
     }
+    let pkg = Package::new(content_types, rels);
 
     // ---- main part & format ------------------------------------------------
     let main_part = pkg
@@ -345,6 +253,15 @@ pub(crate) fn scan(
         None => FileFormat::OpcOther,
     };
     ctx.identified(format);
+    if format == FileFormat::OpcOther {
+        // Nothing says what kind of document this package is, so nothing says how its parts
+        // are to be read.
+        ctx.report.add(
+            ThreatKind::ScanLimitReached,
+            &Ctx::join(location, main_part.as_deref().unwrap_or("")),
+            "the package has no main document part of a recognised type; its content model was not interpreted",
+        );
+    }
     if format.is_macro_enabled_type() {
         ctx.report.add(
             ThreatKind::MacroEnabledContentType,
@@ -357,7 +274,7 @@ pub(crate) fn scan(
     for (source, rels) in &pkg.rels {
         for rel in rels {
             let loc = Ctx::join(location, if source.is_empty() { "_rels/.rels" } else { source });
-            inspect_relationship(ctx, rel, source, &loc, zip);
+            inspect_relationship(ctx, rel, source, &loc, &|part| zip.entry(part).is_some());
         }
     }
 
@@ -372,7 +289,35 @@ pub(crate) fn scan(
         let loc = Ctx::join(location, name);
         let ct = pkg.content_types.of(name);
         ctx.report.stats.parts_scanned = ctx.report.stats.parts_scanned.saturating_add(1);
-        match role(name, &ct) {
+        let classified = pkg.classify(name);
+        let mut role = classified.role;
+        let is_rels_name = name.to_ascii_lowercase().ends_with(".rels");
+        if role == Role::Rels && !is_rels_name {
+            // Declared as relationships, but not where relationships live: nothing parsed it,
+            // so it is read as the XML it is.
+            role = Role::OtherXml;
+            ctx.report.add(
+                ThreatKind::ContentTypeMismatch,
+                &loc,
+                "the part is declared as relationships but is not named like a relationships part; it was read as plain XML",
+            );
+        }
+        if let Some(other) = classified.conflict {
+            ctx.report.add(
+                ThreatKind::ContentTypeMismatch,
+                &loc,
+                format!(
+                    "the content type, the relationships and the name of this part disagree about what it is ({role:?} / {other:?}); it was scanned as {role:?}"
+                ),
+            );
+        } else if ct.is_empty() && role != Role::Rels {
+            ctx.report.add(
+                ThreatKind::ContentTypeMismatch,
+                &loc,
+                "the part has no content type in [Content_Types].xml",
+            );
+        }
+        match role {
             Role::Rels => {}
             Role::VbaProject => {
                 has_vba = true;
@@ -390,7 +335,7 @@ pub(crate) fn scan(
                     }
                 }
             }
-            Role::ActiveX => scan_activex(ctx, zip, entry, &loc)?,
+            Role::ActiveX => scan_activex(ctx, zip, entry, &loc, &ct)?,
             Role::Embedding => scan_embedding(ctx, zip, entry, &loc)?,
             Role::RibbonUi => {
                 if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
@@ -442,10 +387,12 @@ pub(crate) fn scan(
                 }
             }
             Role::CustomXml => {
-                if name.to_ascii_lowercase().ends_with(".xml") {
-                    custom_xml += 1;
-                    if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+                if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+                    if name.to_ascii_lowercase().ends_with(".xml") {
+                        custom_xml += 1;
                         xmlwalk::walk(ctx, &bytes, &loc, &mut NoopVisitor)?;
+                    } else {
+                        scan_binary_part(ctx, &bytes, &loc, &ct)?;
                     }
                 }
             }
@@ -458,9 +405,17 @@ pub(crate) fn scan(
             Role::Comments => {
                 if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
                     props::comments(ctx, &bytes, &loc)?;
+                    // A comment is a document of its own: fields, objects and links in it are
+                    // read like those in the body.
+                    word::scan_body(ctx, &pkg, name, &bytes, &loc)?;
                 }
             }
-            Role::Thumbnail => ctx.report.add(ThreatKind::StaleThumbnail, &loc, "a preview image is stored and may show an older state of the document"),
+            Role::Thumbnail => {
+                ctx.report.add(ThreatKind::StaleThumbnail, &loc, "a preview image is stored and may show an older state of the document");
+                if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+                    scan_binary_part(ctx, &bytes, &loc, &ct)?;
+                }
+            }
             Role::WordBody => {
                 if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
                     word::scan_body(ctx, &pkg, name, &bytes, &loc)?;
@@ -503,21 +458,24 @@ pub(crate) fn scan(
             }
             Role::Svg => {
                 if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
-                    let mut v = SvgVisitor { location: loc.clone() };
-                    xmlwalk::walk(ctx, &bytes, &loc, &mut v)?;
+                    scan_svg(ctx, &bytes, &loc)?;
+                }
+            }
+            Role::WebExtension => {
+                if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+                    scan_web_extension(ctx, &bytes, &loc)?;
                 }
             }
             Role::OtherXml => {
+                // Drawings, diagrams and charts carry the same action hyperlinks and objects
+                // as slides do.
                 if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
-                    xmlwalk::walk(ctx, &bytes, &loc, &mut NoopVisitor)?;
+                    slides::scan_slide(ctx, &bytes, &loc)?;
                 }
             }
             Role::Binary => {
-                // Media must be media: sniff a bounded prefix for executables.
-                if let Some(bytes) = ctx.read_member(zip, entry, &loc)?
-                    && let crate::format::Magic::Executable(what) = crate::format::sniff(&bytes)
-                {
-                    ctx.report.add(ThreatKind::EmbeddedExecutable, &loc, format!("{what} stored as a package part"));
+                if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+                    scan_binary_part(ctx, &bytes, &loc, &ct)?;
                 }
             }
         }
@@ -547,21 +505,66 @@ pub(crate) fn scan(
     Ok(format)
 }
 
+/// Scans a part that has no XML structure to walk: what its bytes are decides.
+///
+/// Containers and documents are scanned recursively, pictures and text by their own scanners,
+/// executables are reported. Bytes of a kind the scanner does not recognise are acceptable only
+/// when the part's declared media type says they are plain media (fonts, metafiles, audio); in
+/// any other case they were not inspected, which is a coverage gap rather than a pass.
+pub(crate) fn scan_binary_part(
+    ctx: &mut Ctx<'_>,
+    bytes: &[u8],
+    loc: &str,
+    content_type: &str,
+) -> Result<(), Abort> {
+    use crate::format::Magic;
+    match crate::format::sniff(bytes) {
+        Magic::Empty => {}
+        Magic::Executable(what) => {
+            ctx.report.add(
+                ThreatKind::EmbeddedExecutable,
+                loc,
+                format!("{what} stored as a package part"),
+            );
+        }
+        Magic::Zip | Magic::Ole2 | Magic::Pdf | Magic::Rtf | Magic::Jet(_) => {
+            let nested = ctx.scan_nested(bytes, loc)?;
+            ctx.report.add(
+                ThreatKind::EmbeddedDocument,
+                loc,
+                format!("embedded {nested:?} document (scanned recursively)"),
+            );
+        }
+        Magic::Image(_) | Magic::Text => {
+            ctx.scan_nested(bytes, loc)?;
+        }
+        Magic::Unknown => {
+            if !is_inert_media(content_type) {
+                ctx.report.add(
+                    ThreatKind::ScanLimitReached,
+                    loc,
+                    format!(
+                        "binary part of an unrecognised kind (content type {content_type:?}); it was not inspected"
+                    ),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Classifies one relationship and records external references.
-fn inspect_relationship(
+///
+/// `has_part` tells whether the package contains a part of the given (resolved) name.
+pub(crate) fn inspect_relationship(
     ctx: &mut Ctx<'_>,
     rel: &Rel,
     source: &str,
     loc: &str,
-    zip: &ZipArchive<'_>,
+    has_part: &dyn Fn(&str) -> bool,
 ) {
     let suffix = rel.type_suffix();
-    // A relationship reaches outside the package if it says so *or* if its
-    // target does: `TargetMode="External"` is an attribute the author controls,
-    // and `//host/share/x.dotm` (an RFC 3986 network-path reference), `\\host\x`,
-    // `C:\x` or `scheme:` targets are not package-internal whatever it says.
-    let reaches_outside = rel.external || url::leaves_package(&rel.target);
-    if !reaches_outside {
+    if !reaches_outside(rel) {
         // Internal target: must stay inside the package.
         match resolve_target(source, &rel.target) {
             None => ctx.report.add_with(
@@ -571,7 +574,7 @@ fn inspect_relationship(
                 format!("relationship {} target {:?} escapes the package root", rel.id, rel.target),
             ),
             Some(part) => {
-                if suffix == "aFChunk" && zip.entry(&part).is_some() {
+                if suffix == "aFChunk" && has_part(&part) {
                     ctx.report.add(
                         ThreatKind::AltChunkImport,
                         loc,
@@ -591,7 +594,9 @@ fn inspect_relationship(
         "oleObject" | "package" => (RefKind::ObjectLink, true),
         "externalLinkPath" | "externalLink" | "xlExternalLinkPath" => (RefKind::WorkbookLink, true),
         "hyperlink" => (RefKind::Hyperlink, false),
-        "video" | "audio" | "media" => (RefKind::Image, false),
+        // Linked media are fetched when the slide show reaches them, and may start by
+        // themselves.
+        "video" | "audio" | "media" => (RefKind::Other, true),
         "aFChunk" => (RefKind::Frame, true),
         _ => (RefKind::Other, true),
     };
@@ -681,6 +686,7 @@ fn scan_activex(
     zip: &ZipArchive<'_>,
     entry: &ZipEntry,
     loc: &str,
+    content_type: &str,
 ) -> Result<(), Abort> {
     let Some(bytes) = ctx.read_member(zip, entry, loc)? else { return Ok(()) };
     if entry.name().to_ascii_lowercase().ends_with(".xml") {
@@ -705,8 +711,8 @@ fn scan_activex(
             size: bytes.len() as u64,
             sha256: arca_digest::sha256(&bytes).to_string(),
         });
-    } else if arca_container::cfb::has_cfb_signature(&bytes) {
-        ctx.scan_nested(&bytes, loc)?;
+    } else {
+        scan_binary_part(ctx, &bytes, loc, content_type)?;
     }
     Ok(())
 }
@@ -723,13 +729,21 @@ fn scan_embedding(
     let kind = match magic {
         crate::format::Magic::Executable(_) => EmbeddedKind::Executable,
         crate::format::Magic::Ole2 => EmbeddedKind::OleObject,
-        crate::format::Magic::Zip | crate::format::Magic::Pdf | crate::format::Magic::Rtf => {
-            EmbeddedKind::Document
-        }
+        crate::format::Magic::Zip
+        | crate::format::Magic::Pdf
+        | crate::format::Magic::Rtf
+        | crate::format::Magic::Jet(_) => EmbeddedKind::Document,
         _ => EmbeddedKind::Other,
     };
     let before = ctx.report.embedded.len();
     let nested = ctx.scan_nested(&bytes, loc)?;
+    if nested == FileFormat::Unknown && matches!(magic, crate::format::Magic::Unknown) {
+        ctx.report.add(
+            ThreatKind::ScanLimitReached,
+            loc,
+            "the embedded object is of a kind the scanner cannot read; it was not inspected",
+        );
+    }
     if kind == EmbeddedKind::Document || nested.family() != crate::format::Family::None {
         ctx.report.add(
             ThreatKind::EmbeddedDocument,
@@ -757,6 +771,8 @@ fn scan_embedding(
 
 struct ContentTypesVisitor<'a> {
     ct: &'a mut ContentTypes,
+    /// Parts or extensions declared more than once with different content types.
+    conflicts: usize,
 }
 
 impl Visitor for ContentTypesVisitor<'_> {
@@ -764,23 +780,37 @@ impl Visitor for ContentTypesVisitor<'_> {
         match xml::local_name(e) {
             "Default" => {
                 if let (Some(ext), Some(ct)) =
-                    (xml::attr(e, "Extension"), xml::attr(e, "ContentType"))
+                    (plain_attr(e, "Extension"), plain_attr(e, "ContentType"))
+                    && let Some(old) = self.ct.defaults.insert(ext.to_ascii_lowercase(), ct.clone())
                 {
-                    self.ct.defaults.insert(ext.to_ascii_lowercase(), ct);
+                    self.conflicts += usize::from(old != ct);
                 }
             }
             "Override" => {
                 if let (Some(part), Some(ct)) =
-                    (xml::attr(e, "PartName"), xml::attr(e, "ContentType"))
-                {
-                    self.ct.overrides.insert(
+                    (plain_attr(e, "PartName"), plain_attr(e, "ContentType"))
+                    && let Some(old) = self.ct.overrides.insert(
                         url::percent_decode(part.trim_start_matches('/')).to_ascii_lowercase(),
-                        ct,
-                    );
+                        ct.clone(),
+                    )
+                {
+                    self.conflicts += usize::from(old != ct);
                 }
             }
             _ => {}
         }
+    }
+}
+
+/// The value of an attribute the specification defines without a prefix (`Id`, `Target`,
+/// `ContentType`). If a same-named attribute with another prefix is present as well, the
+/// unprefixed one wins: it is the one a conforming reader looks at. The collision itself is
+/// reported by the XML walker.
+pub(crate) fn plain_attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
+    match xml::attr_ns(e, None, local) {
+        xml::AttrLookup::Found(v) | xml::AttrLookup::OtherPrefix(v) => Some(v),
+        xml::AttrLookup::Collision { preferred } => preferred.or_else(|| xml::attr(e, local)),
+        xml::AttrLookup::Absent => None,
     }
 }
 
@@ -791,12 +821,15 @@ struct RelsVisitor {
 impl Visitor for RelsVisitor {
     fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         if xml::local_name(e) == "Relationship" {
-            let external =
-                xml::attr(e, "TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("External"));
+            // Every attribute that could be taken for `TargetMode` counts: a reader may look at
+            // either, and "external" is the safe answer.
+            let external = xml::attrs(e).iter().any(|(k, v)| {
+                xml::split_qname(k).1 == "TargetMode" && v.eq_ignore_ascii_case("External")
+            });
             self.rels.push(Rel {
-                id: xml::attr(e, "Id").unwrap_or_default(),
-                rtype: xml::attr(e, "Type").unwrap_or_default(),
-                target: xml::attr(e, "Target").unwrap_or_default(),
+                id: plain_attr(e, "Id").unwrap_or_default(),
+                rtype: plain_attr(e, "Type").unwrap_or_default(),
+                target: plain_attr(e, "Target").unwrap_or_default(),
                 external,
             });
         }
@@ -883,8 +916,113 @@ impl Visitor for SvgVisitor {
             if (lk == "href" || lk == "src") && url::leaves_package(&v) {
                 record_external(ctx, &v, RefKind::Image, true, &self.location);
             }
+            // Animation elements can set an `href` to a script URL (`<set attributeName="href"
+            // to="javascript:...">`), so every attribute value is looked at.
+            let lv = v.to_ascii_lowercase();
+            if lv.contains("javascript:") || lv.contains("vbscript:") {
+                ctx.report.add(
+                    ThreatKind::HtmlActiveContent,
+                    &self.location,
+                    format!("script URL in the {lk} attribute of an SVG element"),
+                );
+            }
         }
     }
+
+    fn text(&mut self, ctx: &mut Ctx<'_>, text: &str, anc: &Ancestors) {
+        if anc.last().is_some_and(|a| a.eq_ignore_ascii_case("style")) {
+            for u in url::find_urls(text, 8) {
+                record_external(ctx, &u, RefKind::Image, true, &self.location);
+            }
+        }
+    }
+}
+
+/// Scans an SVG picture (a package part, or a document of its own).
+pub(crate) fn scan_svg(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort> {
+    let mut v = SvgVisitor { location: loc.to_owned() };
+    xmlwalk::walk(ctx, bytes, loc, &mut v)?;
+    Ok(())
+}
+
+/// Collects what an Office add-in (web extension) definition says.
+#[derive(Default)]
+struct WebExtensionVisitor {
+    references: Vec<String>,
+    stores: Vec<String>,
+    auto_show: bool,
+}
+
+impl Visitor for WebExtensionVisitor {
+    fn start(&mut self, _ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
+        match xml::local_name(e) {
+            "reference" | "alternateReference" => {
+                let id = xml::attr(e, "id").unwrap_or_default();
+                let store = xml::attr(e, "store").unwrap_or_default();
+                let kind = xml::attr(e, "storeType").unwrap_or_default();
+                if self.references.len() < 16 {
+                    self.references.push(format!("{id} ({kind} {store})"));
+                }
+                if !store.is_empty() && self.stores.len() < 16 {
+                    self.stores.push(store);
+                }
+            }
+            "property"
+                if xml::attr(e, "name")
+                    .is_some_and(|n| n == "Office.AutoShowTaskpaneWithDocument")
+                    && xml::attr(e, "value").is_some_and(|v| v.contains("true")) =>
+            {
+                self.auto_show = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Office add-ins are web pages (with script) that Office loads into a task pane, optionally
+/// the moment the document opens. A definition of one, or the list of open task panes, is
+/// executable content however benign the page it names.
+fn scan_web_extension(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort> {
+    let mut v = WebExtensionVisitor::default();
+    xmlwalk::walk(ctx, bytes, loc, &mut v)?;
+    for store in &v.stores {
+        if url::leaves_package(store) {
+            record_external(ctx, store, RefKind::Frame, true, loc);
+        }
+    }
+    let auto = if v.auto_show { "; opens automatically with the document" } else { "" };
+    ctx.report.add(
+        ThreatKind::EmbeddedScript,
+        loc,
+        format!("Office add-in (web extension): {}{auto}", v.references.join(", ")),
+    );
+    Ok(())
+}
+
+// ---- scanners of the parts of a flat (single-file) package -------------------------------------
+//
+// The element names the part scanners look for do not depend on where the part sits, so a flat
+// OPC document is scanned by running them over the whole file.
+
+/// Scans WordprocessingML text that is not in a package.
+pub(crate) fn scan_word_body(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort> {
+    word::scan_body(ctx, &Package::default(), "", bytes, loc)?;
+    word::scan_settings(ctx, bytes, loc)
+}
+
+/// Scans SpreadsheetML workbook text that is not in a package.
+pub(crate) fn scan_workbook_xml(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort> {
+    excel::scan_workbook(ctx, &Package::default(), "", bytes, loc)
+}
+
+/// Scans SpreadsheetML sheet text that is not in a package.
+pub(crate) fn scan_sheet_xml(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort> {
+    excel::scan_sheet(ctx, bytes, loc)
+}
+
+/// Scans PresentationML (and DrawingML) text that is not in a package.
+pub(crate) fn scan_slide_xml(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort> {
+    slides::scan_slide(ctx, bytes, loc)
 }
 
 #[cfg(test)]

@@ -268,7 +268,8 @@ pub(super) fn rebuild(
 ) -> Result<(Vec<u8>, FileFormat, Vec<SanitizeAction>), SanitizeError> {
     let limits = policy.xml;
     let zip = ZipArchive::parse(data, policy.zip).map_err(err)?;
-    let mut budget = InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20);
+    let mut budget = InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20)
+        .with_original_input(data.len() as u64);
     let mut members: Vec<(String, Vec<u8>)> = Vec::new();
     for e in zip.entries() {
         if e.is_dir() {
@@ -334,7 +335,9 @@ pub(super) fn rebuild(
         };
         let out = match part {
             Some(part) => {
-                let src = xml::decode_xml_bytes(bytes, &limits).map_err(err)?;
+                let decoded = xml::decode_xml_bytes(bytes, &limits).map_err(err)?;
+                // Written back as UTF-8: a UTF-16 declaration must not survive.
+                let src = xml::declare_utf8(&decoded).into_owned();
                 if part == Part::Manifest && src.contains("encryption-data") {
                     return Err(err("the document is encrypted and cannot be rebuilt"));
                 }

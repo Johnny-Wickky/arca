@@ -127,6 +127,10 @@ pub(crate) struct Ctx<'p> {
     pub(crate) depth: usize,
     /// Format of the top-level file once identified (kept if it is later rejected).
     pub(crate) top_format: FileFormat,
+    /// Report elements whose attributes share a local name under different prefixes. OpenDocument
+    /// legitimately does this (`draw:style-name` next to `presentation:style-name`), so its
+    /// scanner turns the check off.
+    pub(crate) attr_collisions: bool,
 }
 
 impl Ctx<'_> {
@@ -235,6 +239,9 @@ pub(crate) fn zip_abort(e: &ZipError, location: &str) -> Abort {
         ZipError::DuplicateName(_)
         | ZipError::LocalHeaderMismatch(_)
         | ZipError::OverlappingEntries(..)
+        | ZipError::AmbiguousEndOfCentralDirectory
+        | ZipError::CompressedSizeMismatch(_)
+        | ZipError::UnicodePathMismatch(_)
         | ZipError::CentralDirectoryMismatch
         | ZipError::InvalidName { .. } => ThreatKind::ParserDifferential,
         _ => ThreatKind::MalformedContainer,
@@ -255,10 +262,12 @@ pub fn scan(data: &[u8], policy: &ScanPolicy) -> XRayReport {
     let sha256 = arca_digest::sha256(data).to_string();
     let mut ctx = Ctx {
         policy,
-        budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20),
+        budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20)
+            .with_original_input(data.len() as u64),
         report: ReportBuilder::new(policy.max_findings),
         depth: 0,
         top_format: FileFormat::Unknown,
+        attr_collisions: true,
     };
 
     let outcome = if data.len() > policy.max_input_bytes {
@@ -373,8 +382,14 @@ pub(crate) fn dispatch(
                 Ok(FileFormat::Executable)
             }
         }
-        Magic::Zip => scan_zip(ctx, data, location),
-        Magic::Ole2 => ole::scan(ctx, data, location),
+        Magic::Zip => {
+            check_polyglot(ctx, data, location, false);
+            scan_zip(ctx, data, location)
+        }
+        Magic::Ole2 => {
+            check_polyglot(ctx, data, location, false);
+            ole::scan(ctx, data, location)
+        }
         Magic::Pdf => pdf::scan(ctx, data, location),
         Magic::Image(format) => {
             // A picture is also checked as a whole, wherever its decoder puts the end of the
@@ -382,9 +397,13 @@ pub(crate) fn dispatch(
             check_polyglot(ctx, data, location, false);
             image::scan(ctx, data, location, format)
         }
-        Magic::Rtf => rtf::scan(ctx, data, location),
+        Magic::Rtf => {
+            check_polyglot(ctx, data, location, false);
+            rtf::scan(ctx, data, location)
+        }
         Magic::Jet(fmt) => {
-            ole::scan_access(ctx, data, location);
+            check_polyglot(ctx, data, location, false);
+            ole::scan_access(ctx, data, location)?;
             Ok(fmt)
         }
         Magic::Text => textfmt::scan(ctx, data, location),
@@ -405,11 +424,10 @@ fn scan_zip(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Result<FileFormat
                 location,
                 format!("{bytes} bytes precede the archive (self-extractor or polyglot)"),
             ),
-            A::TrailingData { bytes } => ctx.report.add(
-                ThreatKind::TrailingData,
-                location,
-                format!("{bytes} bytes follow the archive"),
-            ),
+            A::TrailingData { bytes } => {
+                let n = usize::try_from(*bytes).unwrap_or(usize::MAX);
+                report_trailing(ctx, data, n, location, "the archive");
+            }
             A::UnreferencedData { bytes } => ctx.report.add(
                 ThreatKind::UnreferencedArchiveData,
                 location,
@@ -439,10 +457,23 @@ fn scan_zip(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Result<FileFormat
             A::Zip64 => {}
         }
     }
-    if zip.entry("[Content_Types].xml").is_some() {
+    let is_opc = zip.entry("[Content_Types].xml").is_some();
+    let is_odf = zip.entry("mimetype").is_some() || zip.entry("META-INF/manifest.xml").is_some();
+    if is_opc && is_odf {
+        // One archive that two kinds of reader open as two different documents. Both
+        // interpretations are scanned; the file can still never be called clean.
+        ctx.report.add(
+            ThreatKind::PolyglotFile,
+            location,
+            "the archive is both an Office Open XML package ([Content_Types].xml) and an OpenDocument package (mimetype / manifest); both were scanned",
+        );
+        odf::scan(ctx, &zip, location)?;
         return ooxml::scan(ctx, &zip, location);
     }
-    if zip.entry("mimetype").is_some() || zip.entry("META-INF/manifest.xml").is_some() {
+    if is_opc {
+        return ooxml::scan(ctx, &zip, location);
+    }
+    if is_odf {
         return odf::scan(ctx, &zip, location);
     }
     // A generic archive: inventory executables, do not open.
@@ -481,6 +512,37 @@ pub(crate) fn check_polyglot(ctx: &mut Ctx<'_>, data: &[u8], location: &str, is_
     }
 }
 
+/// Records `n` bytes at the end of `data` that nothing in the container's own structure accounts
+/// for (`after` names what they follow, e.g. "the archive").
+///
+/// Zero padding is harmless and is reported as information only. Anything else may be a payload
+/// (a second archive, a script, a document) that was never inspected, which is a coverage gap:
+/// `TrailingData` counts against the verdict from `Low` up (see
+/// [`ThreatKind::limits_coverage_at`]).
+pub(crate) fn report_trailing(
+    ctx: &mut Ctx<'_>,
+    data: &[u8],
+    n: usize,
+    location: &str,
+    after: &str,
+) {
+    let tail = data.get(data.len().saturating_sub(n)..).unwrap_or(&[]);
+    if tail.iter().all(|&b| b == 0) {
+        ctx.report.add_with(
+            ThreatKind::TrailingData,
+            Severity::Info,
+            location,
+            format!("{n} bytes of zero padding follow {after}"),
+        );
+    } else {
+        ctx.report.add(
+            ThreatKind::TrailingData,
+            location,
+            format!("{n} bytes of data follow {after} and were not inspected"),
+        );
+    }
+}
+
 /// Locates a ZIP archive whose end-of-central-directory record sits at the
 /// end of `data` but whose offsets are relative to a later start (simple
 /// concatenation polyglots). Returns the archive's start offset.
@@ -503,6 +565,29 @@ fn appended_zip_offset(data: &[u8]) -> Option<usize> {
 /// `true` if `s` contains Unicode bidirectional override characters.
 pub(crate) fn has_bidi(s: &str) -> bool {
     s.chars().any(arca_container::text::is_bidi_control)
+}
+
+/// ASCII-case-insensitive substring search; `needle` must be lower case.
+pub(crate) fn memfind_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    let (&first, rest) = needle.split_first()?;
+    let last_start = hay.len().checked_sub(needle.len())?;
+    let mut i = 0usize;
+    while i <= last_start {
+        if hay.get(i).is_some_and(|b| b.to_ascii_lowercase() == first)
+            && hay
+                .get(i + 1..i + needle.len())
+                .is_some_and(|w| w.iter().zip(rest).all(|(h, n)| h.to_ascii_lowercase() == *n))
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The UTF-16LE encoding of an ASCII `s`.
+pub(crate) fn utf16le_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 /// Naive substring search (inputs are bounded by the caller).

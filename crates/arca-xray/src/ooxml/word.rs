@@ -10,11 +10,6 @@ use crate::report::{MetaKey, RefKind, Severity, ThreatKind};
 use crate::xmlwalk::{self, Ancestors, Visitor};
 use crate::{Abort, Ctx, fields, url};
 
-struct Field {
-    instr: String,
-    in_instr: bool,
-}
-
 #[derive(Default)]
 struct RunState {
     hidden: bool,
@@ -27,7 +22,7 @@ struct BodyVisitor<'a> {
     pkg: &'a Package,
     part: String,
     loc: String,
-    fields: Vec<Field>,
+    tracker: fields::Tracker,
     run: RunState,
     para_shaded: bool,
     cell_shaded: bool,
@@ -100,24 +95,19 @@ impl Visitor for BodyVisitor<'_> {
             }
             "fldChar" => match xml::attr(e, "fldCharType").as_deref() {
                 Some("begin") => {
-                    if self.fields.len() < 64 {
-                        self.fields.push(Field { instr: String::new(), in_instr: true });
-                    }
+                    self.tracker.begin();
                 }
-                Some("separate") => {
-                    if let Some(f) = self.fields.last_mut() {
-                        f.in_instr = false;
-                    }
-                }
+                Some("separate") => self.tracker.separate(),
                 Some("end") => {
-                    if let Some(f) = self.fields.pop() {
-                        self.finish_field(ctx, &f.instr);
+                    if let Some(f) = self.tracker.end() {
+                        fields::analyze_finished(ctx, &f, &self.loc);
                     }
                 }
                 _ => {}
             },
             "fldSimple" => {
-                if let Some(instr) = xml::attr(e, "instr") {
+                // Every `instr` counts, whatever its prefix (`foo:instr` next to `w:instr`).
+                for instr in xmlwalk::attr_all(e, "instr") {
                     fields::analyze(ctx, &instr, &self.loc);
                 }
             }
@@ -159,14 +149,7 @@ impl Visitor for BodyVisitor<'_> {
 
     fn text(&mut self, _ctx: &mut Ctx<'_>, text: &str, anc: &Ancestors) {
         match anc.last() {
-            Some("instrText" | "delInstrText") => {
-                if let Some(f) = self.fields.last_mut()
-                    && f.in_instr
-                    && f.instr.len() < 8192
-                {
-                    f.instr.push_str(text);
-                }
-            }
+            Some("instrText" | "delInstrText") => self.tracker.push_text(text),
             Some("t") if parent_is(anc, &["r", "t"]) => {
                 let shaded =
                     self.run.shaded || self.para_shaded || self.cell_shaded || self.dark_background;
@@ -190,21 +173,6 @@ fn push_sample(sample: &mut String, text: &str) {
             sample.push(' ');
         }
         sample.extend(text.chars().take(160));
-    }
-}
-
-impl BodyVisitor<'_> {
-    fn finish_field(&mut self, ctx: &mut Ctx<'_>, instr: &str) {
-        // A nested `QUOTE 68 68 69` contributes its decoded text to the
-        // enclosing field's instruction (classic DDE obfuscation).
-        if let Some(decoded) = fields::decode_quote_codes(instr)
-            && let Some(parent) = self.fields.last_mut()
-            && parent.in_instr
-        {
-            parent.instr.push_str(&decoded);
-            return;
-        }
-        fields::analyze(ctx, instr, &self.loc);
     }
 }
 
@@ -280,7 +248,7 @@ pub(crate) fn scan_body(
         pkg,
         part: part.to_owned(),
         loc: loc.to_owned(),
-        fields: Vec::new(),
+        tracker: fields::Tracker::default(),
         run: RunState::default(),
         para_shaded: false,
         cell_shaded: false,
@@ -295,8 +263,15 @@ pub(crate) fn scan_body(
     };
     xmlwalk::walk(ctx, bytes, loc, &mut v)?;
     // Unterminated fields are still analysed.
-    while let Some(f) = v.fields.pop() {
-        fields::analyze(ctx, &f.instr, loc);
+    for f in v.tracker.finish() {
+        fields::analyze_finished(ctx, &f, loc);
+    }
+    if v.tracker.too_deep {
+        ctx.report.add(
+            ThreatKind::ScanLimitReached,
+            loc,
+            "fields are nested deeper than the scanner follows; the inner ones were not inspected",
+        );
     }
     if v.hidden_runs > 0 {
         ctx.report.add(

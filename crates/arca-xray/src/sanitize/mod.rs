@@ -242,7 +242,7 @@ fn verified(
         let gaps: Vec<String> = verification
             .findings
             .iter()
-            .filter(|f| f.kind.limits_coverage())
+            .filter(|f| f.kind.limits_coverage_at(f.severity))
             .map(|f| format!("{:?} at {}", f.kind, f.location))
             .collect();
         return Err(SanitizeError::Verification(format!(

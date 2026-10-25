@@ -6,6 +6,9 @@
 //! (object streams routinely hide `/JavaScript` and `/OpenAction`).
 //! Decompression is charged against the document budget.
 
+mod filters;
+mod syntax;
+
 use crate::format::FileFormat;
 use crate::macro_analysis;
 use crate::report::{MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind};
@@ -33,12 +36,17 @@ struct Counts {
     uri: u32,
 }
 
-fn is_delim(b: u8) -> bool {
-    b.is_ascii_whitespace()
-        || matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+/// PDF white space: NUL, tab, line feed, form feed, carriage return and space. (Rust's own
+/// definition leaves out NUL, which is how `/JavaScript\0/S` slipped past a lexical scan.)
+pub(super) fn is_ws(b: u8) -> bool {
+    matches!(b, 0 | b'\t' | b'\n' | 0x0C | b'\r' | b' ')
 }
 
-fn hexval(b: u8) -> Option<u8> {
+pub(super) fn is_delim(b: u8) -> bool {
+    is_ws(b) || matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+}
+
+pub(super) fn hexval(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),
@@ -48,7 +56,7 @@ fn hexval(b: u8) -> Option<u8> {
 }
 
 /// Returns `(normalised name, was_obfuscated, end index)` for a name at `i` (pointing at '/').
-fn read_name(data: &[u8], i: usize) -> (String, bool, usize) {
+pub(super) fn read_name(data: &[u8], i: usize) -> (String, bool, usize) {
     let mut j = i + 1;
     let mut out = Vec::new();
     let mut obf = false;
@@ -83,7 +91,7 @@ fn count_names(data: &[u8], c: &mut Counts) {
             }
             "OpenAction" => {
                 let mut j = end;
-                while data.get(j).is_some_and(u8::is_ascii_whitespace) {
+                while data.get(j).is_some_and(|&b| is_ws(b)) {
                     j += 1;
                 }
                 if data.get(j) == Some(&b'[') {
@@ -249,7 +257,7 @@ fn values_after(data: &[u8], key: &[u8], max_items: usize, max_len: usize) -> Ve
             from = j;
             continue;
         }
-        while data.get(j).is_some_and(u8::is_ascii_whitespace) {
+        while data.get(j).is_some_and(|&b| is_ws(b)) {
             j += 1;
         }
         let v = match data.get(j) {
@@ -265,19 +273,30 @@ fn values_after(data: &[u8], key: &[u8], max_items: usize, max_len: usize) -> Ve
     out
 }
 
-/// Scans a PDF.
-pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileFormat, Abort> {
-    ctx.identified(FileFormat::Pdf);
-    crate::check_polyglot(ctx, data, loc, true);
-    let mut counts = Counts::default();
-    count_names(data, &mut counts);
-    let mut scripts: Vec<String> = values_after(data, b"/JS", 64, 1 << 20);
-    let mut uris: Vec<String> = values_after(data, b"/URI", 256, 4096);
-
-    // Flate streams.
-    let mut streams = 0usize;
+/// Decodes the streams of the file and scans what comes out.
+///
+/// Stream boundaries follow the dictionary: `/Length` (direct, or an indirect integer object)
+/// says where the data ends and the keyword `endstream` must follow. A reader that trusts the
+/// length and a reader that looks for the keyword see different streams when they disagree, so
+/// the disagreement is reported and both extents are scanned.
+fn streams(
+    ctx: &mut Ctx<'_>,
+    data: &[u8],
+    loc: &str,
+    counts: &mut Counts,
+    scripts: &mut Vec<String>,
+    uris: &mut Vec<String>,
+    unreadable: &mut Vec<String>,
+) -> Result<(), Abort> {
+    // Raw bytes handed to decoders, over all streams and both extents: bounded by the file.
+    let feed_limit = data.len().saturating_mul(4).saturating_add(1 << 20);
+    let mut fed = 0usize;
+    let lengths = syntax::integer_objects(data);
+    let mut count = 0usize;
+    let mut differential = 0usize;
     let mut from = 0usize;
-    while let Some(rel) = data.get(from..).and_then(|d| memfind(d, b"stream")) {
+    let mut previous_end = 0usize;
+    'streams: while let Some(rel) = data.get(from..).and_then(|d| memfind(d, b"stream")) {
         let at = from + rel;
         from = at + 6;
         if data.get(at.saturating_sub(3)..at) == Some(b"end") {
@@ -289,50 +308,134 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileForm
             (Some(b'\n' | b'\r'), _) => start += 1,
             _ => continue,
         }
-        let dict = data.get(at.saturating_sub(1024)..at).unwrap_or(&[]);
-        let dict_start = dict.windows(2).rposition(|w| w == b"<<").unwrap_or(0);
-        let dict = dict.get(dict_start..).unwrap_or(&[]);
-        let flate = memfind(dict, b"/FlateDecode").is_some()
-            || memfind(dict, b"/Fl ").is_some()
-            || memfind(dict, b"/Fl]").is_some();
-        let Some(end_rel) = data.get(start..).and_then(|d| memfind(d, b"endstream")) else { break };
-        let raw = data.get(start..start + end_rel).unwrap_or(&[]);
-        from = start + end_rel + 9;
-        if !flate {
-            continue;
-        }
-        streams += 1;
-        if streams > ctx.policy.max_pdf_streams {
+        // The dictionary is whatever follows the last `obj` keyword in front of the keyword,
+        // within a bounded window that never reaches back into the previous stream.
+        let lo = previous_end.max(at.saturating_sub(16 << 10));
+        let dict = data.get(lo..at).and_then(syntax::dict_before_stream);
+        // The extent a scanner for the keyword sees, and the one the length claims.
+        let Some(end_rel) = data.get(start..).and_then(|d| memfind(d, b"endstream")) else {
             ctx.report.add(
-                ThreatKind::ScanLimitReached,
+                ThreatKind::MalformedContainer,
                 loc,
-                "PDF stream limit reached; remaining streams not inspected",
+                "a PDF stream has no endstream keyword; the rest of the file was not scanned for streams",
             );
             break;
-        }
-        // Each stream may expand at most to what the budget still allows.
-        let cap = usize::try_from(ctx.budget.remaining().min(64 << 20)).unwrap_or(64 << 20);
-        let decoded = match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(raw, cap) {
-            Ok(d) => d,
-            Err(e) if e.status == miniz_oxide::inflate::TINFLStatus::HasMoreOutput => {
-                return Err(Abort::new(
-                    ThreatKind::CompressionBomb,
-                    loc,
-                    "a PDF stream expands beyond the decompression budget",
-                ));
-            }
-            // Corrupt or truncated streams are common in the wild; the
-            // bytes that did decode are still inspected.
-            Err(e) => e.output,
         };
-        if let Err(e) = ctx.budget.charge(decoded.len() as u64, raw.len() as u64) {
-            return Err(Abort::new(ThreatKind::CompressionBomb, loc, e.to_string()));
+        let keyword_end = start + end_rel;
+        previous_end = keyword_end + 9;
+        from = previous_end;
+        let claimed = dict.as_ref().and_then(|d| match d.get("Length") {
+            Some(syntax::Obj::Int(n)) => usize::try_from(*n).ok(),
+            Some(syntax::Obj::Ref(num)) => {
+                lengths.get(num).copied().flatten().and_then(|n| usize::try_from(n).ok())
+            }
+            _ => None,
+        });
+        let length_end = claimed.and_then(|n| start.checked_add(n)).filter(|&e| {
+            // A usable length is followed (after optional white space) by `endstream`.
+            let mut j = e;
+            while data.get(j).is_some_and(|&b| is_ws(b)) {
+                j += 1;
+            }
+            e <= data.len() && data.get(j..j + 9) == Some(b"endstream")
+        });
+        let mut extents = vec![keyword_end];
+        if let Some(e) = length_end {
+            // Equal up to the end-of-line before the keyword: no disagreement.
+            let same = e <= keyword_end
+                && data.get(e..keyword_end).is_some_and(|g| g.iter().all(|&b| is_ws(b)));
+            if !same {
+                differential += 1;
+                extents.push(e);
+            }
         }
-        ctx.report.stats.bytes_inflated =
-            ctx.report.stats.bytes_inflated.saturating_add(decoded.len() as u64);
-        count_names(&decoded, &mut counts);
-        scripts.extend(values_after(&decoded, b"/JS", 16, 1 << 20));
-        uris.extend(values_after(&decoded, b"/URI", 64, 4096));
+        let Some(dict) = dict else {
+            unreadable.push("a dictionary that could not be parsed".to_owned());
+            continue;
+        };
+        if filters::filter_names(&dict).is_ok_and(|names| names.is_empty()) {
+            continue;
+        }
+        for end in extents {
+            count += 1;
+            if count > ctx.policy.max_pdf_streams {
+                ctx.report.add(
+                    ThreatKind::ScanLimitReached,
+                    loc,
+                    "PDF stream limit reached; remaining streams not inspected",
+                );
+                break 'streams;
+            }
+            let raw = data.get(start..end).unwrap_or(&[]);
+            fed = fed.saturating_add(raw.len());
+            if fed > feed_limit {
+                ctx.report.add(
+                    ThreatKind::ScanLimitReached,
+                    loc,
+                    "the PDF streams overlap so much that decoding them all would cost more than the file is worth; the rest was not inspected",
+                );
+                break 'streams;
+            }
+            // Each stream may expand at most to what the budget still allows.
+            let cap = usize::try_from(ctx.budget.remaining().min(64 << 20)).unwrap_or(64 << 20);
+            let mut produced = 0u64;
+            let result = filters::decode_chain(raw, &dict, cap, |out, input| {
+                produced = produced.saturating_add(out as u64);
+                ctx.budget.charge(out as u64, input as u64).map_err(|_| ())
+            });
+            ctx.report.stats.bytes_inflated =
+                ctx.report.stats.bytes_inflated.saturating_add(produced);
+            match result {
+                Ok(decoded) => {
+                    count_names(&decoded, counts);
+                    scripts.extend(values_after(&decoded, b"/JS", 16, 1 << 20));
+                    uris.extend(values_after(&decoded, b"/URI", 64, 4096));
+                }
+                Err(filters::Failure::TooLarge) => {
+                    return Err(Abort::new(
+                        ThreatKind::CompressionBomb,
+                        loc,
+                        "a PDF stream expands beyond the decompression budget",
+                    ));
+                }
+                Err(filters::Failure::Unsupported(what)) => {
+                    if !unreadable.contains(&what) && unreadable.len() < 16 {
+                        unreadable.push(what);
+                    }
+                }
+            }
+        }
+    }
+    if differential > 0 {
+        ctx.report.add(
+            ThreatKind::ParserDifferential,
+            loc,
+            format!(
+                "{differential} PDF stream(s) have a /Length that disagrees with the position of endstream; readers that trust the length and readers that look for the keyword see different data (both were scanned)"
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// Scans a PDF.
+pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileFormat, Abort> {
+    ctx.identified(FileFormat::Pdf);
+    crate::check_polyglot(ctx, data, loc, true);
+    let mut counts = Counts::default();
+    count_names(data, &mut counts);
+    let mut scripts: Vec<String> = values_after(data, b"/JS", 64, 1 << 20);
+    let mut uris: Vec<String> = values_after(data, b"/URI", 256, 4096);
+
+    // Streams: every filter chain is decoded (or reported as unreadable) and its text scanned.
+    let mut unreadable: Vec<String> = Vec::new();
+    streams(ctx, data, loc, &mut counts, &mut scripts, &mut uris, &mut unreadable)?;
+    for why in &unreadable {
+        ctx.report.add(
+            ThreatKind::ScanLimitReached,
+            loc,
+            format!("a PDF stream uses {why}; its content was not inspected"),
+        );
     }
 
     if counts.javascript > 0 {

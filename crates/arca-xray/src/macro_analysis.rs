@@ -3,6 +3,8 @@
 //! Inspired by the keyword families of `olevba`: auto-execution entry points,
 //! execution / download / persistence / obfuscation primitives and IOCs.
 
+use std::collections::BTreeSet;
+
 use crate::report::MacroLanguage;
 
 /// Result of analysing one module.
@@ -194,11 +196,12 @@ pub(crate) fn analyze(source: &str, language: MacroLanguage) -> Analysis {
     let mut a = Analysis::default();
     match language {
         MacroLanguage::Vba => {
-            for proc in procedure_names(&lower) {
-                if VBA_AUTO_EXEC.contains(&proc.as_str())
-                    || VBA_AUTO_EVENT_SUFFIXES.iter().any(|s| proc.ends_with(s))
+            for proc in procedure_names(source) {
+                let low = proc.to_ascii_lowercase();
+                if VBA_AUTO_EXEC.contains(&low.as_str())
+                    || VBA_AUTO_EVENT_SUFFIXES.iter().any(|s| low.ends_with(s))
                 {
-                    push_unique(&mut a.auto_exec, original_case(source, &proc));
+                    push_unique(&mut a.auto_exec, proc);
                 }
             }
             keywords(&lower, VBA_SUSPICIOUS, &mut a.suspicious);
@@ -208,9 +211,9 @@ pub(crate) fn analyze(source: &str, language: MacroLanguage) -> Analysis {
         | MacroLanguage::Python
         | MacroLanguage::JavaScript
         | MacroLanguage::BeanShell => {
-            for proc in procedure_names(&lower) {
-                if matches!(proc.as_str(), "main" | "onload" | "autoexec") {
-                    push_unique(&mut a.auto_exec, original_case(source, &proc));
+            for proc in procedure_names(source) {
+                if matches!(proc.to_ascii_lowercase().as_str(), "main" | "onload" | "autoexec") {
+                    push_unique(&mut a.auto_exec, proc);
                 }
             }
             keywords(&lower, BASIC_SUSPICIOUS, &mut a.suspicious);
@@ -242,41 +245,38 @@ fn keywords(lower: &str, table: &[(&str, &str)], out: &mut Vec<String>) {
     }
 }
 
-/// Names of `Sub`/`Function` definitions (lowercased).
-fn procedure_names(lower: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in lower.lines() {
+/// `s` without the ASCII-case-insensitive `prefix`.
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| s.get(prefix.len()..)).flatten()
+}
+
+/// Names of `Sub`/`Function` definitions, in the case they were written in, without repeats.
+fn procedure_names(source: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for line in source.lines() {
         let mut t = line.trim_start();
         for prefix in ["private ", "public ", "friend ", "static "] {
-            if let Some(rest) = t.strip_prefix(prefix) {
+            if let Some(rest) = strip_prefix_ci(t, prefix) {
                 t = rest.trim_start();
             }
         }
-        let rest = t
-            .strip_prefix("sub ")
-            .or_else(|| t.strip_prefix("function "))
-            .or_else(|| t.strip_prefix("def "));
+        let rest = strip_prefix_ci(t, "sub ")
+            .or_else(|| strip_prefix_ci(t, "function "))
+            .or_else(|| strip_prefix_ci(t, "def "));
         if let Some(rest) = rest {
             let name: String = rest
                 .trim_start()
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            if !name.is_empty() && out.len() < 4096 {
+            if !name.is_empty() && out.len() < 4096 && seen.insert(name.to_ascii_lowercase()) {
                 out.push(name);
             }
         }
     }
     out
-}
-
-fn original_case(source: &str, lower_name: &str) -> String {
-    let lower = source.to_ascii_lowercase();
-    lower
-        .find(lower_name)
-        .and_then(|i| source.get(i..i + lower_name.len()))
-        .unwrap_or(lower_name)
-        .to_owned()
 }
 
 fn find_ipv4(text: &str, max: usize) -> Vec<String> {

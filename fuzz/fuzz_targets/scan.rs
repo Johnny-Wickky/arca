@@ -18,7 +18,7 @@ fuzz_target!(|data: &[u8]| {
         matches!(f.kind.category(), Category::ActiveContent | Category::RemoteContent)
             && f.severity >= Severity::Medium
     });
-    let gap = r.findings.iter().any(|f| f.kind.limits_coverage());
+    let gap = r.findings.iter().any(|f| f.kind.limits_coverage_at(f.severity));
     if reaching || gap {
         assert_ne!(r.verdict, Verdict::Clean);
     }

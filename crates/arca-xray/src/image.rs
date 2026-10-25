@@ -158,11 +158,7 @@ pub(crate) fn scan(
                 location,
                 format!("{n} bytes after the end of the picture are {what}"),
             ),
-            None => ctx.report.add(
-                ThreatKind::TrailingData,
-                location,
-                format!("{n} bytes follow the end of the picture"),
-            ),
+            None => crate::report_trailing(ctx, data, n, location, "the end of the picture"),
         }
     }
     if facts.unaccounted > 0 {

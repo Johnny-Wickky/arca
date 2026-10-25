@@ -190,7 +190,7 @@ fn eocd_offset(zip: &[u8]) -> usize {
 
 /// Inserts `n` unreferenced bytes between the last member and the central
 /// directory, fixing the directory offset.
-fn insert_gap_before_central_directory(zip: &mut Vec<u8>, n: usize) {
+pub(super) fn insert_gap_before_central_directory(zip: &mut Vec<u8>, n: usize) {
     let eocd = eocd_offset(zip);
     let cd = u32::from_le_bytes(zip[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
     zip.splice(cd..cd, std::iter::repeat_n(0x41u8, n));
@@ -818,7 +818,7 @@ pub(crate) fn assert_verdict_invariants(r: &crate::XRayReport, what: &str) {
         matches!(f.kind.category(), Category::ActiveContent | Category::RemoteContent)
             && f.severity >= Severity::Medium
     });
-    let gap = r.findings.iter().any(|f| f.kind.limits_coverage());
+    let gap = r.findings.iter().any(|f| f.kind.limits_coverage_at(f.severity));
     if reaching || gap {
         assert_ne!(r.verdict, Verdict::Clean, "{what}: Clean despite {:?}", r.findings);
     }

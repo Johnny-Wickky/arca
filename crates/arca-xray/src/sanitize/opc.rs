@@ -11,7 +11,8 @@ use quick_xml::events::{BytesStart, Event};
 
 use super::{ActionKind, SanitizeAction, SanitizeError, SanitizeOptions};
 use crate::format::{FileFormat, opc_format_from_content_type};
-use crate::ooxml::{Rel, Role, rels_source, resolve_target, role};
+use crate::ooxml::{ContentTypes, Package, Rel, Role, rels_source, resolve_target};
+use crate::report::TargetClass;
 use crate::{ScanPolicy, fields, formulas, url};
 
 /// Relationship-valued attribute local names (with an `r:` prefix).
@@ -90,6 +91,23 @@ const CT_MAP: &[(&str, &str)] = &[
     ),
 ];
 
+/// `true` for the bytes of a part that must not be carried over: containers and documents (the
+/// scanner recurses into them, the sterile copy would have to be rebuilt recursively), programs,
+/// and data of a kind nothing can inspect.
+fn unsafe_binary(bytes: &[u8], content_type: &str) -> bool {
+    use crate::format::{Magic, sniff};
+    match sniff(bytes) {
+        Magic::Executable(_)
+        | Magic::Zip
+        | Magic::Ole2
+        | Magic::Pdf
+        | Magic::Rtf
+        | Magic::Jet(_) => true,
+        Magic::Unknown => !crate::ooxml::is_inert_media(content_type),
+        Magic::Empty | Magic::Image(_) | Magic::Text => false,
+    }
+}
+
 fn err(e: impl core::fmt::Display) -> SanitizeError {
     SanitizeError::Rebuild(e.to_string())
 }
@@ -109,7 +127,10 @@ impl Parts {
 }
 
 fn text_of(bytes: &[u8], limits: &XmlLimits) -> Result<String, SanitizeError> {
-    xml::decode_xml_bytes(bytes, limits).map(std::borrow::Cow::into_owned).map_err(err)
+    // The text is written back as UTF-8, so a UTF-16 part must stop saying it is UTF-16.
+    xml::decode_xml_bytes(bytes, limits)
+        .map(|text| xml::declare_utf8(&text).into_owned())
+        .map_err(err)
 }
 
 /// `(defaults: ext → ct, overrides: part → ct)`.
@@ -166,11 +187,20 @@ fn parse_rels(src: &str, limits: XmlLimits) -> Result<Vec<Rel>, XmlError> {
     Ok(out)
 }
 
+/// `true` if the attribute `p:l` can hold a relationship id. The prefix that is bound to the
+/// relationships namespace is the author's choice (`r:id`, `q:id`, ...), so any prefix counts
+/// except the ones the document formats use for their own, unrelated ids.
+fn is_rel_attr(p: Option<&str>, l: &str) -> bool {
+    (REL_ATTRS.contains(&l)
+        && p.is_some_and(|p| !matches!(p, "w" | "w14" | "w15" | "xml" | "xmlns")))
+        || l == "relid"
+}
+
 fn refers(e: &BytesStart<'_>, dropped: &BTreeSet<String>) -> bool {
     !dropped.is_empty()
         && xml::attrs(e).iter().any(|(k, v)| {
             let (p, l) = xml::split_qname(k);
-            dropped.contains(v) && ((p == Some("r") && REL_ATTRS.contains(&l)) || l == "relid")
+            dropped.contains(v) && is_rel_attr(p, l)
         })
 }
 
@@ -210,7 +240,8 @@ pub(super) fn rebuild(
 ) -> Result<(Vec<u8>, FileFormat, Vec<SanitizeAction>), SanitizeError> {
     let limits = policy.xml;
     let zip = ZipArchive::parse(data, policy.zip).map_err(err)?;
-    let mut budget = InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20);
+    let mut budget = InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20)
+        .with_original_input(data.len() as u64);
     let mut parts = Parts { order: Vec::new(), data: BTreeMap::new() };
     for e in zip.entries() {
         if e.is_dir() {
@@ -235,6 +266,36 @@ pub(super) fn rebuild(
         &limits,
     )?;
     let (defaults, overrides) = content_types(&ct_src, limits).map_err(err)?;
+    // The relationships of every source part, so that the role of each part is decided by the
+    // very code the scanner uses (content type, then relationships, then name).
+    let mut all_rels: BTreeMap<String, Vec<Rel>> = BTreeMap::new();
+    for name in &parts.order {
+        if !name.to_ascii_lowercase().ends_with(".rels") {
+            continue;
+        }
+        let Some(source) = rels_source(name) else { continue };
+        let text = text_of(parts.get(name).ok_or_else(|| err("missing part"))?, &limits)?;
+        all_rels.insert(source.to_ascii_lowercase(), parse_rels(&text, limits).map_err(err)?);
+    }
+    let pkg = Package::new(
+        ContentTypes { defaults: defaults.clone(), overrides: overrides.clone() },
+        all_rels,
+    );
+    let role_of = |name: &str| -> Result<Role, SanitizeError> {
+        let c = pkg.classify(name);
+        if let Some(other) = c.conflict {
+            return Err(err(format!(
+                "part {name} is {:?} by one source and {other:?} by another; it cannot be rebuilt safely",
+                c.role
+            )));
+        }
+        // Declared as relationships but not named like them: nothing parsed it as such.
+        Ok(if c.role == Role::Rels && !name.to_ascii_lowercase().ends_with(".rels") {
+            Role::OtherXml
+        } else {
+            c.role
+        })
+    };
     let ct_of = |name: &str| -> String {
         let key = name.to_ascii_lowercase();
         overrides.get(&key).cloned().unwrap_or_else(|| {
@@ -252,7 +313,8 @@ pub(super) fn rebuild(
     let mut dropped_parts: BTreeSet<String> = BTreeSet::new();
     for name in &parts.order {
         let lname = name.to_ascii_lowercase();
-        let r = role(name, &ct_of(name));
+        let r = role_of(name)?;
+        let bytes = parts.get(name).map_or(&[][..], |b| b.as_slice());
         let drop = match r {
             Role::VbaProject
             | Role::VbaSignature
@@ -265,7 +327,11 @@ pub(super) fn rebuild(
             | Role::Connections
             | Role::PrinterSettings
             | Role::Font
+            | Role::WebExtension
             | Role::Thumbnail => true,
+            // Bytes the scanner would have to recurse into or cannot read at all do not survive.
+            Role::Binary => unsafe_binary(bytes, &ct_of(name)),
+            Role::CustomXml if !lname.ends_with(".xml") => unsafe_binary(bytes, &ct_of(name)),
             Role::CustomProps | Role::Labels => opts.strip_metadata,
             Role::People | Role::Comments => opts.remove_comments,
             Role::CustomXml => opts.remove_custom_xml,
@@ -308,10 +374,8 @@ pub(super) fn rebuild(
         let rels = parse_rels(&src, limits).map_err(err)?;
         let mut ids = BTreeSet::new();
         for rel in &rels {
-            let external = rel.external
-                || url::scheme(&rel.target).is_some()
-                || rel.target.starts_with("\\\\");
-            if external {
+            // The very criterion the scanner uses to list a reference as external.
+            if crate::ooxml::reaches_outside(rel) {
                 ids.insert(rel.id.clone());
                 act(
                     ActionKind::RemovedExternalReference,
@@ -376,7 +440,7 @@ pub(super) fn rebuild(
             continue;
         }
         let ids = dropped_ids.get(&lname).unwrap_or(&empty);
-        let r = role(name, &ct_of(name));
+        let r = role_of(name)?;
         let is_xml = !matches!(r, Role::Binary | Role::Thumbnail)
             && (lname.ends_with(".xml") || lname.ends_with(".vml") || ct_of(name).contains("xml"));
         if !is_xml {
@@ -476,9 +540,7 @@ fn generic_action(item: &XmlItem<'_>, ids: &BTreeSet<String>) -> Action {
         if DROP_IF_REFS.contains(&xml::local_name(e)) {
             return Action::Drop;
         }
-        if let Some(t) = strip_attrs(e, empty, |p, l, v| {
-            ids.contains(v) && ((p == Some("r") && REL_ATTRS.contains(&l)) || l == "relid")
-        }) {
+        if let Some(t) = strip_attrs(e, empty, |p, l, v| ids.contains(v) && is_rel_attr(p, l)) {
             return Action::Replace(t);
         }
     }
@@ -489,18 +551,29 @@ fn is_dangerous_field(instr: &str) -> bool {
     let args = fields::split_args(instr);
     let kw =
         args.first().map(|k| k.trim_start_matches('\\').to_ascii_uppercase()).unwrap_or_default();
-    matches!(
-        kw.as_str(),
-        "DDE"
-            | "DDEAUTO"
-            | "INCLUDEPICTURE"
-            | "INCLUDETEXT"
-            | "IMPORT"
-            | "INCLUDE"
-            | "LINK"
-            | "DATABASE"
-            | "MACROBUTTON"
-    ) || fields::decode_quote_codes(instr).is_some()
+    // A link that is not an ordinary web or mail link is neutralised (its text stays); the
+    // scanner reports it as a dangerous protocol, and a sterile copy must not keep it.
+    let hyperlink = kw == "HYPERLINK"
+        && args.iter().skip(1).find(|a| !fields::is_switch(a)).is_some_and(|t| {
+            !matches!(
+                url::classify(t),
+                TargetClass::Web | TargetClass::Mail | TargetClass::Relative
+            )
+        });
+    hyperlink
+        || matches!(
+            kw.as_str(),
+            "DDE"
+                | "DDEAUTO"
+                | "INCLUDEPICTURE"
+                | "INCLUDETEXT"
+                | "IMPORT"
+                | "INCLUDE"
+                | "LINK"
+                | "DATABASE"
+                | "MACROBUTTON"
+        )
+        || fields::decode_quote_codes(instr).is_some()
 }
 
 /// Word body: neutralise fields, accept revisions, drop comments, rsids,
@@ -512,12 +585,23 @@ fn word_body(
     limits: XmlLimits,
     act: &mut dyn FnMut(ActionKind, &str),
 ) -> Result<String, SanitizeError> {
-    // Pass A0: collect field instructions in begin order. A nested
-    // `QUOTE 68 68 69` contributes its decoded text to the enclosing
-    // instruction, exactly like the X-ray does.
+    // Pass A0: collect field instructions in begin order with the very tracker the scanner
+    // uses. A nested `QUOTE` contributes its text to the enclosing instruction, and a field
+    // whose keyword comes out of a nested field is dangerous because nothing says what it is.
     let mut instrs: Vec<String> = Vec::new();
-    let mut stack: Vec<(usize, bool)> = Vec::new();
+    let mut computed: Vec<bool> = Vec::new();
     {
+        let mut tracker = fields::Tracker::default();
+        let mut record = |f: fields::Finished| {
+            if instrs.len() <= f.index {
+                instrs.resize(f.index + 1, String::new());
+                computed.resize(f.index + 1, false);
+            }
+            if let (Some(slot), Some(flag)) = (instrs.get_mut(f.index), computed.get_mut(f.index)) {
+                *slot = f.instr;
+                *flag = f.computed_keyword || f.merged;
+            }
+        };
         let mut r = SecureXmlReader::new(src, limits).map_err(err)?;
         let mut in_instr_text = false;
         while let Some(item) = r.next_item().map_err(err)? {
@@ -525,41 +609,41 @@ fn word_body(
                 Event::Start(e) | Event::Empty(e) if xml::local_name(e) == "fldChar" => {
                     match xml::attr(e, "fldCharType").as_deref() {
                         Some("begin") => {
-                            stack.push((instrs.len(), true));
-                            instrs.push(String::new());
-                        }
-                        Some("separate") => {
-                            if let Some(top) = stack.last_mut() {
-                                top.1 = false;
+                            if tracker.begin().is_none() {
+                                return Err(err("fields are nested too deeply to rebuild"));
                             }
                         }
+                        Some("separate") => tracker.separate(),
                         Some("end") => {
-                            if let Some((idx, _)) = stack.pop()
-                                && let Some(decoded) =
-                                    instrs.get(idx).and_then(|s| fields::decode_quote_codes(s))
-                                && let Some(&(parent, true)) = stack.last()
-                                && let Some(p) = instrs.get_mut(parent)
-                            {
-                                p.insert_str(0, &decoded);
+                            if let Some(f) = tracker.end() {
+                                record(f);
                             }
                         }
                         _ => {}
                     }
                 }
-                Event::Start(e) if xml::local_name(e) == "instrText" => in_instr_text = true,
-                Event::End(e) if e.local_name().as_ref() == "instrText" => in_instr_text = false,
+                Event::Start(e) if matches!(xml::local_name(e), "instrText" | "delInstrText") => {
+                    in_instr_text = true;
+                }
+                Event::End(e)
+                    if matches!(e.local_name().as_ref(), "instrText" | "delInstrText") =>
+                {
+                    in_instr_text = false;
+                }
                 Event::Text(_) | Event::GeneralRef(_) | Event::CData(_) if in_instr_text => {
-                    if let Some(s) = stack.last().and_then(|&(i, _)| instrs.get_mut(i))
-                        && s.len() < 8192
-                    {
-                        xml::push_text(&item.event, s);
-                    }
+                    let mut text = String::new();
+                    xml::push_text(&item.event, &mut text);
+                    tracker.push_text(&text);
                 }
                 _ => {}
             }
         }
+        for f in tracker.finish() {
+            record(f);
+        }
     }
-    let dangerous: Vec<bool> = instrs.iter().map(|s| is_dangerous_field(s)).collect();
+    let dangerous: Vec<bool> =
+        instrs.iter().zip(&computed).map(|(s, c)| *c || is_dangerous_field(s)).collect();
     for (s, d) in instrs.iter().zip(&dangerous) {
         if *d {
             act(ActionKind::NeutralizedField, s.trim());
@@ -610,13 +694,18 @@ fn word_body(
             // Everything inside a dangerous instruction goes, including the
             // visible results of nested (e.g. QUOTE) fields.
             "instrText" | "delInstrText" | "t" if in_dangerous_instr(&frames) => Ok(Action::Drop),
-            "fldSimple" => match xml::attr(e, "instr") {
-                Some(i) if is_dangerous_field(&i) => {
-                    simple_neutralized.push(i);
+            "fldSimple" => {
+                let bad: Vec<String> = crate::xmlwalk::attr_all(e, "instr")
+                    .into_iter()
+                    .filter(|i| is_dangerous_field(i))
+                    .collect();
+                if bad.is_empty() {
+                    Ok(Action::Keep)
+                } else {
+                    simple_neutralized.extend(bad);
                     Ok(Action::Unwrap)
                 }
-                _ => Ok(Action::Keep),
-            },
+            }
             _ => Ok(Action::Keep),
         }
     })
@@ -688,9 +777,7 @@ fn word_body(
         let strip = opts.strip_metadata;
         Ok(
             match strip_attrs(e, empty, |p, l, v| {
-                (strip && l.starts_with("rsid"))
-                    || (ids.contains(v)
-                        && ((p == Some("r") && REL_ATTRS.contains(&l)) || l == "relid"))
+                (strip && l.starts_with("rsid")) || (ids.contains(v) && is_rel_attr(p, l))
             }) {
                 Some(t) => Action::Replace(t),
                 None => Action::Keep,
@@ -738,8 +825,7 @@ fn word_settings(
         let strip = opts.strip_metadata;
         Ok(
             match strip_attrs(e, empty, |p, l, v| {
-                (strip && l.starts_with("rsid"))
-                    || (ids.contains(v) && p == Some("r") && REL_ATTRS.contains(&l))
+                (strip && l.starts_with("rsid")) || (ids.contains(v) && is_rel_attr(p, l))
             }) {
                 Some(t) => Action::Replace(t),
                 None => Action::Keep,
@@ -1012,15 +1098,6 @@ fn visio(
     limits: XmlLimits,
     act: &mut dyn FnMut(ActionKind, &str),
 ) -> Result<String, SanitizeError> {
-    const ACTIVE: &[&str] = &[
-        "RUNADDON(",
-        "RUNADDONWARGS(",
-        "RUNMACRO(",
-        "CALLTHIS(",
-        "OPENFILE(",
-        "OPENSHEETWIN(",
-        "SHELLEXECUTE",
-    ];
     let mut removed: Vec<String> = Vec::new();
     let out = rewrite(src, limits, |item, _| {
         let Some((e, empty)) = start_of(item) else { return Ok(Action::Keep) };
@@ -1031,11 +1108,20 @@ fn visio(
             }
             "Cell" => {
                 if let Some(f) = xml::attr(e, "F")
-                    && ACTIVE.iter().any(|a| f.to_ascii_uppercase().contains(a))
+                    && !crate::ooxml::visio_active_functions(&f).is_empty()
                 {
                     removed.push(format!("ShapeSheet formula {f}"));
                     return Ok(Action::Replace(rebuild_tag(e, empty, |_, l, _| {
                         if l == "F" { AttrAction::Drop } else { AttrAction::Keep }
+                    })));
+                }
+                // A hyperlink row: the address goes (the shape keeps its text).
+                if xml::attr(e, "N").is_some_and(|n| n.eq_ignore_ascii_case("Address"))
+                    && xml::attr(e, "V").is_some_and(|v| url::leaves_package(&v))
+                {
+                    removed.push("hyperlink address".to_owned());
+                    return Ok(Action::Replace(rebuild_tag(e, empty, |_, l, _| {
+                        if matches!(l, "V" | "F") { AttrAction::Drop } else { AttrAction::Keep }
                     })));
                 }
             }
@@ -1130,8 +1216,7 @@ fn vml(
             match strip_attrs(e, empty, |p, l, v| {
                 (strip && l == "href" && p == Some("o"))
                     || (l == "src" && url::scheme(v).is_some())
-                    || (ids.contains(v)
-                        && ((p == Some("r") && REL_ATTRS.contains(&l)) || l == "relid"))
+                    || (ids.contains(v) && is_rel_attr(p, l))
             }) {
                 Some(t) => Action::Replace(t),
                 None => Action::Keep,

@@ -221,11 +221,29 @@ fn coverage_gap_kinds_are_exactly_the_unreadable_ones() {
         K::ScanLimitReached,
         K::EncryptedDocument,
         K::EncryptedMember,
+        // The scanner and another reader would see different documents.
+        K::ParserDifferential,
+        // Bytes the container does not account for, or a second format in the same bytes.
+        K::PolyglotFile,
+        K::UnreferencedArchiveData,
+        K::OrphanedOleEntries,
+        K::ObfuscatedName,
     ] {
         assert!(kind.limits_coverage(), "{kind:?}");
+        assert!(kind.limits_coverage_at(Severity::Info), "{kind:?}");
     }
     // Informational notes about what *was* read must not demote a file.
-    for kind in [K::UnsupportedFormat, K::EmbeddedFont, K::TrailingData, K::Comments] {
+    for kind in [K::UnsupportedFormat, K::EmbeddedFont, K::Comments] {
         assert!(!kind.limits_coverage(), "{kind:?}");
+        assert!(!kind.limits_coverage_at(Severity::High), "{kind:?}");
     }
+}
+
+#[test]
+fn trailing_bytes_are_a_gap_unless_they_are_known_to_be_padding() {
+    use ThreatKind as K;
+    assert!(!K::TrailingData.limits_coverage_at(Severity::Info));
+    assert!(K::TrailingData.limits_coverage_at(Severity::Low));
+    assert!(!K::ContentTypeMismatch.limits_coverage_at(Severity::Low));
+    assert!(K::ContentTypeMismatch.limits_coverage_at(Severity::Medium));
 }

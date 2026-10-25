@@ -12,9 +12,11 @@ use arca_container::bytes::LeReader;
 use arca_container::cfb::{CompoundFile, EntryKind};
 use arca_container::text::{CodePage, decode_codepage, utf16le_lossy};
 
-use crate::Ctx;
+use std::collections::BTreeSet;
+
 use crate::macro_analysis;
 use crate::report::{MacroLanguage, MacroModule, Severity, ThreatKind};
+use crate::{Abort, Ctx};
 
 /// Errors of the decompressor / `dir` parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +128,9 @@ pub(crate) fn decompress_prefix(input: &[u8], max_out: usize) -> Result<(Vec<u8>
     Ok((out, false))
 }
 
+/// Most modules read from one project.
+pub(crate) const MAX_MODULES: usize = 4096;
+
 /// One module described in the `dir` stream.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ModuleInfo {
@@ -141,6 +146,8 @@ pub(crate) struct DirInfo {
     pub(crate) codepage: u16,
     pub(crate) project: String,
     pub(crate) modules: Vec<ModuleInfo>,
+    /// The `dir` stream lists more modules than [`MAX_MODULES`]; the rest were not read.
+    pub(crate) truncated: bool,
 }
 
 /// Parses a decompressed `dir` stream.
@@ -217,7 +224,8 @@ pub(crate) fn parse_dir(dir: &[u8]) -> Result<DirInfo, VbaError> {
             0x0010 => break,
             _ => {}
         }
-        if info.modules.len() > 4096 {
+        if info.modules.len() >= MAX_MODULES {
+            info.truncated = true;
             break;
         }
     }
@@ -242,10 +250,19 @@ pub(crate) fn find_projects(cf: &CompoundFile<'_>) -> Vec<usize> {
 }
 
 /// Extracts all modules of the project rooted at storage `vba_index`.
-pub(crate) fn extract(ctx: &mut Ctx<'_>, cf: &CompoundFile<'_>, vba_index: usize, location: &str) {
+///
+/// Every decompression is charged to the document budget, a stream is decompressed at most once
+/// however many modules name it, and the sources kept are capped in total, so a project of
+/// thousands of modules cannot multiply the work or the memory of one stream.
+pub(crate) fn extract(
+    ctx: &mut Ctx<'_>,
+    cf: &CompoundFile<'_>,
+    vba_index: usize,
+    location: &str,
+) -> Result<(), Abort> {
     let base = cf.entries().get(vba_index).map(|e| e.path.clone()).unwrap_or_default();
     let loc = Ctx::join(location, &base);
-    let Some(dir_idx) = cf.child(vba_index, "dir") else { return };
+    let Some(dir_idx) = cf.child(vba_index, "dir") else { return Ok(()) };
     let dir_raw = match cf.read_stream(dir_idx) {
         Ok(d) => d,
         Err(e) => {
@@ -255,7 +272,7 @@ pub(crate) fn extract(ctx: &mut Ctx<'_>, cf: &CompoundFile<'_>, vba_index: usize
                 &loc,
                 "VBA project present (unreadable dir stream)",
             );
-            return;
+            return Ok(());
         }
     };
     let info = match decompress(&dir_raw, 4 << 20).and_then(|d| parse_dir(&d)) {
@@ -267,11 +284,23 @@ pub(crate) fn extract(ctx: &mut Ctx<'_>, cf: &CompoundFile<'_>, vba_index: usize
                 &loc,
                 "VBA project present (undecodable dir stream)",
             );
-            return;
+            return Ok(());
         }
     };
+    if info.truncated {
+        ctx.report.add(
+            ThreatKind::ScanLimitReached,
+            &loc,
+            format!("the project lists more than {MAX_MODULES} modules; the rest were not read"),
+        );
+    }
     let cp = CodePage::from_id(info.codepage);
     let limit = ctx.policy.max_macro_source_bytes;
+    // Source text kept and analysed across all modules of the project.
+    let mut remaining_total = limit.saturating_mul(8);
+    let mut skipped = 0usize;
+    let mut shared = 0usize;
+    let mut seen_streams: BTreeSet<usize> = BTreeSet::new();
     let mut names = Vec::new();
     for m in &info.modules {
         let Some(stream_idx) = cf.child(vba_index, &m.stream) else {
@@ -282,6 +311,14 @@ pub(crate) fn extract(ctx: &mut Ctx<'_>, cf: &CompoundFile<'_>, vba_index: usize
             );
             continue;
         };
+        if !seen_streams.insert(stream_idx) {
+            shared += 1;
+            continue;
+        }
+        if remaining_total == 0 {
+            skipped += 1;
+            continue;
+        }
         let raw = match cf.read_stream(stream_idx) {
             Ok(r) => r,
             Err(e) => {
@@ -295,8 +332,15 @@ pub(crate) fn extract(ctx: &mut Ctx<'_>, cf: &CompoundFile<'_>, vba_index: usize
         };
         let offset = usize::try_from(m.offset).unwrap_or(usize::MAX);
         let compressed = raw.get(offset..).unwrap_or(&[]);
-        let (source, truncated) = match decompress_prefix(compressed, limit) {
-            Ok((s, truncated)) => (decode_codepage(&s, cp), truncated),
+        let room = limit.min(remaining_total);
+        let (source, truncated) = match decompress_prefix(compressed, room) {
+            Ok((s, truncated)) => {
+                ctx.budget
+                    .charge(s.len() as u64, compressed.len() as u64)
+                    .map_err(|e| Abort::new(ThreatKind::CompressionBomb, &loc, e.to_string()))?;
+                remaining_total = remaining_total.saturating_sub(s.len());
+                (decode_codepage(&s, cp), truncated)
+            }
             Err(e) => {
                 ctx.report.add(
                     ThreatKind::MalformedContainer,
@@ -342,6 +386,20 @@ pub(crate) fn extract(ctx: &mut Ctx<'_>, cf: &CompoundFile<'_>, vba_index: usize
             iocs: analysis.iocs,
         });
     }
+    if shared > 0 {
+        ctx.report.add(
+            ThreatKind::ParserDifferential,
+            &loc,
+            format!("{shared} module(s) name a stream that another module already uses; it was read once"),
+        );
+    }
+    if skipped > 0 {
+        ctx.report.add(
+            ThreatKind::ScanLimitReached,
+            &loc,
+            format!("{skipped} module(s) were not read: the macro source of the project exceeds the analysis limit"),
+        );
+    }
     let project =
         if info.project.is_empty() { String::from("VBAProject") } else { info.project.clone() };
     ctx.report.add(
@@ -349,6 +407,7 @@ pub(crate) fn extract(ctx: &mut Ctx<'_>, cf: &CompoundFile<'_>, vba_index: usize
         &loc,
         format!("VBA project {project:?} with {} module(s): {}", names.len(), names.join(", ")),
     );
+    Ok(())
 }
 
 #[cfg(test)]

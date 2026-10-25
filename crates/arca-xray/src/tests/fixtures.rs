@@ -40,6 +40,11 @@ impl Opc {
         self
     }
 
+    /// The parts in insertion order.
+    pub(crate) fn entries(&self) -> &[(String, Vec<u8>)] {
+        &self.parts
+    }
+
     pub(crate) fn build(&self) -> Vec<u8> {
         let mut w = ZipWriter::new();
         for (n, d) in &self.parts {
@@ -112,7 +117,7 @@ pub(crate) fn docx() -> Opc {
 }
 
 /// Encodes `dir` stream records.
-fn rec(out: &mut Vec<u8>, id: u16, data: &[u8]) {
+pub(crate) fn rec(out: &mut Vec<u8>, id: u16, data: &[u8]) {
     out.extend_from_slice(&id.to_le_bytes());
     out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
     out.extend_from_slice(data);

@@ -16,7 +16,7 @@ pub(crate) enum Risk {
     Function(&'static str),
 }
 
-const DANGEROUS: &[(&str, &str)] = &[
+pub(crate) const DANGEROUS: &[(&str, &str)] = &[
     ("WEBSERVICE", "WEBSERVICE (HTTP request)"),
     ("CALL", "CALL (native DLL call)"),
     ("REGISTER", "REGISTER (native DLL registration)"),

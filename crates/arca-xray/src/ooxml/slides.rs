@@ -3,7 +3,7 @@
 use arca_container::xml;
 use quick_xml::events::BytesStart;
 
-use crate::report::{Severity, ThreatKind};
+use crate::report::{RefKind, Severity, ThreatKind};
 use crate::xmlwalk::{self, Ancestors, Visitor};
 use crate::{Abort, Ctx};
 
@@ -104,7 +104,7 @@ pub(crate) fn scan_presentation(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> R
 }
 
 /// ShapeSheet functions that execute code or open things.
-const VISIO_ACTIVE: &[(&str, &str)] = &[
+pub(crate) const VISIO_ACTIVE: &[(&str, &str)] = &[
     ("RUNADDON(", "RUNADDON"),
     ("RUNADDONWARGS(", "RUNADDONWARGS"),
     ("RUNMACRO(", "RUNMACRO"),
@@ -114,6 +114,22 @@ const VISIO_ACTIVE: &[(&str, &str)] = &[
     ("HYPERLINK(", "HYPERLINK"),
     ("SHELLEXECUTE", "ShellExecute"),
 ];
+
+/// A ShapeSheet formula with the whitespace and control characters removed, in upper case: the
+/// formula parser ignores them, so `RUNADDON ("x")` and `RUN\tADDON(` are `RUNADDON(`.
+pub(crate) fn visio_normalized(formula: &str) -> String {
+    formula
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
+/// The [`VISIO_ACTIVE`] functions a ShapeSheet formula calls.
+pub(crate) fn visio_active_functions(formula: &str) -> Vec<&'static str> {
+    let upper = visio_normalized(formula);
+    VISIO_ACTIVE.iter().filter(|(needle, _)| upper.contains(needle)).map(|(_, l)| *l).collect()
+}
 
 /// ShapeSheet cells that fire without a deliberate command.
 const VISIO_EVENTS: &[&str] = &[
@@ -134,23 +150,33 @@ impl Visitor for VisioVisitor {
     fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
         match xml::local_name(e) {
             "Cell" => {
-                let Some(formula) = xml::attr(e, "F") else { return };
-                let upper = formula.to_ascii_uppercase();
                 let cell = xml::attr(e, "N").unwrap_or_default();
-                for (needle, label) in VISIO_ACTIVE {
-                    if upper.contains(needle) {
-                        let sev = if VISIO_EVENTS.iter().any(|ev| ev.eq_ignore_ascii_case(&cell)) {
-                            Severity::High
-                        } else {
-                            Severity::Medium
-                        };
-                        ctx.report.add_with(
-                            ThreatKind::ProgramAction,
-                            sev,
-                            &self.loc,
-                            format!("ShapeSheet {cell} = {formula} ({label})"),
-                        );
-                    }
+                // Hyperlink rows: the address a shape opens.
+                if cell.eq_ignore_ascii_case("Address")
+                    && let Some(target) = xml::attr(e, "V")
+                    && crate::url::leaves_package(&target)
+                {
+                    crate::ooxml::record_external(
+                        ctx,
+                        &target,
+                        RefKind::Hyperlink,
+                        false,
+                        &self.loc,
+                    );
+                }
+                let Some(formula) = xml::attr(e, "F") else { return };
+                for label in visio_active_functions(&formula) {
+                    let sev = if VISIO_EVENTS.iter().any(|ev| ev.eq_ignore_ascii_case(&cell)) {
+                        Severity::High
+                    } else {
+                        Severity::Medium
+                    };
+                    ctx.report.add_with(
+                        ThreatKind::ProgramAction,
+                        sev,
+                        &self.loc,
+                        format!("ShapeSheet {cell} = {formula} ({label})"),
+                    );
                 }
             }
             "EventItem" => {

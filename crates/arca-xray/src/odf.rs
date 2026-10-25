@@ -8,10 +8,61 @@ use quick_xml::events::BytesStart;
 use crate::format::{FileFormat, odf_format_from_mimetype};
 use crate::report::{MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind};
 use crate::xmlwalk::{self, Ancestors, NoopVisitor, Visitor};
-use crate::{Abort, Ctx, formulas, macro_analysis, ooxml, url};
+use crate::{Abort, Ctx, formulas, macro_analysis, memfind_ci, ooxml, url};
 
 /// Scans an ODF package.
 pub(crate) fn scan(
+    ctx: &mut Ctx<'_>,
+    zip: &ZipArchive<'_>,
+    location: &str,
+) -> Result<FileFormat, Abort> {
+    // OpenDocument legitimately repeats a local name under several prefixes on one element
+    // (`draw:style-name` and `presentation:style-name`); its attribute lookups below read every
+    // candidate instead.
+    let saved = core::mem::replace(&mut ctx.attr_collisions, false);
+    let result = scan_package(ctx, zip, location);
+    ctx.attr_collisions = saved;
+    result
+}
+
+/// Scans a flat ODF document (`office:document` in one XML file).
+pub(crate) fn scan_flat(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort> {
+    let saved = core::mem::replace(&mut ctx.attr_collisions, false);
+    let result = (|| {
+        let mut v = ContentVisitor { loc: loc.to_owned() };
+        xmlwalk::walk(ctx, bytes, loc, &mut v)?;
+        meta(ctx, bytes, loc)?;
+        settings(ctx, bytes, loc)
+    })();
+    ctx.attr_collisions = saved;
+    result
+}
+
+/// `true` if an attribute value invokes a script or a macro. Case does not matter, and neither
+/// do the tabs and line breaks a URL parser drops.
+fn is_script_url(value: &str) -> bool {
+    let v: String = value
+        .chars()
+        .filter(|c| !c.is_ascii_control())
+        .collect::<String>()
+        .trim()
+        .to_ascii_lowercase();
+    v.starts_with("vnd.sun.star.script:")
+        || v.starts_with("macro:")
+        || v.starts_with("javascript:")
+        || v.starts_with("vbscript:")
+}
+
+/// Cheap pre-filter on the raw attribute text: `false` means no attribute can be a script URL.
+/// Character references are let through because they can spell the URL out.
+fn may_hold_script_url(e: &BytesStart<'_>) -> bool {
+    let raw = e.attributes_raw().as_bytes();
+    memfind_ci(raw, b"script:").is_some()
+        || memfind_ci(raw, b"macro:").is_some()
+        || memfind_ci(raw, b"&#").is_some()
+}
+
+fn scan_package(
     ctx: &mut Ctx<'_>,
     zip: &ZipArchive<'_>,
     location: &str,
@@ -65,6 +116,7 @@ pub(crate) fn scan(
             continue;
         }
         if lname.starts_with("scripts/") {
+            // Any file under Scripts/ is a script the document can run, whatever its extension.
             let lang = if lname.ends_with(".py") {
                 Some(MacroLanguage::Python)
             } else if lname.ends_with(".js") {
@@ -74,20 +126,36 @@ pub(crate) fn scan(
             } else {
                 None
             };
-            if let Some(lang) = lang
-                && let Some(bytes) = ctx.read_member(zip, entry, &loc)?
-            {
-                let src = String::from_utf8_lossy(&bytes);
-                push_script(ctx, lang, &loc, name, &src);
-                ctx.report.add(
-                    ThreatKind::EmbeddedScript,
-                    &loc,
-                    format!("{lang:?} script embedded in the document"),
-                );
+            if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+                match lang {
+                    Some(lang) => {
+                        let src = String::from_utf8_lossy(&bytes);
+                        push_script(ctx, lang, &loc, name, &src);
+                        ctx.report.add(
+                            ThreatKind::EmbeddedScript,
+                            &loc,
+                            format!("{lang:?} script embedded in the document"),
+                        );
+                    }
+                    None => ctx.report.add(
+                        ThreatKind::EmbeddedScript,
+                        &loc,
+                        "script of an unrecognised language embedded in the document",
+                    ),
+                }
             }
             continue;
         }
-        if lname.ends_with(".xml") {
+        if lname.starts_with("configurations2/") && lname.ends_with(".xml") {
+            // User-interface customisations (menus, toolbars, key bindings) can bind commands
+            // to macros.
+            if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+                let mut v = ConfigurationVisitor { loc: loc.clone() };
+                xmlwalk::walk(ctx, &bytes, &loc, &mut v)?;
+            }
+            continue;
+        }
+        if lname.ends_with(".xml") || lname.ends_with(".rdf") {
             if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
                 if lname == "meta.xml" {
                     meta(ctx, &bytes, &loc)?;
@@ -96,6 +164,8 @@ pub(crate) fn scan(
                 } else if lname == "content.xml"
                     || lname == "styles.xml"
                     || lname.ends_with("/content.xml")
+                    || lname.ends_with("/styles.xml")
+                    || lname.starts_with("dialogs/")
                 {
                     let mut v = ContentVisitor { loc: loc.clone() };
                     xmlwalk::walk(ctx, &bytes, &loc, &mut v)?;
@@ -105,26 +175,22 @@ pub(crate) fn scan(
             }
             continue;
         }
-        if lname.starts_with("object ")
-            || lname.starts_with("objectreplacements/")
-            || lname.contains("/object ")
-        {
-            if let Some(bytes) = ctx.read_member(zip, entry, &loc)?
+        // Everything else (embedded objects, pictures, any binary): by what the bytes are.
+        if let Some(bytes) = ctx.read_member(zip, entry, &loc)? {
+            let ct = if lname.starts_with("pictures/")
+                || lname.starts_with("thumbnails/")
+                || lname.starts_with("objectreplacements/")
+            {
+                "image/*"
+            } else {
+                ""
+            };
+            if (lname.starts_with("object ") || lname.contains("/object "))
                 && arca_container::cfb::has_cfb_signature(&bytes)
             {
-                ctx.report.add(ThreatKind::OleObject, &loc, "embedded OLE object");
-                ctx.scan_nested(&bytes, &loc)?;
+                ctx.report.add(ThreatKind::OleObject, &loc, "embedded object");
             }
-            continue;
-        }
-        if let Some(bytes) = ctx.read_member(zip, entry, &loc)?
-            && let crate::format::Magic::Executable(what) = crate::format::sniff(&bytes)
-        {
-            ctx.report.add(
-                ThreatKind::EmbeddedExecutable,
-                &loc,
-                format!("{what} stored inside the package"),
-            );
+            ooxml::scan_binary_part(ctx, &bytes, &loc, ct)?;
         }
     }
     Ok(format)
@@ -211,13 +277,15 @@ struct ContentVisitor {
 impl Visitor for ContentVisitor {
     fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, anc: &Ancestors) {
         let local = xml::local_name(e);
-        if matches!(local, "table-cell" | "covered-table-cell")
-            && let Some(raw) = xml::attr(e, "formula")
-        {
-            let formula = formulas::strip_odf_prefix(&raw);
-            formulas::report(ctx, formula, &self.loc);
-            for doc in formulas::odf_document_refs(formula) {
-                ooxml::record_external(ctx, &doc, RefKind::WorkbookLink, true, &self.loc);
+        if matches!(local, "table-cell" | "covered-table-cell") {
+            // Every `formula` attribute counts, whatever its prefix: a consumer picks the one
+            // in the right namespace, and the scanner cannot tell which that is.
+            for raw in xmlwalk::attr_all(e, "formula") {
+                let formula = formulas::strip_odf_prefix(&raw);
+                formulas::report(ctx, formula, &self.loc);
+                for doc in formulas::odf_document_refs(formula) {
+                    ooxml::record_external(ctx, &doc, RefKind::WorkbookLink, true, &self.loc);
+                }
             }
         }
         if matches!(local, "dde-source" | "dde-link" | "dde-connection-decl") {
@@ -240,31 +308,65 @@ impl Visitor for ContentVisitor {
             ctx.report.add(ThreatKind::OdfEventScript, &self.loc, format!("{event} → {target}"));
             return;
         }
-        let Some(href) = xml::attr(e, "href") else { return };
-        if href.starts_with("vnd.sun.star.script:")
-            || href.to_ascii_lowercase().starts_with("macro:")
-        {
-            ctx.report.add(
-                ThreatKind::OdfEventScript,
-                &self.loc,
-                format!("<{local}> invokes {href}"),
-            );
-            return;
-        }
-        if !url::leaves_package(&href) && !href.starts_with('/') {
-            return;
-        }
-        let (kind, auto) = match local {
-            "image" | "fill-image" => (RefKind::Image, true),
-            "a" => (RefKind::Hyperlink, false),
-            "section-source" | "table-source" | "plugin" | "applet" | "object" | "frame" => {
-                (RefKind::Frame, true)
+        // A script URL in *any* attribute (`vnd.sun.star.script:` is how a link, a button or a
+        // form control invokes a macro). The raw text is searched first, without allocating.
+        if may_hold_script_url(e) {
+            for (k, v) in xml::attrs(e) {
+                if is_script_url(&v) {
+                    ctx.report.add(
+                        ThreatKind::OdfEventScript,
+                        &self.loc,
+                        format!("<{local}> {} invokes {v}", xml::split_qname(&k).1),
+                    );
+                }
             }
-            "template" => (RefKind::Template, true),
-            _ if anc.iter().any(|a| a == "form") => (RefKind::DataConnection, false),
-            _ => (RefKind::Other, true),
-        };
-        ooxml::record_external(ctx, &href, kind, auto, &self.loc);
+        }
+        for href in xmlwalk::attr_all(e, "href") {
+            if is_script_url(&href) {
+                ctx.report.add(
+                    ThreatKind::OdfEventScript,
+                    &self.loc,
+                    format!("<{local}> invokes {href}"),
+                );
+                continue;
+            }
+            if !url::leaves_package(&href) && !href.starts_with('/') {
+                continue;
+            }
+            let (kind, auto) = match local {
+                "image" | "fill-image" => (RefKind::Image, true),
+                "a" => (RefKind::Hyperlink, false),
+                "section-source" | "table-source" | "plugin" | "applet" | "object" | "frame" => {
+                    (RefKind::Frame, true)
+                }
+                "template" => (RefKind::Template, true),
+                _ if anc.iter().any(|a| a == "form") => (RefKind::DataConnection, false),
+                _ => (RefKind::Other, true),
+            };
+            ooxml::record_external(ctx, &href, kind, auto, &self.loc);
+        }
+    }
+}
+
+/// `Configurations2/`: menus, toolbars and key bindings. A command bound to a macro runs it.
+struct ConfigurationVisitor {
+    loc: String,
+}
+
+impl Visitor for ConfigurationVisitor {
+    fn start(&mut self, ctx: &mut Ctx<'_>, e: &BytesStart<'_>, _empty: bool, _anc: &Ancestors) {
+        if !may_hold_script_url(e) {
+            return;
+        }
+        for (_, v) in xml::attrs(e) {
+            if is_script_url(&v) {
+                ctx.report.add(
+                    ThreatKind::OdfEventScript,
+                    &self.loc,
+                    format!("user-interface command bound to {v}"),
+                );
+            }
+        }
     }
 }
 

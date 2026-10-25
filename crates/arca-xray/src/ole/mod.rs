@@ -5,15 +5,16 @@ mod biff;
 mod ppt;
 pub(crate) mod propset;
 pub(crate) mod vba;
+mod visio_binary;
 mod word_binary;
 
-use arca_container::bytes::{LeReader, u32_le};
+use arca_container::bytes::{LeReader, u16_le, u32_le};
 use arca_container::cfb::{CfbAnomaly, CompoundFile, EntryKind, clsid_is_null, format_clsid};
 use arca_container::text::{CodePage, decode_codepage, utf16le_lossy};
 
 use crate::format::FileFormat;
 use crate::report::{EmbeddedKind, EmbeddedObject, MetaKey, RefKind, Severity, ThreatKind};
-use crate::{Abort, Ctx, memfind, ooxml};
+use crate::{Abort, Ctx, memfind, memfind_ci, ooxml, utf16le_bytes};
 
 /// Well-known CLSIDs with security relevance: `(clsid, description, kind, severity)`.
 const CLSIDS: &[(&str, &str, ThreatKind, Severity)] = &[
@@ -158,11 +159,22 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Result<Fil
     let cf = CompoundFile::parse(data, ctx.policy.cfb).map_err(|e| {
         let kind = match e {
             arca_container::cfb::CfbError::ChainCycle(_)
+            | arca_container::cfb::CfbError::CrossLinked(_)
             | arca_container::cfb::CfbError::DirectoryCycle => ThreatKind::ParserDifferential,
             _ => ThreatKind::MalformedContainer,
         };
         Abort::new(kind, location, format!("compound file: {e}"))
     })?;
+    // A file is a header sector followed by whole sectors. Bytes after the last whole sector
+    // belong to no sector at all (the container counts a partial sector as one), so they are
+    // checked here.
+    if let Some(shift) = u16_le(data, 30).filter(|s| (7..=16).contains(s)) {
+        let sector = 1usize << shift;
+        let partial = data.len().saturating_sub(sector) % sector;
+        if partial > 0 && data.len() > sector {
+            crate::report_trailing(ctx, data, partial, location, "the last whole sector");
+        }
+    }
     for a in cf.anomalies() {
         match a {
             CfbAnomaly::OrphanedEntries(n) => ctx.report.add(
@@ -172,32 +184,58 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Result<Fil
                     "{n} directory entr(ies) unreachable from the root (possible hidden payload)"
                 ),
             ),
-            CfbAnomaly::TrailingData(n) => ctx.report.add(
-                ThreatKind::TrailingData,
-                location,
-                format!("{n} bytes after the last sector"),
+            CfbAnomaly::TrailingData(n) => {
+                let n = usize::try_from(*n).unwrap_or(usize::MAX);
+                crate::report_trailing(ctx, data, n, location, "the last sector");
+            }
+            CfbAnomaly::ChainLongerThanSize(name) => ctx.report.add_with(
+                ThreatKind::ParserDifferential,
+                Severity::Medium,
+                &Ctx::join(location, name),
+                "the sector chain of the stream is longer than its declared size; readers that follow the chain see more data than readers that trust the size",
             ),
-            CfbAnomaly::SizeHighBitsIgnored(_) | CfbAnomaly::ChainLongerThanSize(_) => {}
+            CfbAnomaly::SizeHighBitsIgnored(_) => {}
         }
     }
 
     let root_clsid = cf.entries().first().map(|e| format_clsid(&e.clsid)).unwrap_or_default();
     let has = |name: &str| cf.find(name).is_some();
-    let format = if MSI_CLSIDS.contains(&root_clsid.as_str()) {
+    // Every kind of document this compound file claims to be. Each is recognised by the streams
+    // its own reader opens, so a file can carry the streams of several at once; the readers
+    // then disagree about what the file is.
+    let is_msi = MSI_CLSIDS.contains(&root_clsid.as_str());
+    let is_encrypted = has("EncryptedPackage") && has("EncryptionInfo");
+    let is_word = has("WordDocument");
+    let is_excel = has("Workbook") || has("Book");
+    let is_ppt = has("PowerPoint Document");
+    let is_visio = has("VisioDocument");
+    let is_msg = has("__properties_version1.0")
+        || cf.entries().iter().any(|e| e.name.starts_with("__substg1.0_"));
+    let claims: Vec<&str> = [
+        (is_msi, "Windows Installer"),
+        (is_encrypted, "encrypted Office Open XML"),
+        (is_word, "Word"),
+        (is_excel, "Excel"),
+        (is_ppt, "PowerPoint"),
+        (is_visio, "Visio"),
+        (is_msg, "Outlook message"),
+    ]
+    .iter()
+    .filter_map(|&(yes, name)| yes.then_some(name))
+    .collect();
+    let format = if is_msi {
         FileFormat::Msi
-    } else if has("EncryptedPackage") && has("EncryptionInfo") {
+    } else if is_encrypted {
         FileFormat::EncryptedOoxml
-    } else if has("WordDocument") {
+    } else if is_word {
         FileFormat::Doc
-    } else if has("Workbook") || has("Book") {
+    } else if is_excel {
         FileFormat::Xls
-    } else if has("PowerPoint Document") {
+    } else if is_ppt {
         FileFormat::Ppt
-    } else if has("VisioDocument") {
+    } else if is_visio {
         FileFormat::Vsd
-    } else if has("__properties_version1.0")
-        || cf.entries().iter().any(|e| e.name.starts_with("__substg1.0_"))
-    {
+    } else if is_msg {
         FileFormat::Msg
     } else {
         FileFormat::OleOther
@@ -226,27 +264,68 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Result<Fil
         }
         _ => {}
     }
+    if format == FileFormat::OleOther {
+        // None of the streams that make a compound file a document were found, so nothing says
+        // how its streams are to be read.
+        ctx.report.add(
+            ThreatKind::ScanLimitReached,
+            location,
+            "the compound file is not a document of a recognised kind; its streams were not interpreted",
+        );
+    }
+    if claims.len() > 1 {
+        ctx.report.add(
+            ThreatKind::ParserDifferential,
+            location,
+            format!(
+                "the compound file carries the streams of several document types ({}); every matching scanner was run, but readers of each type will see a different document",
+                claims.join(", ")
+            ),
+        );
+    }
 
     scan_storage_tree(ctx, &cf, location)?;
 
-    let read = |path: &str| cf.find(path).and_then(|i| cf.read_stream(i).ok());
-    match format {
-        FileFormat::Doc => {
-            if let Some(s) = read("WordDocument") {
-                word_binary::scan(ctx, &s, &Ctx::join(location, "WordDocument"));
-            }
+    // Every type the file claims is scanned, not only the first match: the scanner must not
+    // pick the interpretation the author wants it to pick.
+    let read = |path: &str| -> Option<Result<Vec<u8>, arca_container::cfb::CfbError>> {
+        cf.find(path).map(|i| cf.read_stream(i))
+    };
+    let unreadable = |ctx: &mut Ctx<'_>, name: &str, e: &arca_container::cfb::CfbError| {
+        ctx.report.add(
+            ThreatKind::MalformedContainer,
+            &Ctx::join(location, name),
+            format!("stream could not be read, so it was not inspected: {e}"),
+        );
+    };
+    if is_word {
+        match read("WordDocument") {
+            Some(Ok(s)) => word_binary::scan(ctx, &cf, &s, &Ctx::join(location, "WordDocument")),
+            Some(Err(e)) => unreadable(ctx, "WordDocument", &e),
+            None => {}
         }
-        FileFormat::Xls => {
-            if let Some(s) = read("Workbook").or_else(|| read("Book")) {
-                biff::scan(ctx, &s, &Ctx::join(location, "Workbook"));
-            }
+    }
+    if is_excel {
+        let name = if has("Workbook") { "Workbook" } else { "Book" };
+        match read(name) {
+            Some(Ok(s)) => biff::scan(ctx, &s, &Ctx::join(location, name)),
+            Some(Err(e)) => unreadable(ctx, name, &e),
+            None => {}
         }
-        FileFormat::Ppt => {
-            if let Some(s) = read("PowerPoint Document") {
-                ppt::scan(ctx, &s, &Ctx::join(location, "PowerPoint Document"))?;
-            }
+    }
+    if is_ppt {
+        match read("PowerPoint Document") {
+            Some(Ok(s)) => ppt::scan(ctx, &s, &Ctx::join(location, "PowerPoint Document"))?,
+            Some(Err(e)) => unreadable(ctx, "PowerPoint Document", &e),
+            None => {}
         }
-        _ => {}
+    }
+    if is_visio {
+        match read("VisioDocument") {
+            Some(Ok(s)) => visio_binary::scan(ctx, &s, &Ctx::join(location, "VisioDocument")),
+            Some(Err(e)) => unreadable(ctx, "VisioDocument", &e),
+            None => {}
+        }
     }
     Ok(format)
 }
@@ -281,7 +360,7 @@ pub(crate) fn scan_vba_container(
         ctx.report.add(ThreatKind::VbaMacros, location, "macro project without a VBA storage");
     }
     for p in projects {
-        vba::extract(ctx, &cf, p, location);
+        vba::extract(ctx, &cf, p, location)?;
     }
     if let Some(i) = cf.find("PROJECT")
         && let Ok(text) = cf.read_stream(i)
@@ -299,7 +378,7 @@ fn scan_storage_tree(
     location: &str,
 ) -> Result<(), Abort> {
     for p in vba::find_projects(cf) {
-        vba::extract(ctx, cf, p, location);
+        vba::extract(ctx, cf, p, location)?;
         // The PROJECT stream is the sibling of the VBA storage.
         if let Some(parent) = cf.entries().get(p).and_then(|e| e.parent)
             && let Some(proj) = cf.child(parent, "PROJECT")
@@ -374,6 +453,24 @@ fn scan_storage_tree(
                     propset::scan(ctx, &data, &loc);
                 }
             }
+            // Outlook message: the bytes of a file attachment (PR_ATTACH_DATA_BIN) ...
+            "__substg1.0_37010102" => {
+                if let Ok(data) = cf.read_stream(i) {
+                    msg_attachment(ctx, cf, i, &data, &loc)?;
+                }
+            }
+            // ... and the HTML body (PR_BODY_HTML, as binary or as text), which is rendered by
+            // a browser engine in most mail clients.
+            "__substg1.0_10130102" | "__substg1.0_1013001f" | "__substg1.0_1013001e" => {
+                if let Ok(data) = cf.read_stream(i) {
+                    let html = if lname.ends_with("001f") {
+                        utf16le_lossy(&data)
+                    } else {
+                        String::from_utf8_lossy(&data).into_owned()
+                    };
+                    crate::textfmt::scan_html(ctx, &html, &loc);
+                }
+            }
             "package" | "contents" => {
                 // Embedded OOXML/ODF/PDF packages inside OLE objects.
                 if let Ok(data) = cf.read_stream(i)
@@ -394,6 +491,87 @@ fn scan_storage_tree(
                 }
             }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// A file attached to an Outlook message: named by a sibling property stream, scanned by what
+/// its bytes are, never by what its name says.
+fn msg_attachment(
+    ctx: &mut Ctx<'_>,
+    cf: &CompoundFile<'_>,
+    stream: usize,
+    data: &[u8],
+    loc: &str,
+) -> Result<(), Abort> {
+    let parent = cf.entries().get(stream).and_then(|e| e.parent);
+    // Long file name, then short file name, then display name (all UTF-16LE strings).
+    let name = ["__substg1.0_3707001F", "__substg1.0_3704001F", "__substg1.0_3001001F"]
+        .iter()
+        .find_map(|n| {
+            let idx = cf.child(parent?, n)?;
+            let raw = cf.read_stream(idx).ok()?;
+            Some(utf16le_lossy(&raw).trim_end_matches('\0').to_owned())
+        })
+        .unwrap_or_default();
+    if crate::has_bidi(&name) {
+        ctx.report.add(
+            ThreatKind::BidiOverride,
+            loc,
+            format!(
+                "attachment name {name:?} uses bidirectional overrides to disguise its extension"
+            ),
+        );
+    }
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_owned()).unwrap_or_default();
+    if is_dangerous_extension(&ext) {
+        ctx.report.add(
+            ThreatKind::EmbeddedExecutable,
+            loc,
+            format!("attachment {name:?} has an executable or script extension"),
+        );
+    }
+    scan_payload(ctx, data, loc, &name)
+}
+
+/// Scans the bytes of an attached or packaged file by content: containers and pictures are
+/// scanned recursively, executables are reported, and bytes of a kind the scanner cannot read
+/// are a coverage gap rather than a pass.
+pub(crate) fn scan_payload(
+    ctx: &mut Ctx<'_>,
+    data: &[u8],
+    loc: &str,
+    file_name: &str,
+) -> Result<(), Abort> {
+    use crate::format::Magic;
+    match crate::format::sniff(data) {
+        Magic::Empty => {}
+        Magic::Executable(_) => {
+            // `scan_nested` reports the executable with its location.
+            ctx.scan_nested(data, loc)?;
+            push_embedded(ctx, loc, EmbeddedKind::Executable, file_name, data);
+        }
+        Magic::Unknown => {
+            ctx.report.add(
+                ThreatKind::ScanLimitReached,
+                loc,
+                format!("attached file {file_name:?} is of a kind the scanner cannot read; it was not inspected"),
+            );
+            push_embedded(ctx, loc, EmbeddedKind::Other, file_name, data);
+        }
+        Magic::Image(_) | Magic::Text => {
+            ctx.scan_nested(data, loc)?;
+            push_embedded(ctx, loc, EmbeddedKind::Other, file_name, data);
+        }
+        Magic::Zip | Magic::Ole2 | Magic::Pdf | Magic::Rtf | Magic::Jet(_) => {
+            let fmt = ctx.scan_nested(data, loc)?;
+            ctx.report.add(
+                ThreatKind::EmbeddedDocument,
+                loc,
+                format!("embedded {fmt:?} (scanned recursively)"),
+            );
+            push_embedded(ctx, loc, EmbeddedKind::Document, file_name, data);
         }
     }
     Ok(())
@@ -582,7 +760,7 @@ fn ole_link(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) {
 fn encryption_info(cf: &CompoundFile<'_>) -> String {
     let Some(i) = cf.find("EncryptionInfo") else { return String::from("unknown scheme") };
     let Ok(data) = cf.read_stream(i) else { return String::from("unknown scheme") };
-    match (arca_container::bytes::u16_le(&data, 0), arca_container::bytes::u16_le(&data, 2)) {
+    match (u16_le(&data, 0), u16_le(&data, 2)) {
         (Some(4), Some(4)) => String::from("Agile encryption"),
         (Some(3 | 4), Some(2)) => String::from("Standard encryption"),
         (Some(3 | 4), Some(3)) => String::from("Extensible encryption"),
@@ -592,7 +770,7 @@ fn encryption_info(cf: &CompoundFile<'_>) -> String {
 }
 
 /// Access (Jet/ACE) triage: version, AutoExec macro objects, embedded OLE.
-pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) {
+pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Result<(), Abort> {
     let fmt = match data.get(0x14).copied() {
         Some(0) => FileFormat::AccessJet3,
         Some(1) => FileFormat::AccessJet4,
@@ -602,11 +780,16 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) {
     // Pass 1, independent of whether the structure parses: a byte search for the names that
     // matter, in ASCII (which is also how Jet 4 "compressed Unicode" stores them) and in
     // UTF-16LE. A damaged or hostile file can hide its catalog, never its bytes.
-    let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
-    let mut autoexec =
-        memfind(data, b"AutoExec").is_some() || memfind(data, &utf16("AutoExec")).is_some();
-    let vba_project =
-        memfind(data, b"VBAProject").is_some() || memfind(data, &utf16("VBAProject")).is_some();
+    // Access compares object names without regard to case, so the search does too.
+    let seen = |name: &str| {
+        memfind_ci(data, name.as_bytes()).is_some()
+            || memfind_ci(data, &utf16le_bytes(name)).is_some()
+    };
+    let mut autoexec = seen("autoexec");
+    let vba_project = seen("vbaproject");
+    // The table that holds the saved forms, reports, macros and modules of an ACCDB; its
+    // presence is how a stripped catalog still betrays that objects exist.
+    let access_storage = seen("msysaccessstorage");
     // Pass 2: the catalog. Anything short of a complete, successful read is reported as a
     // coverage gap, so the file can never come out Clean on the strength of a failed parse.
     let mut vba_object = false;
@@ -684,26 +867,51 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) {
             "database contains a VBA project or module (ignored by design)",
         );
     }
+    // OLE storages stored in database pages (OLE Object columns, saved form resources) are
+    // scanned like any other embedded object, up to a limit.
+    const MAX_OLE_BLOBS: usize = 16;
     let mut ole_blobs = 0usize;
     let mut from = 0usize;
     while let Some(rel) = data.get(from..).and_then(|d| memfind(d, &arca_container::cfb::SIGNATURE))
     {
+        let at = from + rel;
+        from = at + 8;
         ole_blobs += 1;
-        from = from + rel + 8;
-        if ole_blobs >= 1024 {
+        if ole_blobs > MAX_OLE_BLOBS {
+            ctx.report.add(
+                ThreatKind::ScanLimitReached,
+                location,
+                format!("more than {MAX_OLE_BLOBS} embedded OLE storages in database pages; the rest were not scanned"),
+            );
             break;
+        }
+        // Jet stores long values in pages that need not be contiguous, so a signature is often
+        // not the start of a storage; only one that parses as a compound file is scanned.
+        if let Some(blob) = data.get(at..)
+            && CompoundFile::parse(blob, ctx.policy.cfb).is_ok()
+        {
+            ctx.scan_nested(blob, &format!("{location}#ole{ole_blobs}"))?;
         }
     }
     if ole_blobs > 0 {
         ctx.report.add(
             ThreatKind::OleObject,
             location,
-            format!("{ole_blobs} embedded OLE storage signature(s) in database pages"),
+            format!(
+                "{} embedded OLE storage signature(s) in database pages",
+                ole_blobs.min(MAX_OLE_BLOBS)
+            ),
         );
     }
+    let stored = if access_storage {
+        " The saved forms, reports, macros and modules (MSysAccessStorage) are not interpreted."
+    } else {
+        ""
+    };
     ctx.report.add(
         ThreatKind::UnsupportedFormat,
         location,
-        "Access databases are opened read-only; macros, modules and queries are never executed",
+        format!("Access databases are opened read-only; macros, modules and queries are never executed.{stored}"),
     );
+    Ok(())
 }

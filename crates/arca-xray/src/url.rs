@@ -47,6 +47,14 @@ const DANGEROUS_SCHEMES: &[&str] = &[
     "jscript",
     "wscript",
     "msdt",
+    // Windows file sharing: opening it authenticates against the host with the user's NTLM
+    // credentials, exactly like a UNC path.
+    "smb",
+    // Mail and note clients that open the item they are pointed at.
+    "ms-outlook",
+    "outlook",
+    "onenote",
+    "ms-onenote",
 ];
 
 /// Removes ASCII control characters (tab, CR, LF, NUL, ...) anywhere in a
@@ -89,12 +97,38 @@ pub fn scheme(target: &str) -> Option<String> {
     Some(s.to_ascii_lowercase())
 }
 
+/// `canonical` plus percent-decoding, repeated while it changes (`%255C` is `%5C` is `\`), up to
+/// three rounds.
+fn normalized(target: &str) -> Cow<'_, str> {
+    let mut cur = canonical(target);
+    for _ in 0..3 {
+        if !cur.contains('%') {
+            break;
+        }
+        let decoded = percent_decode(&cur);
+        if decoded == *cur {
+            break;
+        }
+        cur = Cow::Owned(canonical(&decoded).into_owned());
+    }
+    cur
+}
+
+/// `true` for a network-path reference: two leading separators, each of which may be a slash or
+/// a backslash in any mix (`\host`, `//host`, `\/host`, `/\host`).
+fn is_network_path(t: &str) -> bool {
+    let b = t.as_bytes();
+    matches!(b.first(), Some(b'\\' | b'/')) && matches!(b.get(1), Some(b'\\' | b'/'))
+}
+
 /// Classifies a target string.
 #[must_use]
 pub fn classify(target: &str) -> TargetClass {
-    let canon = canonical(target);
+    // Escapes are decoded first (`file:///%5C%5Chost` is a UNC path); a reader decodes them
+    // before it resolves the target, whatever the scanner thinks of the text.
+    let canon = normalized(target);
     let t = canon.trim().trim_matches('"');
-    if t.starts_with("\\\\") || t.starts_with("//") {
+    if is_network_path(t) {
         return TargetClass::Unc;
     }
     let bytes = t.as_bytes();
@@ -112,7 +146,9 @@ pub fn classify(target: &str) -> TargetClass {
         }
         "file" => classify_file(t.get(5..).unwrap_or("")),
         "mailto" => TargetClass::Mail,
-        other if DANGEROUS_SCHEMES.contains(&other) => TargetClass::DangerousProtocol,
+        other if DANGEROUS_SCHEMES.contains(&other) || other.starts_with("ms-") => {
+            TargetClass::DangerousProtocol
+        }
         _ => TargetClass::OtherScheme,
     }
 }
@@ -190,11 +226,13 @@ pub fn profile_user(path: &str) -> Option<String> {
 /// Extracts the host of a UNC or `file://host/` target.
 #[must_use]
 pub fn unc_host(target: &str) -> Option<String> {
-    let canon = canonical(target);
+    let canon = normalized(target);
     let t = canon.trim();
-    let rest = t.strip_prefix("\\\\").or_else(|| t.strip_prefix("//")).or_else(|| {
+    let rest = if is_network_path(t) {
+        t.get(2..)
+    } else {
         t.get(..7).filter(|p| p.eq_ignore_ascii_case("file://")).and_then(|_| t.get(7..))
-    })?;
+    }?;
     // Skip any leading slash/backslash run (`file:///\\host`, `file:////host`).
     let rest = rest.trim_start_matches(['\\', '/']);
     let host = rest.split(['\\', '/']).next()?;

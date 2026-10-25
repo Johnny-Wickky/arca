@@ -205,13 +205,16 @@ pub struct Finding {
 wire_struct!(Finding { kind, severity, location, detail, neutralized });
 
 impl ThreatKind {
-    /// `true` if the finding means that part of the file was **not** (or could
-    /// not be) inspected: encrypted content, skipped members, parts that failed
-    /// to parse, or a scan limit that cut the work short.
+    /// `true` if the finding means, *whatever its severity*, that part of the file was **not**
+    /// (or could not be) inspected: encrypted content, skipped members, parts that failed to
+    /// parse, or a scan limit that cut the work short.
     ///
     /// Such a file can never be reported as [`Verdict::Clean`]: absence of
     /// findings in a region the scanner could not read proves nothing, and a
     /// hostile author controls exactly which regions fail to parse.
+    ///
+    /// Kinds whose meaning depends on how they were raised are decided by
+    /// [`limits_coverage_at`](Self::limits_coverage_at).
     #[must_use]
     pub const fn limits_coverage(self) -> bool {
         matches!(
@@ -221,7 +224,37 @@ impl ThreatKind {
                 | Self::ScanLimitReached
                 | Self::EncryptedDocument
                 | Self::EncryptedMember
+                // The scanner and another reader would see different documents (a second name
+                // for a member, two formats in one package, two ends of one stream): what the
+                // other reader sees was not what was inspected.
+                | Self::ParserDifferential
+                // Bytes the container does not account for, or a second format living in the
+                // same bytes, are exactly where a payload hides; they were not inspected.
+                | Self::PolyglotFile
+                | Self::UnreferencedArchiveData
+                // Directory entries nothing links to are never walked by the scanner.
+                | Self::OrphanedOleEntries
+                // A file that disguises its markup or its names from lexical scans is by that
+                // act one the scanner cannot be sure it read the way its consumers will.
+                | Self::ObfuscatedName
         )
+    }
+
+    /// Like [`limits_coverage`](Self::limits_coverage), for a finding raised with `severity`.
+    ///
+    /// * `TrailingData` is a coverage gap from `Low` up. The scanner raises it at `Info` only
+    ///   for bytes it has verified to be zero padding (or a plain archive comment).
+    /// * `ContentTypeMismatch` is a gap from `Medium` up: a part whose declared type,
+    ///   relationship type and name disagree was read by the scanner in one way and may be read
+    ///   in another.
+    #[must_use]
+    pub fn limits_coverage_at(self, severity: Severity) -> bool {
+        self.limits_coverage()
+            || match self {
+                Self::TrailingData => severity >= Severity::Low,
+                Self::ContentTypeMismatch => severity >= Severity::Medium,
+                _ => false,
+            }
     }
 }
 
@@ -229,6 +262,11 @@ impl ThreatKind {
 ///
 /// Precedence when several apply: `Rejected` > `ActiveContentNeutralized` >
 /// `Unverified` > `HiddenTrackers` > `Clean`.
+///
+/// `Clean` is a positive claim: every byte was accounted for and every interpretation the
+/// scanner relied on was unambiguous. Anything the scanner could not read, did not interpret,
+/// or read in a way another consumer might not (see [`ThreatKind::limits_coverage_at`]) makes
+/// the verdict `Unverified` at best.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Nothing active or remote was found, and every part of the file was
@@ -598,7 +636,7 @@ impl Facts {
             kind,
             ThreatKind::RemoteTemplate | ThreatKind::ExternalImage | ThreatKind::ExternalFrame
         ) || (category == Category::RemoteContent && severity >= Severity::Medium);
-        self.coverage_gap |= kind.limits_coverage();
+        self.coverage_gap |= kind.limits_coverage_at(severity);
     }
 }
 

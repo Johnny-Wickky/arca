@@ -126,6 +126,21 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, stream: &[u8], loc: &str) {
                     }
                 } else {
                     let name = short_string(body, name_at, cch);
+                    // Functions newer than BIFF8 and add-in functions are stored as names
+                    // (`_xlfn.WEBSERVICE`); a name that is defined is a function that is used.
+                    let lower = name.to_ascii_lowercase();
+                    if let Some(f) =
+                        lower.strip_prefix("_xlfn.").or_else(|| lower.strip_prefix("_xll."))
+                        && let Some((_, label)) = crate::formulas::DANGEROUS
+                            .iter()
+                            .find(|(n, _)| n.eq_ignore_ascii_case(f))
+                    {
+                        ctx.report.add(
+                            ThreatKind::DangerousFormula,
+                            loc,
+                            format!("{label} is used by a formula of the workbook"),
+                        );
+                    }
                     if name.to_ascii_lowercase().starts_with("auto_open")
                         || name.to_ascii_lowercase().starts_with("auto_close")
                     {
@@ -148,7 +163,9 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, stream: &[u8], loc: &str) {
                     let path = path.trim_start_matches('\\').to_owned();
                     if !path.is_empty() {
                         crate::ooxml::record_external(ctx, &path, RefKind::WorkbookLink, true, loc);
-                        if raw.contains('\u{3}') {
+                        // In an encoded file URL (it starts with U+0001) U+0003 is the directory
+                        // separator; a DDE or OLE link is a plain "service U+0003 topic".
+                        if !raw.starts_with('\u{1}') && raw.contains('\u{3}') {
                             ctx.report.add_with(
                                 ThreatKind::DdeFormula,
                                 Severity::High,

@@ -28,6 +28,8 @@ enum Dest {
 #[derive(Debug, Clone, Copy)]
 struct Group {
     dest: Dest,
+    /// Bytes that follow a `` escape and are its fallback rendering (`CN`, scoped to the group).
+    uc: usize,
 }
 
 #[derive(Debug, Default)]
@@ -61,8 +63,10 @@ struct Parser<'d> {
     codepage: CodePage,
     object: Option<Object>,
     objects: Vec<Object>,
-    fld: Option<(usize, String)>,
-    fields: Vec<String>,
+    /// Open field instructions, outermost first: (group depth, text, keyword computed by a
+    /// nested field).
+    flds: Vec<(usize, String, bool)>,
+    fields: Vec<(String, bool)>,
     template: Option<(usize, String)>,
     templates: Vec<String>,
     info: Option<(usize, MetaKey, String)>,
@@ -78,11 +82,11 @@ impl<'d> Parser<'d> {
         Self {
             data,
             pos: 0,
-            stack: vec![Group { dest: Dest::Normal }],
+            stack: vec![Group { dest: Dest::Normal, uc: 1 }],
             codepage: CodePage::Windows1252,
             object: None,
             objects: Vec::new(),
-            fld: None,
+            flds: Vec::new(),
             fields: Vec::new(),
             template: None,
             templates: Vec::new(),
@@ -129,7 +133,7 @@ impl<'d> Parser<'d> {
                 }
             }
             Dest::FldInst => {
-                if let Some((_, s)) = self.fld.as_mut()
+                if let Some((_, s, _)) = self.flds.last_mut()
                     && s.len() < 8192
                 {
                     s.push_str(&decode_codepage(&[b], self.codepage));
@@ -156,7 +160,9 @@ impl<'d> Parser<'d> {
     fn text_char(&mut self, c: char) {
         match self.dest() {
             Dest::FldInst => {
-                if let Some((_, s)) = self.fld.as_mut() {
+                if let Some((_, s, _)) = self.flds.last_mut()
+                    && s.len() < 8192
+                {
                     s.push(c);
                 }
             }
@@ -175,7 +181,7 @@ impl<'d> Parser<'d> {
     }
 
     fn open_group(&mut self) {
-        let inherited = self.stack.last().copied().unwrap_or(Group { dest: Dest::Normal });
+        let inherited = self.stack.last().copied().unwrap_or(Group { dest: Dest::Normal, uc: 1 });
         if self.stack.len() >= MAX_GROUP_DEPTH {
             self.too_deep = true;
             return;
@@ -190,11 +196,21 @@ impl<'d> Parser<'d> {
         }
         self.stack.pop();
         let depth = self.stack.len();
-        if self.fld.as_ref().is_some_and(|(d, _)| *d > depth)
-            && let Some((_, s)) = self.fld.take()
-            && self.fields.len() < 512
-        {
-            self.fields.push(s);
+        // Fields whose instruction group just closed. A nested field contributes to the
+        // instruction of the one that encloses it (see `fields::nest`).
+        while self.flds.last().is_some_and(|(d, _, _)| *d > depth) {
+            let Some((_, s, computed)) = self.flds.pop() else { break };
+            let mut keep = true;
+            if let Some(parent) = self.flds.last_mut() {
+                match fields::nest(&mut parent.1, &s) {
+                    fields::Nested::Merged => keep = false,
+                    fields::Nested::Keyword => parent.2 = true,
+                    fields::Nested::Argument => {}
+                }
+            }
+            if keep && self.fields.len() < 512 {
+                self.fields.push((s, computed));
+            }
         }
         if self.template.as_ref().is_some_and(|(d, _)| *d > depth)
             && let Some((_, s)) = self.template.take()
@@ -237,7 +253,7 @@ impl<'d> Parser<'d> {
             }
             "objclass" => self.set_dest(Dest::ObjClass),
             "fldinst" => {
-                self.fld = Some((depth, String::new()));
+                self.flds.push((depth, String::new(), false));
                 self.set_dest(Dest::FldInst);
             }
             "template" => {
@@ -249,14 +265,20 @@ impl<'d> Parser<'d> {
                     self.codepage = CodePage::from_id(cp);
                 }
             }
-            "uc" => {}
+            "uc" => {
+                if let (Some(p), Some(g)) = (param, self.stack.last_mut()) {
+                    g.uc = usize::try_from(p).unwrap_or(1).min(16);
+                }
+            }
+            // The cached result of a field is not part of any instruction.
+            "fldrslt" => self.set_dest(Dest::Skip),
             "u" => {
                 if let Some(p) = param {
                     let v = if p < 0 { p + 65_536 } else { p };
                     if let Some(c) = u32::try_from(v).ok().and_then(char::from_u32) {
                         self.text_char(c);
                     }
-                    self.uc_skip = 1;
+                    self.uc_skip = self.stack.last().map_or(1, |g| g.uc);
                 }
             }
             "bin" => {
@@ -405,8 +427,17 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileForm
             ),
         );
     }
-    for instr in &p.fields {
-        fields::analyze(ctx, instr, loc);
+    for (instr, computed_keyword) in &p.fields {
+        fields::analyze_finished(
+            ctx,
+            &fields::Finished {
+                index: 0,
+                instr: instr.clone(),
+                computed_keyword: *computed_keyword,
+                merged: false,
+            },
+            loc,
+        );
     }
     for t in &p.templates {
         let t = t.trim();
@@ -533,7 +564,7 @@ mod tests {
             vec![(MetaKey::Author, "Иван".to_owned()), (MetaKey::Company, "ACME".to_owned())]
         );
         assert_eq!(p.templates, vec!["http://evil.example/t.dot".to_owned()]);
-        assert!(p.fields.iter().any(|f| f.contains("DDEAUTO")), "{:?}", p.fields);
+        assert!(p.fields.iter().any(|(f, _)| f.contains("DDEAUTO")), "{:?}", p.fields);
         assert_eq!(p.objects.len(), 1);
         let o = &p.objects[0];
         assert_eq!(o.class, "Equation.3");
