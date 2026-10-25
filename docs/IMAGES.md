@@ -59,7 +59,7 @@
  хост (arca-engine): декодер с лимитами, проверка длины ──► JNI ──► Java: Bitmap из int[]
 ```
 
-* `arca-image` — форматы PNG, JPEG (baseline и progressive), GIF, BMP; затем WebP, TIFF;
+* `arca-image` — форматы PNG, JPEG (baseline и progressive), GIF, BMP (WebP и TIFF — только в планах);
   `sniff`, лимиты, уменьшение, EXIF (поворот и сводка приватности).
 * ABI v5: операция `Image`, поле `flags` — идентификатор картинки (смысл зависит от формата
   документа и задаётся самим гостем), тип результата `Image`.

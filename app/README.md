@@ -1,5 +1,9 @@
 # Arca — клиент iOS (ArcaKit & ArcaApp)
 
+> **Статус.** Код написан владельцем проекта, но при проверке 0.2.2 не собирался и не запускался (нужны
+> macOS и Xcode): ни XCFramework, ни `swift build`, ни `swift test`, ни запуск на устройстве. Готовой сборки
+> и публикации нет. Структура ниже — по состоянию дерева; `docs/IOS_ARCHITECTURE.md` описывает желаемое.
+
 > **Android-клиент готов и живёт в [`android/`](../android/README.md)**: нативное приложение на
 > Java без AndroidX и Gradle поверх JNI-моста `crates/arca-jni` (см.
 > [`docs/ANDROID.md`](../docs/ANDROID.md)).
