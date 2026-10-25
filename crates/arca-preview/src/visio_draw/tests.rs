@@ -301,7 +301,7 @@ fn infinite_lines_become_long_lines_and_never_fill() {
 #[test]
 fn nurbs_and_splines_are_sampled_and_reported_as_approximations() {
     // A cubic curve through four control points with clamped knots (0 0 0 0 1 1 1 1).
-    let rows = r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="NURBSTo" IX="2"><Cell N="X" V="4"/><Cell N="Y" V="0"/><Cell N="A" V="1"/><Cell N="B" V="1"/><Cell N="C" V="0"/><Cell N="D" V="1"/><Cell N="E" V="0" F="NURBS(1, 3, 1, 1, 1, 2, 0, 1, 3, 2, 0, 1)"/></Row>"#;
+    let rows = r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="NURBSTo" IX="2"><Cell N="X" V="4"/><Cell N="Y" V="0"/><Cell N="A" V="0"/><Cell N="B" V="1"/><Cell N="C" V="0"/><Cell N="D" V="1"/><Cell N="E" V="0" F="NURBS(1, 3, 1, 1, 1, 2, 0, 1, 3, 2, 0, 1)"/></Row>"#;
     let rendered = render_visio_page_noted(&one(&geometry(rows, "")), 0, &PreviewPolicy::default()).unwrap();
     let p = &rendered.page;
     let pts = points(paths(p)[0].0);
@@ -578,7 +578,8 @@ fn a_flood_of_shapes_and_deep_groups_are_cut_not_followed() {
     let flood: String = (0..130_000)
         .map(|i| format!(r#"<Shape ID="{i}"><Cell N="PinX" V="1"/><Cell N="PinY" V="1"/></Shape>"#))
         .collect();
-    let policy = PreviewPolicy { aggregate_ratio: 100_000, ..PreviewPolicy::default() };
+    let mut policy = PreviewPolicy { aggregate_ratio: 100_000, ..PreviewPolicy::default() };
+    policy.zip.max_ratio = 100_000;
     let p = render_visio_page(&one(&flood), 0, &policy).unwrap();
     assert!(p.truncated);
     let lines: String = (0..30_000)
