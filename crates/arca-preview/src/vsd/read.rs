@@ -449,7 +449,7 @@ impl Reader {
                 if self.scope == Scope::Page && self.page.layers.len() < 1_024 {
                     let b = c.body;
                     let colour = b.get(8).copied().unwrap_or(0);
-                    let at = if colour == 0xff { 13 } else { 13 };
+                    let at = 13;
                     let visible = b.get(at + 1).copied().unwrap_or(1) != 0;
                     self.page.layers.push(Layer { ix: c.id, visible });
                 }
@@ -587,8 +587,8 @@ impl Reader {
             }
             0xc4 => {
                 let strs = strings_of(c.body, version);
-                if !strs.is_empty() && b.sheet.links.len() < 64 {
-                    b.sheet.links.push(strs.join(" | "));
+                if !strs.is_empty() && b.sheet.data.len() < 64 {
+                    b.sheet.data.push(("Hyperlink".to_owned(), strs.join(" | ")));
                     self.unverified("binary Visio hyperlinks are recovered by scanning for text");
                 }
             }
@@ -933,7 +933,7 @@ fn polyline_formula(b: &[u8]) -> Formula {
         if *cell >= 2 {
             break;
         }
-        pos += len;
+        pos = pos.saturating_add(len);
     }
     let mut at = pos + 6;
     let end = pos.saturating_add(u32_le(b, pos).map_or(0, |l| usize::try_from(l).unwrap_or(0)));
@@ -984,7 +984,7 @@ fn nurbs_formula(b: &[u8]) -> Formula {
         if *cell > 6 {
             return (None, None, None);
         }
-        pos += len;
+        pos = pos.saturating_add(len);
     }
     let at = pos + 6;
     let end = pos.saturating_add(u32_le(b, pos).map_or(0, |l| usize::try_from(l).unwrap_or(0)));

@@ -27,7 +27,7 @@ pub(crate) mod text;
 mod vsdx_read;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::detect::{self, Doc as Opened};
 use crate::model::FileFormat;
