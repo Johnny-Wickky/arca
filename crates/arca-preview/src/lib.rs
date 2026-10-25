@@ -54,6 +54,7 @@ mod rtf;
 pub mod sheet_draw;
 pub mod sink;
 mod slide_draw;
+mod visio_draw;
 mod vsd;
 mod vsdx;
 mod xls;
@@ -229,7 +230,17 @@ pub fn render_page(
     }
     match arca_xray::format::sniff(data) {
         arca_xray::format::Magic::Pdf => pdf::render(data, index, policy),
-        arca_xray::format::Magic::Zip => slide_draw::render_slide(data, index, policy),
+        arca_xray::format::Magic::Zip => match slide_draw::render_slide(data, index, policy) {
+            // Not a presentation: a Visio drawing is drawn by its own module.
+            Err(PreviewError::Unsupported(
+                FileFormat::Vsdx | FileFormat::Vsdm | FileFormat::VisioTemplateOrStencil,
+            )) => visio_draw::render_visio_page(data, index, policy),
+            other => other,
+        },
+        arca_xray::format::Magic::Ole2 => match detect::format_of(data, policy) {
+            FileFormat::Vsd => visio_draw::render_visio_page(data, index, policy),
+            other => Err(PreviewError::Unsupported(other)),
+        },
         _ => Err(PreviewError::Unsupported(detect::format_of(data, policy))),
     }
 }
