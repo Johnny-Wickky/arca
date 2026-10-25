@@ -155,9 +155,12 @@ impl Font {
             .any(|k| n.contains(k));
         self.serif = !self.mono
             && !n.contains("sans")
-            && ["times", "georgia", "cambria", "garamond", "serif", "palatino", "antiqua", "century", "roman"]
-                .iter()
-                .any(|k| n.contains(k));
+            && [
+                "times", "georgia", "cambria", "garamond", "serif", "palatino", "antiqua",
+                "century", "roman",
+            ]
+            .iter()
+            .any(|k| n.contains(k));
     }
 }
 
@@ -321,8 +324,8 @@ impl Axis {
     /// Where item `i` starts, in points from the start of the axis.
     pub(super) fn start(&self, i: u32) -> f64 {
         let idx = self.runs.partition_point(|r| r.1 < i);
-        let mut pos = f64::from(i) * f64::from(self.default)
-            + self.before.get(idx).copied().unwrap_or(0.0);
+        let mut pos =
+            f64::from(i) * f64::from(self.default) + self.before.get(idx).copied().unwrap_or(0.0);
         if let Some(&(first, _, size)) = self.runs.get(idx)
             && first < i
         {
@@ -430,7 +433,11 @@ impl PageSetup {
 
     /// Sets the paper from a size in points; sizes that are not usable are ignored.
     pub(super) fn set_paper(&mut self, w: f64, h: f64) {
-        if w.is_finite() && h.is_finite() && (36.0..=14_400.0).contains(&w) && (36.0..=14_400.0).contains(&h) {
+        if w.is_finite()
+            && h.is_finite()
+            && (36.0..=14_400.0).contains(&w)
+            && (36.0..=14_400.0).contains(&h)
+        {
             self.paper = [f32_of(w.min(h)), f32_of(w.max(h))];
         }
     }
@@ -796,6 +803,9 @@ pub(super) struct Pages {
     pub(super) height: f32,
     pub(super) margins: [f32; 4],
     pub(super) scale: f64,
+    /// The room between the margins, in points on paper.
+    pub(super) avail_w: f64,
+    pub(super) avail_h: f64,
     pub(super) over_then_down: bool,
     /// First column and row of every band, and one past the last column and row covered.
     pub(super) col_starts: Vec<u32>,
@@ -860,6 +870,8 @@ pub(super) fn paginate(sheet: &Sheet) -> Pages {
         height: h,
         margins: [ml, mt, mr, mb],
         scale,
+        avail_w: aw,
+        avail_h: ah,
         over_then_down: s.over_then_down,
         col_starts,
         col_end,
@@ -874,11 +886,7 @@ impl Pages {
     /// The bands (column band, row band) of page `p`.
     pub(super) fn band_of(&self, p: usize) -> (usize, usize) {
         let (nc, nr) = (self.col_starts.len().max(1), self.row_starts.len().max(1));
-        if self.over_then_down {
-            (p % nc, p / nc)
-        } else {
-            (p / nr, p % nr)
-        }
+        if self.over_then_down { (p % nc, p / nc) } else { (p / nr, p % nr) }
     }
 }
 
@@ -892,7 +900,8 @@ mod tests {
 
     #[test]
     fn an_axis_adds_up_its_runs() {
-        let (a, hidden) = Axis::build(10.0, runs(&[(2, 3, Some(30.0), false), (5, 5, None, true)]), true, 10);
+        let (a, hidden) =
+            Axis::build(10.0, runs(&[(2, 3, Some(30.0), false), (5, 5, None, true)]), true, 10);
         assert_eq!(hidden, 1);
         assert!((a.start(0)).abs() < 1e-9);
         assert!((a.start(2) - 20.0).abs() < 1e-9);

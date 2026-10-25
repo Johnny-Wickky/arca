@@ -10,8 +10,8 @@ use arca_container::cfb::CompoundFile;
 
 use super::model::{
     Borders, Edge, Font, HAlign, Layout, MAX_COL_PT, MAX_COLS, MAX_MERGES, MAX_ROW_PT, MAX_ROWS,
-    MAX_RUNS, MAX_STYLE_ITEMS, MAX_STYLED, Merge, RawRun, Styles, VAlign, Wide, Xf,
-    opaque, paper_size, sane_font_size, sane_size,
+    MAX_RUNS, MAX_STYLE_ITEMS, MAX_STYLED, Merge, RawRun, Styles, VAlign, Wide, Xf, opaque,
+    paper_size, sane_font_size, sane_size,
 };
 use super::xlsx::{INDEXED, col_points};
 use super::{Meta, Picked, Read};
@@ -45,7 +45,6 @@ const RIGHTMARGIN: u16 = 0x0027;
 const TOPMARGIN: u16 = 0x0028;
 const BOTTOMMARGIN: u16 = 0x0029;
 const CF: u16 = 0x01B1;
-const MSODRAWING: u16 = 0x00EC;
 const OBJ: u16 = 0x005D;
 const BLANK: u16 = 0x0201;
 const NUMBER: u16 = 0x0203;
@@ -88,7 +87,12 @@ fn biff8_text(d: &[u8], at: usize, cch: usize, flags: u8) -> String {
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .take(cch)
-            .map(|c| u16::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0)]))
+            .map(|c| {
+                u16::from_le_bytes([
+                    c.first().copied().unwrap_or(0),
+                    c.get(1).copied().unwrap_or(0),
+                ])
+            })
             .collect();
         String::from_utf16_lossy(&units)
     } else {
@@ -115,7 +119,8 @@ fn read_globals(data: &[u8]) -> Result<Globals, PreviewError> {
         return Err(PreviewError::Malformed("the stream does not start with a BOF record".into()));
     };
     let version = u16_le(first, 0).unwrap_or(0);
-    let mut g = Globals { biff8: version >= 0x0600, palette: INDEXED.to_vec(), ..Globals::default() };
+    let mut g =
+        Globals { biff8: version >= 0x0600, palette: INDEXED.to_vec(), ..Globals::default() };
     if !g.biff8 && version != 0x0500 {
         return Err(PreviewError::Unsupported(crate::model::FileFormat::Xls));
     }
@@ -219,13 +224,13 @@ fn border_of(code: u16) -> Option<(f32, bool)> {
 }
 
 fn build_styles(g: &Globals) -> Styles {
-    let mut st = Styles::default();
     // Font index 4 does not exist in the file: the numbers above it are shifted.
-    st.fonts = g
+    let fonts = g
         .fonts
         .iter()
         .map(|(f, icv)| Font { color: opaque(colour(&g.palette, *icv)), ..*f })
         .collect();
+    let mut st = Styles { fonts, ..Styles::default() };
     if st.fonts.is_empty() {
         st.fonts.push(Font::default());
     }
@@ -304,7 +309,8 @@ fn build_styles(g: &Globals) -> Styles {
 }
 
 fn read_sheet(data: &[u8], offset: usize, biff8: bool) -> Layout {
-    let mut lay = Layout { gridlines: true, default_col: 48.0, default_row: 12.75, ..Layout::default() };
+    let mut lay =
+        Layout { gridlines: true, default_col: 48.0, default_row: 12.75, ..Layout::default() };
     let mut rd = Recs { data, pos: offset, seen: 0 };
     let Some((BOF, _)) = rd.next() else {
         lay.truncated = true;
@@ -346,7 +352,13 @@ fn read_sheet(data: &[u8], offset: usize, biff8: bool) -> Layout {
                         lay.cols.push(RawRun { first, last, size, hidden });
                         let xf = xf_at(6);
                         if xf != 0 && biff8 {
-                            lay.wide.push(Wide { r1: 0, r2: MAX_ROWS - 1, c1: first, c2: last, xf });
+                            lay.wide.push(Wide {
+                                r1: 0,
+                                r2: MAX_ROWS - 1,
+                                c1: first,
+                                c2: last,
+                                xf,
+                            });
                         }
                     }
                 }
@@ -381,7 +393,9 @@ fn read_sheet(data: &[u8], offset: usize, biff8: bool) -> Layout {
                     else {
                         break;
                     };
-                    if let Some(m) = Merge::new(u32::from(r1), u32::from(c1), u32::from(r2), u32::from(c2)) {
+                    if let Some(m) =
+                        Merge::new(u32::from(r1), u32::from(c1), u32::from(r2), u32::from(c2))
+                    {
                         if lay.merges.len() < MAX_MERGES {
                             lay.merges.push(m);
                         } else {
@@ -440,7 +454,7 @@ fn read_sheet(data: &[u8], offset: usize, biff8: bool) -> Layout {
                 }
             }
             CF => lay.notes.add("conditional formatting (not drawn)"),
-            MSODRAWING | OBJ => lay.notes.add("charts and drawings (not drawn)"),
+            OBJ => lay.notes.add("charts and drawings (not drawn)"),
             BLANK | NUMBER | LABEL | BOOLERR | FORMULA | LABELSST | RK | RSTRING => {
                 if biff8 && lay.styled.len() < MAX_STYLED {
                     let (row, col, xf) = (xf_at(0), xf_at(2), xf_at(4));

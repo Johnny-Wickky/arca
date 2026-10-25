@@ -6,9 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use super::model::{
-    HAlign, LINE, MAX_PAGES, Pages, Sheet, Styles, VAlign, PAD_X, PAD_Y, f32_of,
-};
+use super::model::{HAlign, LINE, MAX_PAGES, PAD_X, PAD_Y, Pages, Sheet, Styles, VAlign, f32_of};
 use super::text;
 use crate::model::CellKind;
 use crate::page::{MAX_PATH_NUMBERS, MAX_PRIMS, Prim, op, style};
@@ -126,7 +124,8 @@ fn joined(mut v: Vec<(i64, i64, i64)>) -> Vec<(i64, i64, i64)> {
 fn numeric_like(s: &str) -> bool {
     let t = s.trim();
     t.chars().any(|c| c.is_ascii_digit())
-        && t.chars().all(|c| c.is_ascii_digit() || " .,+-%()$\u{20AC}\u{A3}\u{A5}:/eE\u{a0}".contains(c))
+        && t.chars()
+            .all(|c| c.is_ascii_digit() || " .,+-%()$\u{20AC}\u{A3}\u{A5}:/eE\u{a0}".contains(c))
 }
 
 /// Paints page `p` of the sheet.
@@ -143,8 +142,9 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
     let scale = pages.scale;
     let x0 = sheet.cols.start(c1);
     let y0 = sheet.rows.start(r1);
-    let x_end = sheet.cols.start(c2.saturating_add(1));
-    let y_end = sheet.rows.start(r2.saturating_add(1));
+    // A column or row wider than the page is cut at the page.
+    let x_end = sheet.cols.start(c2.saturating_add(1)).min(x0 + pages.avail_w / scale);
+    let y_end = sheet.rows.start(r2.saturating_add(1)).min(y0 + pages.avail_h / scale);
     let px = |ux: f64| f64::from(ml) + (ux - x0) * scale;
     let py = |uy: f64| f64::from(mt) + (uy - y0) * scale;
 
@@ -227,7 +227,7 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
         let (left, right) = (px(x0), px(x_end));
         let mut last = f64::NAN;
         for c in c1..=c2.saturating_add(1) {
-            let x = px(sheet.cols.start(c));
+            let x = px(sheet.cols.start(c).min(x_end));
             if x != last {
                 segs.push([x, top, x, bottom]);
                 last = x;
@@ -235,7 +235,7 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
         }
         last = f64::NAN;
         for r in r1..=r2.saturating_add(1) {
-            let y = py(sheet.rows.start(r));
+            let y = py(sheet.rows.start(r).min(y_end));
             if y != last {
                 segs.push([left, y, right, y]);
                 last = y;
@@ -253,10 +253,8 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
     };
     for it in &items {
         let Some((a, b, c, d)) = rect_of(it) else { continue };
-        let own = it
-            .rec
-            .and_then(|i| sheet.recs.get(i))
-            .map_or(0, |r| styles.fill(styles.xf(r.xf).fill));
+        let own =
+            it.rec.and_then(|i| sheet.recs.get(i)).map_or(0, |r| styles.fill(styles.xf(r.xf).fill));
         let fill = if own >> 24 != 0 {
             own
         } else if it.merged {
@@ -267,7 +265,11 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
         };
         match pend {
             Some((pa, pb, pc, pd, pf))
-                if !it.merged && pf == fill && (pb - b).abs() < 0.01 && (pd - d).abs() < 0.01 && (pc - a).abs() < 0.01 =>
+                if !it.merged
+                    && pf == fill
+                    && (pb - b).abs() < 0.01
+                    && (pd - d).abs() < 0.01
+                    && (pc - a).abs() < 0.01 =>
             {
                 pend = Some((pa, pb, c, pd, pf));
             }
@@ -294,12 +296,7 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
         }
         let Some((a, b, c, d)) = rect_of(it) else { continue };
         // An edge outside the band belongs to the page that holds it.
-        let sides = [
-            (it.c1 >= c1, 0usize),
-            (it.r1 >= r1, 1),
-            (it.c2 <= c2, 2),
-            (it.r2 <= r2, 3),
-        ];
+        let sides = [(it.c1 >= c1, 0usize), (it.r1 >= r1, 1), (it.c2 <= c2, 2), (it.r2 <= r2, 3)];
         for (inside, k) in sides {
             let Some(e) = edges.get(k) else { continue };
             if !inside || e.width <= 0.0 {
@@ -365,7 +362,9 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
             HAlign::General => match rec.kind {
                 CellKind::Number | CellKind::Date => HAlign::Right,
                 CellKind::Bool | CellKind::Error => HAlign::Center,
-                CellKind::Calculated | CellKind::Formula if numeric_like(&rec.text) => HAlign::Right,
+                CellKind::Calculated | CellKind::Formula if numeric_like(&rec.text) => {
+                    HAlign::Right
+                }
                 _ => HAlign::Left,
             },
             other => other,
@@ -377,7 +376,10 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
         // wrap, also the empty cells next to it.
         let mut ax0 = ux0.max(x0);
         let mut ax1 = ux1.min(x_end);
-        if !xf.wrap && !fits && matches!(rec.kind, CellKind::Text | CellKind::Formula | CellKind::Calculated) {
+        if !xf.wrap
+            && !fits
+            && matches!(rec.kind, CellKind::Text | CellKind::Formula | CellKind::Calculated)
+        {
             if h != HAlign::Right {
                 let mut j = idx + 1;
                 let mut stop = x_end;
@@ -467,7 +469,8 @@ pub(super) fn paint(sheet: &Sheet, styles: &Styles, pages: &Pages, p: usize) -> 
         }
         for (tx, base, line) in placed {
             let cleaned = clean_text(&line.text, &mut counts);
-            let flat: String = cleaned.chars().map(|c| if matches!(c, '\n' | '\t') { ' ' } else { c }).collect();
+            let flat: String =
+                cleaned.chars().map(|c| if matches!(c, '\n' | '\t') { ' ' } else { c }).collect();
             if flat.is_empty() {
                 continue;
             }

@@ -119,7 +119,11 @@ const DEFAULT_COLORS: [u32; 12] = [
 ];
 
 fn channels(c: u32) -> [f64; 3] {
-    [f64::from((c >> 16) & 255) / 255.0, f64::from((c >> 8) & 255) / 255.0, f64::from(c & 255) / 255.0]
+    [
+        f64::from((c >> 16) & 255) / 255.0,
+        f64::from((c >> 8) & 255) / 255.0,
+        f64::from(c & 255) / 255.0,
+    ]
 }
 
 fn pack(rgb: [f64; 3], alpha: f64) -> u32 {
@@ -217,8 +221,7 @@ impl Look {
             "tx2" => "dk2",
             other => other,
         };
-        let mapped =
-            self.map.iter().find(|(k, _)| k == name).map_or(default, |(_, v)| v.as_str());
+        let mapped = self.map.iter().find(|(k, _)| k == name).map_or(default, |(_, v)| v.as_str());
         slot(mapped).and_then(|i| self.colors.get(i).copied())
     }
 
@@ -231,13 +234,10 @@ impl Look {
                 (c, f64::from(c >> 24) / 255.0)
             }
             "sysClr" => {
-                let c = n
-                    .attr("lastClr")
-                    .and_then(hex6)
-                    .or_else(|| match n.attr("val") {
-                        Some("window") => Some(0xFFFF_FFFF),
-                        _ => Some(0xFF00_0000),
-                    })?;
+                let c = n.attr("lastClr").and_then(hex6).or_else(|| match n.attr("val") {
+                    Some("window") => Some(0xFFFF_FFFF),
+                    _ => Some(0xFF00_0000),
+                })?;
                 (c, 1.0)
             }
             "prstClr" => (preset_color(n.attr("val")?)?, 1.0),
@@ -313,20 +313,20 @@ impl Look {
             "noFill" => Paint::None,
             "solidFill" => self.color_in(el, ph).map_or(Paint::Unset, Paint::Color),
             "gradFill" => {
-                cv.note("a gradient is drawn with its first colour");
+                cv.approximated("a gradient is drawn with its first colour");
                 el.child("gsLst")
                     .and_then(|l| l.child("gs"))
                     .and_then(|gs| self.color_in(gs, ph))
                     .map_or(Paint::Unset, Paint::Color)
             }
             "pattFill" => {
-                cv.note("a pattern is drawn with its foreground colour");
+                cv.approximated("a pattern is drawn with its foreground colour");
                 el.child("fgClr")
                     .and_then(|c| self.color_in(c, ph))
                     .map_or(Paint::Unset, Paint::Color)
             }
             "blipFill" => {
-                cv.note("a picture fill is not drawn");
+                cv.approximated("a picture fill is not drawn");
                 Paint::None
             }
             "grpFill" => Paint::Unset,
@@ -600,7 +600,8 @@ fn cust_geom(g: &Node, w: f64, h: f64, cv: &mut Canvas) -> Vec<GPath> {
                 "quadBezTo" => {
                     if let [a, b] = pts(cmd, &mut approx)[..] {
                         // Raise the quadratic curve to a cubic one.
-                        let c1 = (cur.0 + 2.0 / 3.0 * (a.0 - cur.0), cur.1 + 2.0 / 3.0 * (a.1 - cur.1));
+                        let c1 =
+                            (cur.0 + 2.0 / 3.0 * (a.0 - cur.0), cur.1 + 2.0 / 3.0 * (a.1 - cur.1));
                         let c2 = (b.0 + 2.0 / 3.0 * (a.0 - b.0), b.1 + 2.0 / 3.0 * (a.1 - b.1));
                         segs.push(Seg::C(c1.0, c1.1, c2.0, c2.1, b.0, b.1));
                         cur = b;
@@ -639,7 +640,7 @@ fn cust_geom(g: &Node, w: f64, h: f64, cv: &mut Canvas) -> Vec<GPath> {
         }
     }
     if approx {
-        cv.note("custom geometry uses formulas, which are not evaluated");
+        cv.approximated("custom geometry uses formulas, which are not evaluated");
     }
     out
 }
@@ -690,8 +691,11 @@ struct Pass<'a> {
 /// The kind of text style a placeholder takes from the master.
 fn ph_kind(ty: Option<&str>) -> &str {
     match ty.map(str::trim) {
-        None | Some("body" | "obj" | "subTitle" | "tbl" | "chart" | "dgm" | "media" | "clipArt"
-        | "pic" | "") => "body",
+        None
+        | Some(
+            "body" | "obj" | "subTitle" | "tbl" | "chart" | "dgm" | "media" | "clipArt" | "pic"
+            | "",
+        ) => "body",
         Some("title" | "ctrTitle") => "title",
         Some(other) => other,
     }
@@ -788,10 +792,8 @@ impl<'a> Pass<'a> {
                 let xf = read_xf(x);
                 let off = x.child("chOff");
                 let ext = x.child("chExt");
-                let (cox, coy) = (
-                    emu_pt(off.and_then(|o| o.attr("x"))),
-                    emu_pt(off.and_then(|o| o.attr("y"))),
-                );
+                let (cox, coy) =
+                    (emu_pt(off.and_then(|o| o.attr("x"))), emu_pt(off.and_then(|o| o.attr("y"))));
                 let (cw, ch) = (
                     emu_pt(ext.and_then(|o| o.attr("cx"))),
                     emu_pt(ext.and_then(|o| o.attr("cy"))),
@@ -846,20 +848,21 @@ impl<'a> Pass<'a> {
                 break;
             }
         }
-        if lns.iter().any(|l| {
-            l.child("prstDash").and_then(|d| d.attr("val")).is_some_and(|v| v != "solid")
-        }) {
-            self.cv.note("dashed lines are drawn solid");
+        if lns
+            .iter()
+            .any(|l| l.child("prstDash").and_then(|d| d.attr("val")).is_some_and(|v| v != "solid"))
+        {
+            self.cv.approximated("dashed lines are drawn solid");
         }
-        if paint == Paint::Unset || width.is_none() {
-            if let Some(r) = style.and_then(|s| s.child("lnRef")) {
-                let (w, p) = look.ref_line(r, self.cv);
-                if paint == Paint::Unset {
-                    paint = p;
-                }
-                if width.is_none() {
-                    width = w;
-                }
+        if (paint == Paint::Unset || width.is_none())
+            && let Some(r) = style.and_then(|s| s.child("lnRef"))
+        {
+            let (w, p) = look.ref_line(r, self.cv);
+            if paint == Paint::Unset {
+                paint = p;
+            }
+            if width.is_none() {
+                width = w;
             }
         }
         match paint {
@@ -884,7 +887,14 @@ impl<'a> Pass<'a> {
         self.cv.opacity = before;
     }
 
-    fn sp_inner(&mut self, sp: &Node, ph: Option<&Node>, parent: &Mat, layer: bool, connector: bool) {
+    fn sp_inner(
+        &mut self,
+        sp: &Node,
+        ph: Option<&Node>,
+        parent: &Mat,
+        layer: bool,
+        connector: bool,
+    ) {
         let look = self.look;
         let (lay, mas) = match ph {
             Some(p) if !layer => self.find_ph(p),
@@ -899,7 +909,7 @@ impl<'a> Pass<'a> {
         let style = sp.child("style");
         let Some(xf_node) = chain.iter().find_map(|p| p.child("xfrm")) else {
             if sp.child("txBody").is_some_and(|t| t.child("p").is_some()) {
-                self.cv.note("a placeholder has no position");
+                self.cv.approximated("a placeholder has no position");
             }
             return;
         };
@@ -918,12 +928,13 @@ impl<'a> Pass<'a> {
                 match presets::preset(prst, xf.w, xf.h, adj) {
                     Some(p) => {
                         if p.rough {
-                            self.cv.note("a preset shape is drawn as a rough likeness");
+                            self.cv.approximated("a preset shape is drawn as a rough likeness");
                         }
                         vec![GPath { segs: p.segs, fill: !p.open, stroke: true }]
                     }
                     None => {
-                        self.cv.note("a shape outside the preset table is drawn as its frame");
+                        self.cv
+                            .approximated("a shape outside the preset table is drawn as its frame");
                         outline_only = true;
                         vec![GPath { segs: presets::rect(xf.w, xf.h), fill: false, stroke: true }]
                     }
@@ -955,14 +966,13 @@ impl<'a> Pass<'a> {
         if tx.child("p").is_none() {
             return;
         }
-        let tx_chain: Vec<&Node> = [Some(sp), lay, mas]
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.child("txBody"))
-            .collect();
+        let tx_chain: Vec<&Node> =
+            [Some(sp), lay, mas].into_iter().flatten().filter_map(|s| s.child("txBody")).collect();
         let font_ref = style.and_then(|s| s.child("fontRef")).and_then(|r| look.color_in(r, None));
         let kind = match ph {
-            Some(p) => ph_kind(p.attr("type").or_else(|| lay.and_then(ph_of).and_then(|l| l.attr("type")))),
+            Some(p) => {
+                ph_kind(p.attr("type").or_else(|| lay.and_then(ph_of).and_then(|l| l.attr("type"))))
+            }
             None => "other",
         };
         let Some(tb) = self.text_body(&tx_chain, kind, font_ref, None) else { return };
@@ -1095,7 +1105,7 @@ impl<'a> Pass<'a> {
             _ => Anchor::Top,
         };
         if bp("vert").is_some_and(|v| v != "horz") {
-            self.cv.note("vertical text is drawn horizontally");
+            self.cv.approximated("vertical text is drawn horizontally");
         }
         let scale = bps
             .iter()
@@ -1275,7 +1285,8 @@ impl<'a> Pass<'a> {
                 if let Some(ln) = ln {
                     let mut scratch = Canvas::new();
                     if let Paint::Color(c) = look.paint_in(ln, None, &mut scratch) {
-                        r.border = Some((c, ln.attr("w").map_or(0.75, |w| emu_pt(Some(w)).max(0.25))));
+                        r.border =
+                            Some((c, ln.attr("w").map_or(0.75, |w| emu_pt(Some(w)).max(0.25))));
                     }
                 }
             }
@@ -1326,7 +1337,12 @@ impl<'a> Pass<'a> {
         let base = Mat::translate(xf.x, xf.y).then(*parent);
         let cols: Vec<f64> = tbl
             .child("tblGrid")
-            .map(|g| g.kids_named("gridCol").take(MAX_TABLE_LINE).map(|c| emu_pt(c.attr("w")).max(0.0)).collect())
+            .map(|g| {
+                g.kids_named("gridCol")
+                    .take(MAX_TABLE_LINE)
+                    .map(|c| emu_pt(c.attr("w")).max(0.0))
+                    .collect()
+            })
             .unwrap_or_default();
         let rows: Vec<&Node> = tbl.kids_named("tr").take(MAX_TABLE_LINE).collect();
         if cols.is_empty() || rows.is_empty() {
@@ -1376,18 +1392,24 @@ impl<'a> Pass<'a> {
         // (row, first column, columns spanned, rows spanned, node)
         let mut placed: Vec<(usize, usize, usize, usize, &Node)> = Vec::new();
         for (ri, row) in rows.iter().enumerate() {
-            let mut ci = 0usize;
-            for tc in row.kids_named("tc") {
+            for (ci, tc) in row.kids_named("tc").enumerate() {
                 if placed.len() >= MAX_TABLE_CELLS {
                     self.cv.full = true;
                     break;
                 }
-                let span = tc.attr("gridSpan").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_TABLE_LINE);
-                let rspan = tc.attr("rowSpan").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_TABLE_LINE);
+                let span = tc
+                    .attr("gridSpan")
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(1)
+                    .clamp(1, MAX_TABLE_LINE);
+                let rspan = tc
+                    .attr("rowSpan")
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(1)
+                    .clamp(1, MAX_TABLE_LINE);
                 if !(on(tc.attr("hMerge")) || on(tc.attr("vMerge"))) {
                     placed.push((ri, ci, span, rspan, tc));
                 }
-                ci += 1;
             }
         }
         let last_row = rows.len().saturating_sub(1);
@@ -1422,10 +1444,10 @@ impl<'a> Pass<'a> {
                     reg.over(r);
                 }
             }
-            if flag("bandCol") {
-                if let Some(r) = regions.get(if ci % 2 == 0 { "band1V" } else { "band2V" }) {
-                    reg.over(r);
-                }
+            if flag("bandCol")
+                && let Some(r) = regions.get(if ci % 2 == 0 { "band1V" } else { "band2V" })
+            {
+                reg.over(r);
             }
             for (on_flag, cond, name) in [
                 (flag("firstCol"), ci == 0, "firstCol"),
@@ -1433,7 +1455,10 @@ impl<'a> Pass<'a> {
                 (first_row, ri == 0, "firstRow"),
                 (flag("lastRow"), ri == last_row, "lastRow"),
             ] {
-                if on_flag && cond && let Some(r) = regions.get(name) {
+                if on_flag
+                    && cond
+                    && let Some(r) = regions.get(name)
+                {
                     reg.over(r);
                 }
             }
@@ -1492,7 +1517,19 @@ impl<'a> Pass<'a> {
                     *h = h.max(need.min(5_000.0));
                 }
             }
-            prepared.push(Prepared { ri, ci, span, rspan, tc, body, laid, fill, borders, mar, anchor });
+            prepared.push(Prepared {
+                ri,
+                ci,
+                span,
+                rspan,
+                tc,
+                body,
+                laid,
+                fill,
+                borders,
+                mar,
+                anchor,
+            });
         }
         let row_y: Vec<f64> = {
             let mut acc = 0.0;
@@ -1667,10 +1704,9 @@ fn build_look(parts: &Parts, pres: &Node) -> Look {
                 let Some(i) = slot(&k.name) else { continue };
                 let c = k.kids.iter().find_map(|c| match c.name.as_str() {
                     "srgbClr" => c.attr("val").and_then(hex6),
-                    "sysClr" => c
-                        .attr("lastClr")
-                        .and_then(hex6)
-                        .or(Some(if c.attr("val") == Some("window") { 0xFFFF_FFFF } else { 0xFF00_0000 })),
+                    "sysClr" => c.attr("lastClr").and_then(hex6).or(Some(
+                        if c.attr("val") == Some("window") { 0xFFFF_FFFF } else { 0xFF00_0000 },
+                    )),
                     _ => None,
                 });
                 if let (Some(c), Some(slot)) = (c, look.colors.get_mut(i)) {
@@ -1743,7 +1779,7 @@ fn slide_size(pres: &Node, cv: &mut Canvas) -> (f64, f64) {
     match (w, h) {
         (Some(w), Some(h)) => (w, h),
         _ => {
-            cv.note("the slide size is missing or not believable");
+            cv.approximated("the slide size is missing or not believable");
             DEFAULT_SIZE
         }
     }
@@ -1751,9 +1787,8 @@ fn slide_size(pres: &Node, cv: &mut Canvas) -> (f64, f64) {
 
 /// The background paint of the slide: its own, else the layout's, else the master's.
 fn background(look: &Look, parts: &Parts, cv: &mut Canvas) -> u32 {
-    for tree in [Some(&parts.slide), parts.layout.as_ref(), parts.master.as_ref()]
-        .into_iter()
-        .flatten()
+    for tree in
+        [Some(&parts.slide), parts.layout.as_ref(), parts.master.as_ref()].into_iter().flatten()
     {
         let Some(bg) = tree.root.child("cSld").and_then(|c| c.child("bg")) else { continue };
         if let Some(pr) = bg.child("bgPr") {
