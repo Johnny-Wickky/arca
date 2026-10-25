@@ -129,13 +129,13 @@ fn close(a: (f32, f32), b: (f32, f32)) -> bool {
 /// closed path of MoveTo and LineTo rows. `extra` adds cells.
 fn rect(extra: &str) -> String {
     format!(
-        r#"<Shape ID="1" Type="Shape"><Cell N="PinX" V="3"/><Cell N="PinY" V="4"/><Cell N="Width" V="2"/><Cell N="Height" V="1"/><Cell N="LocPinX" V="1"/><Cell N="LocPinY" V="0.5"/>{extra}
+        r##"<Shape ID="1" Type="Shape"><Cell N="PinX" V="3"/><Cell N="PinY" V="4"/><Cell N="Width" V="2"/><Cell N="Height" V="1"/><Cell N="LocPinX" V="1"/><Cell N="LocPinY" V="0.5"/>{extra}
         <Cell N="LinePattern" V="1"/><Cell N="LineWeight" V="0.02"/><Cell N="FillPattern" V="1"/><Cell N="FillForegnd" V="#ff0000"/>
         <Section N="Geometry" IX="0"><Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
           <Row T="LineTo" IX="2"><Cell N="X" V="2"/><Cell N="Y" V="0"/></Row>
           <Row T="LineTo" IX="3"><Cell N="X" V="2"/><Cell N="Y" V="1"/></Row>
           <Row T="LineTo" IX="4"><Cell N="X" V="0"/><Cell N="Y" V="1"/></Row>
-          <Row T="LineTo" IX="5"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row></Section></Shape>"#
+          <Row T="LineTo" IX="5"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row></Section></Shape>"##
     )
 }
 
@@ -337,9 +337,9 @@ fn an_instance_inherits_geometry_from_its_master_and_style_from_the_style_sheets
     let master = r#"<Shape ID="5" Type="Shape" LineStyle="3" FillStyle="3"><Cell N="Width" V="2"/><Cell N="Height" V="1"/>
         <Section N="Geometry" IX="0"><Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="LineTo" IX="2"><Cell N="X" V="2"/><Cell N="Y" V="0"/></Row><Row T="LineTo" IX="3"><Cell N="X" V="2"/><Cell N="Y" V="1"/></Row><Row T="LineTo" IX="4"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row></Section></Shape>"#;
     // Style 3 inherits the line colour from style 2 (via its LineStyle) and sets its own fill.
-    let styles = r#"<StyleSheets>
+    let styles = r##"<StyleSheets>
         <StyleSheet ID="2"><Cell N="LineColor" V="#00ff00"/><Cell N="LinePattern" V="1"/><Cell N="LineWeight" V="0.03"/></StyleSheet>
-        <StyleSheet ID="3" LineStyle="2" FillStyle="2"><Cell N="FillPattern" V="1"/><Cell N="FillForegnd" V="3"/></StyleSheet></StyleSheets>"#;
+        <StyleSheet ID="3" LineStyle="2" FillStyle="2"><Cell N="FillPattern" V="1"/><Cell N="FillForegnd" V="3"/></StyleSheet></StyleSheets>"##;
     let instance = r#"<Shape ID="1" Type="Shape" Master="7"><Cell N="PinX" V="3"/><Cell N="PinY" V="4"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/></Shape>"#;
     let data = drawing(&[page(instance)], styles, &[(7, master)]);
     let p = render(&data);
@@ -353,7 +353,7 @@ fn an_instance_inherits_geometry_from_its_master_and_style_from_the_style_sheets
     assert!((width - 2.16).abs() < 1e-4, "{width}");
 
     // The instance's own cells win.
-    let instance = r#"<Shape ID="1" Type="Shape" Master="7"><Cell N="PinX" V="3"/><Cell N="PinY" V="4"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="LineColor" V="#0000ff"/></Shape>"#;
+    let instance = r##"<Shape ID="1" Type="Shape" Master="7"><Cell N="PinX" V="3"/><Cell N="PinY" V="4"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="LineColor" V="#0000ff"/></Shape>"##;
     let p = render(&drawing(&[page(instance)], styles, &[(7, master)]));
     assert_eq!(paths(&p)[0].2, 0xFF00_00FF);
 }
@@ -385,7 +385,7 @@ fn master_and_style_cycles_end() {
 
 #[test]
 fn colour_indices_use_the_document_table_and_patterns_are_flat_colours() {
-    let doc = r#"<Colors><ColorEntry IX="0" RGB="#102030"/><ColorEntry IX="1" RGB="#405060"/></Colors>"#;
+    let doc = r##"<Colors><ColorEntry IX="0" RGB="#102030"/><ColorEntry IX="1" RGB="#405060"/></Colors>"##;
     let shape = rect("").replace(r##"<Cell N="FillForegnd" V="#ff0000"/>"##, r#"<Cell N="FillForegnd" V="1"/><Cell N="FillPattern" V="5"/><Cell N="FillBkgnd" V="0"/>"#);
     let r = render_visio_page_noted(&drawing(&[page(&shape)], doc, &[]), 0, &PreviewPolicy::default()).unwrap();
     // Pattern 5 is a hatch: drawn as the mix of the two colours, and reported.
