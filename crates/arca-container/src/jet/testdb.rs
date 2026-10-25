@@ -133,6 +133,10 @@ pub(crate) enum Cv {
     Memo(String),
     /// A memo or object whose bytes follow the header inside the row.
     Long(Vec<u8>),
+    /// A memo or object stored as a chain of rows in pages of their own (any length).
+    Big(Vec<u8>),
+    /// A memo or object whose chain of rows leads back to its first row (a hostile file).
+    Loop,
 }
 
 /// An index of a table.
@@ -274,7 +278,15 @@ impl TestDb {
         let mut cur: Vec<Vec<u8>> = Vec::new();
         let mut groups: Vec<Vec<Vec<u8>>> = Vec::new();
         for r in rows {
-            let bytes = self.row_bytes(cols, r, fixed_len, &fixed_at);
+            let r: Vec<Cv> = r
+                .iter()
+                .map(|c| match c {
+                    Cv::Big(b) => Cv::Raw(self.store_big(b, false)),
+                    Cv::Loop => Cv::Raw(self.store_big(&[7; 100], true)),
+                    other => other.clone(),
+                })
+                .collect();
+            let bytes = self.row_bytes(cols, &r, fixed_len, &fixed_at);
             assert!(bytes.len() + 2 + 14 <= PAGE, "row of {} bytes", bytes.len());
             if used + 2 + bytes.len() > PAGE {
                 groups.push(std::mem::take(&mut cur));
@@ -384,6 +396,36 @@ impl TestDb {
         tdef
     }
 
+    /// Stores `bytes` as a chain of one-row pages and returns the 12-byte pointer that goes in
+    /// the table's row. With `cyclic` the last chunk points back to the first one.
+    fn store_big(&mut self, bytes: &[u8], cyclic: bool) -> Vec<u8> {
+        const CHUNK: usize = 4000;
+        let chunks: Vec<&[u8]> = bytes.chunks(CHUNK).collect();
+        let pages: Vec<usize> = chunks.iter().map(|_| self.alloc()).collect();
+        for (i, c) in chunks.iter().enumerate() {
+            let next = match pages.get(i + 1) {
+                Some(p) => *p,
+                None if cyclic => pages[0],
+                None => 0,
+            };
+            let mut row = vec![0u8]; // the next row is row 0 of the next page
+            row.extend_from_slice(&(next as u32).to_le_bytes()[..3]);
+            row.extend_from_slice(c);
+            let page = &mut self.pages[pages[i]];
+            page[0] = 1;
+            page[12..14].copy_from_slice(&le16(1));
+            let start = PAGE - row.len();
+            page[14..16].copy_from_slice(&le16(start));
+            page[start..].copy_from_slice(&row);
+        }
+        let declared = if cyclic { 1 << 20 } else { bytes.len() as u32 };
+        let mut ptr = (declared & 0x3FFF_FFFF).to_le_bytes().to_vec();
+        ptr.push(0);
+        ptr.extend_from_slice(&(pages.first().copied().unwrap_or(0) as u32).to_le_bytes()[..3]);
+        ptr.extend([0u8; 4]);
+        ptr
+    }
+
     fn row_bytes(
         &self,
         cols: &[ColSpec],
@@ -422,6 +464,7 @@ impl TestDb {
                     v.extend(text);
                     Some(v)
                 }
+                (Cv::Big(_) | Cv::Loop, _) => None,
                 (Cv::Long(b), _) => {
                     let mut v = long_header(b.len());
                     v.extend(b);

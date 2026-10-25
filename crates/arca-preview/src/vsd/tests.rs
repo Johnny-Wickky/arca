@@ -130,8 +130,28 @@ fn name_entry(version: u16, s: &str) -> Vec<u8> {
     e
 }
 
-/// A drawing with the given pages (each a chunk stream) and names.
-fn drawing(version: u16, pages: &[Vec<u8>], names: &[&str]) -> Vec<u8> {
+/// A stream that hangs off the trailer: pointer type, content, format.
+struct Extra {
+    ty: i32,
+    data: Vec<u8>,
+    format: u16,
+}
+
+/// A page of the drawing: its chunk stream and whether it is a foreground page.
+struct TestPage {
+    data: Vec<u8>,
+    foreground: bool,
+}
+
+/// A drawing with the given pages (each a chunk stream), names, extra streams of the trailer and
+/// stencils (each a chunk stream of one stencil page).
+fn drawing_ex(
+    version: u16,
+    pages: &[TestPage],
+    names: &[&str],
+    extras: &[Extra],
+    stencils: &[Vec<u8>],
+) -> Vec<u8> {
     let mut doc = vec![0u8; 0x24 + 18];
     doc[..20].copy_from_slice(b"Visio (TM) Drawing\r\n");
     doc[0x1a..0x1c].copy_from_slice(&version.to_le_bytes());
@@ -148,16 +168,31 @@ fn drawing(version: u16, pages: &[Vec<u8>], names: &[&str]) -> Vec<u8> {
     }
     let (at, len) = put(&mut doc, &container(&name_ptrs));
     let names_ptr = pointer(0x32, at, len, 0x54);
-    // Pages.
+    // Pages (0xd4 and 0xd5: chunk streams; bit 0 marks a foreground page).
     let mut page_ptrs = Vec::new();
     for p in pages {
-        let (at, len) = put(&mut doc, p);
-        page_ptrs.push(pointer(0x15, at, len, 0xd4));
+        let (at, len) = put(&mut doc, &p.data);
+        let format = if p.foreground { 0xd5 } else { 0xd4 };
+        page_ptrs.push(pointer(0x15, at, len, format));
     }
     let (at, len) = put(&mut doc, &container(&page_ptrs));
     let pages_ptr = pointer(0x27, at, len, 0x54);
+    let mut top = vec![names_ptr, pages_ptr];
+    for e in extras {
+        let (at, len) = put(&mut doc, &e.data);
+        top.push(pointer(e.ty, at, len, e.format));
+    }
+    if !stencils.is_empty() {
+        let mut ptrs = Vec::new();
+        for s in stencils {
+            let (at, len) = put(&mut doc, s);
+            ptrs.push(pointer(0x1e, at, len, 0xd4));
+        }
+        let (at, len) = put(&mut doc, &container(&ptrs));
+        top.push(pointer(0x1d, at, len, 0x54));
+    }
     // The trailer.
-    let (at, len) = put(&mut doc, &container(&[names_ptr, pages_ptr]));
+    let (at, len) = put(&mut doc, &container(&top));
     let trailer = pointer(20, at, len, 0x50);
     doc[0x24..0x24 + 18].copy_from_slice(&trailer);
     let size = u32::try_from(doc.len()).unwrap();
@@ -166,6 +201,13 @@ fn drawing(version: u16, pages: &[Vec<u8>], names: &[&str]) -> Vec<u8> {
     let mut w = CfbWriter::new();
     w.add_stream("VisioDocument", doc).unwrap();
     w.finish().unwrap()
+}
+
+/// A drawing with the given pages (each a chunk stream) and names.
+fn drawing(version: u16, pages: &[Vec<u8>], names: &[&str]) -> Vec<u8> {
+    let pages: Vec<TestPage> =
+        pages.iter().map(|p| TestPage { data: p.clone(), foreground: false }).collect();
+    drawing_ex(version, &pages, names, &[], &[])
 }
 
 fn run(data: &[u8]) -> Result<Preview, PreviewError> {

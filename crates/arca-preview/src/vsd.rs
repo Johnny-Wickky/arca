@@ -338,6 +338,8 @@ struct Walk<'v, 'd> {
     /// Pages are noted, not read.
     defer: bool,
     pages: Vec<PageRef>,
+    /// The first name table met: pages in containers without one are named from it.
+    fallback: Vec<String>,
 }
 
 /// The text of a `NAME2` entry: `[level][text]`, or `[size][level][text]` when the size is that of
@@ -394,6 +396,10 @@ impl Walk<'_, '_> {
                 }
             });
         }
+        if self.fallback.is_empty() {
+            self.fallback.clone_from(&listed);
+        }
+        let fallback = self.fallback.clone();
         let mut done: BTreeSet<u32> = BTreeSet::new();
         let mut visit = |w: &mut Self, idx: u32, p: Pointer, k: usize| {
             if p.ty == POINTER_NAMES
@@ -408,7 +414,11 @@ impl Walk<'_, '_> {
             let name = element
                 .get(&idx)
                 .cloned()
-                .or_else(|| (p.ty == POINTER_PAGE).then(|| listed.get(k + 2).cloned()).flatten());
+                .or_else(|| {
+                    (p.ty == POINTER_PAGE)
+                        .then(|| listed.get(k + 2).or_else(|| fallback.get(k + 2)).cloned())
+                        .flatten()
+                });
             w.stream(p, idx, level + 1, name.as_deref(), f);
         };
         let by_index: BTreeMap<u32, Pointer> = ptrs.iter().map(|(i, p)| (*i, *p)).collect();
@@ -574,7 +584,7 @@ pub(crate) fn read_doc(
         .ok_or_else(|| PreviewError::Malformed("the trailer is unreadable".into()))?;
 
     let mut reader = read::Reader::new(version);
-    let mut walk = Walk { v: &mut v, seen: BTreeSet::new(), defer: true, pages: Vec::new() };
+    let mut walk = Walk { v: &mut v, seen: BTreeSet::new(), defer: true, pages: Vec::new(), fallback: Vec::new() };
     walk.seen.insert(trailer.offset);
     walk.container(trailer_content.body(), 0, &mut |ev| reader.event(&ev));
     let refs = std::mem::take(&mut walk.pages);

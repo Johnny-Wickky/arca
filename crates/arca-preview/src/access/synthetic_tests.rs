@@ -34,7 +34,13 @@ fn opt_text(s: Option<&str>) -> Cv {
 fn q_row(id: i64, n: usize, r: &Qr) -> Vec<Cv> {
     vec![
         int(i64::from(r.0)),
-        r.1.map_or(Cv::Null, |e| Cv::Memo(e.to_owned())),
+        r.1.map_or(Cv::Null, |e| {
+            if e.len() > 1500 {
+                Cv::Big(e.encode_utf16().flat_map(u16::to_le_bytes).collect())
+            } else {
+                Cv::Memo(e.to_owned())
+            }
+        }),
         r.2.map_or(Cv::Null, |f| int(i64::from(f))),
         r.3.map_or(Cv::Null, |f| int(i64::from(f))),
         opt_text(r.4),
@@ -201,7 +207,7 @@ fn a_query_that_does_not_fit_is_shown_as_its_stored_rows() {
     let lines = section_lines(&p, "Query: qOdd");
     assert_eq!(lines[0], "Attribute|Flag|Extra|Name1|Name2|Expression");
     assert_eq!(lines.len(), 1 + 5);
-    assert!(lines.contains(&"8|||||b = 2".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"8|b = 2".to_owned()), "{lines:?}");
     assert!(
         p.notices.iter().any(|n| n.kind == NoticeKind::Unsupported && n.detail.contains("stored rows"))
     );
