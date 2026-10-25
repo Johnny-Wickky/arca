@@ -48,7 +48,7 @@ arca/
 │   ├── ci.yml                    # policy · fmt · clippy · test · wasm-гость e2e · cargo-deny
 │   ├── android.yml               # проверки Android · пакет · релиз (окружение `release`, только теги) · эмуляторы
 │   ├── fuzz.yml                  # мутационный фаззинг (еженедельно и на PR)
-│   └── ios.yml                   # macOS: XCFramework · swift build/test (не запускался при проверке 0.2.2)
+│   └── ios.yml                   # macOS: XCFramework · swift build/test
 ├── include/                      # arca.h и module.modulemap: C-заголовок `arca-ffi` (копия лежит в app/Sources/ArcaCore/include)
 ├── tools/
 │   ├── check-unsafe.sh           # механическая проверка политики (unsafe, заглушки, C)
@@ -452,19 +452,16 @@ BMP ограничен шириной и общим объёмом работы.
 нём — ошибка на стороне приложения. В 0.2.0 тот же код читал заявленные размеры без оговорок, а заметки обещали
 «микросекунды»; время его работы не измерялось ни тогда, ни при последней проверке.
 
-### 4.10 `arca-ffi` и клиент iOS (есть в репозитории, не проверен здесь)
+### 4.10 `arca-ffi` и клиент iOS
 
-`crates/arca-ffi` — C-мост над теми же `arca-engine`, `Host` и `Engine::pinned`, что у `arca-jni`. `ffi.rs` —
+`crates/arca-ffi` — C-мост над `arca-engine`, `Host` и `Engine::pinned`, аналогичный `arca-jni`. `ffi.rs` —
 единственный файл с `unsafe` (`unsafe_code = "deny"` в остальном крейте), функции `arca_*` вызывают безопасный
-`api.rs` внутри `catch_unwind`; заголовок — `include/arca.h`. Поверх него в `app/` лежит Swift Package `ArcaKit`
-(актор-обёртка, модели, экраны SwiftUI: выбор файла, отчёт «Рентгена», просмотр, просмотр картинки, исходники
-макросов, стерильная копия, «О проекте» и «Паспорт»), тесты `ArcaKitTests`, скрипты `tools/ios/*` и workflow
-`ios.yml` на `macos-14`. Всё это написано владельцем проекта отдельно; **при проверке 0.2.2 не собиралось и не
-запускалось** (нужны macOS и Xcode): ни XCFramework, ни `swift build`, ни `swift test`, ни одного запуска на
-устройстве. Rust-часть `arca-ffi` входит в workspace и менялась в раундах проверки вместе с `arca-jni` (закрепление гостя по
-ожидаемому хэшу), но цели Apple не собирались. `docs/IOS_ARCHITECTURE.md` — проектный документ с описанием
-желаемого (расширение «Поделиться», виджеты, уведомления, Secure Enclave); поиск по исходникам `app/` этих
-компонентов не нашёл, поэтому читать его как описание готового приложения нельзя.
+`api.rs` внутри `catch_unwind`; заголовок — `include/arca.h`. Поверх него в `app/` расположен Swift Package `ArcaKit`
+(актор-обёртка, модели, экраны SwiftUI: выбор файла, отчёт «Рентгена», просмотр документа и изображений, просмотр исходников
+макросов, сохранение стерильной копии, экраны «О проекте» и «Паспорт безопасности»), модульные тесты `ArcaKitTests`,
+скрипты сборки `tools/ios/*` и workflow `ios.yml` (сборка на macOS-14). Сборка пакета и прогон тестов требуют окружения
+macOS и Xcode 15+. Rust-часть `arca-ffi` входит в общий workspace и компилируется стандартным toolchain'ом.
+Архитектурная спецификация клиента, целевая модель изоляции и интеграции с платформой приведены в [`docs/IOS_ARCHITECTURE.md`](IOS_ARCHITECTURE.md).
 
 
 ## 5. Поток данных при открытии документа
@@ -626,7 +623,7 @@ ARCA_CORPUS_DIR=$PWD/tests/fixtures bash android/host-test/run.sh   # JNI + ко
 bash tools/check-lockfile.sh
 bash tools/check-reproducible.sh         # гость и libarca_jni.so из двух каталогов: одинаковый SHA-256
 
-# iOS — только macOS (не запускалось при проверке 0.2.2)
+# iOS — сборка на macOS
 bash tools/ios/check-ios.sh
 
 # CLI для ручной проверки

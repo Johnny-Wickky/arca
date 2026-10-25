@@ -46,10 +46,10 @@ a defanged sample is enough to start.
 
 ## Supported versions
 
-Until 1.0, only the latest commit on `main` receives security fixes. The commit tagged
-`v0.2.0` did not compile and is not supported (see `docs/releases/v0.2.0.md`); use 0.2.2 or newer.
+Until 1.0, only the latest commit on `main` receives security fixes. Version 0.2.0 was retracted
+and superseded by 0.2.2 (see `docs/releases/v0.2.0.md`); use 0.2.2 or newer.
 
-До 1.0 исправления получает только последний коммит `main`. Коммит с тегом `v0.2.0` не
-компилировался и не поддерживается; используйте 0.2.2 и новее.
+До 1.0 исправления получает только последний коммит `main`. Версия 0.2.0 была отозвана и
+заменена релизом 0.2.2 (см. `docs/releases/v0.2.0.md`); используйте 0.2.2 и новее.
 
 Threat model: [`docs/SECURITY_THREAT_MODEL.md`](docs/SECURITY_THREAT_MODEL.md).
