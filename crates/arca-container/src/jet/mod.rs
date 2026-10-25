@@ -43,6 +43,8 @@ pub mod ty {
     pub const DOUBLE: u8 = 0x07;
     /// Date/time: a 64-bit float counting days since 1899-12-30.
     pub const DATE: u8 = 0x08;
+    /// Binary data (up to 255 bytes), variable length.
+    pub const BINARY: u8 = 0x09;
     /// Short text (up to 255 characters), variable length.
     pub const TEXT: u8 = 0x0A;
     /// Embedded OLE object or binary blob, variable length.
