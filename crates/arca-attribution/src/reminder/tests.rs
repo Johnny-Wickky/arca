@@ -307,7 +307,7 @@ fn texts_with_numbers_need_those_numbers() {
 fn picking_walks_forward_and_wraps() {
     // With every counter positive, every text is usable in turn.
     let mut seq = 0u32;
-    let mut seen = vec![false; ITEM_COUNT];
+    let mut seen = [false; ITEM_COUNT];
     for _ in 0..ITEM_COUNT {
         let p = pick_item(seq, 1, 1);
         assert_eq!(p.index, usize::try_from(seq).unwrap() % ITEM_COUNT);

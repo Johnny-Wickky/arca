@@ -165,7 +165,7 @@ fn strings_of(body: &[u8], version: u16) -> Vec<String> {
             || (0x3040..0xa000).contains(&u)
     };
     let mut cur = String::new();
-    let mut flush = |cur: &mut String, out: &mut Vec<String>| {
+    let flush = |cur: &mut String, out: &mut Vec<String>| {
         let ascii = cur.chars().all(|c| (c as u32) < 0x250);
         let min = if ascii { 3 } else { 2 };
         if cur.chars().count() >= min && out.len() < 16 {
@@ -448,7 +448,6 @@ impl Reader {
             0xa8 => {
                 if self.scope == Scope::Page && self.page.layers.len() < 1_024 {
                     let b = c.body;
-                    let colour = b.get(8).copied().unwrap_or(0);
                     let at = 13;
                     let visible = b.get(at + 1).copied().unwrap_or(1) != 0;
                     self.page.layers.push(Layer { ix: c.id, visible });
@@ -1040,7 +1039,7 @@ fn typed_nurbs(b: &[u8], start: usize, end: usize) -> Option<Vec<f64>> {
         }
         let x = typed(b, &mut at)?;
         let y = typed(b, &mut at)?;
-        let mut optional = |at: &mut usize| match b.get(*at) {
+        let optional = |at: &mut usize| match b.get(*at) {
             Some(0x20 | 0x62) => typed(b, at),
             _ => Some(0.0),
         };

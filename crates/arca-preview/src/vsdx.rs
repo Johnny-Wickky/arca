@@ -1,7 +1,8 @@
 //! Visio drawings (VSDX, VSDM and the template/stencil variants).
 //!
-//! A Visio page is geometry, and geometry is not drawn here. What a reader needs from a diagram
-//! is shown instead: the text of every shape, in reading order (top to bottom, left to right) and
+//! The *reading view* of a drawing; the pages themselves (shapes, geometry, masters, styles) are
+//! drawn by `visio_draw`, which reads the same package into a shape model. The reading view shows
+//! what a reader needs from a diagram as text: the text of every shape, in reading order (top to bottom, left to right) and
 //! with the groups kept together, the shape data ("Cost: 12"), the places shapes link to, the
 //! connections between shapes ("Start → Check") and a marker for every picture or embedded
 //! object. Nothing is executed or fetched: macros, add-ons, linked files and external data
@@ -460,6 +461,10 @@ fn emit_connections(
     }
 }
 
+fn has_picture(shapes: &[Shape]) -> bool {
+    shapes.iter().any(|s| s.image.is_some() || has_picture(&s.kids))
+}
+
 /// Extracts a Visio drawing.
 pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), PreviewError> {
     let main = pkg
@@ -480,6 +485,7 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         pages.pages.truncate(MAX_PAGES);
         sink.truncated("pages");
     }
+    let mut pictures = false;
     for page in &pages.pages {
         if sink.is_full() {
             break;
@@ -520,6 +526,7 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         let title =
             if page.background { format!("{} (background)", page.name) } else { page.name.clone() };
         let Some(sec) = sink.open_section(SectionKind::Page, &title, false) else { break };
+        pictures |= has_picture(&h.top);
         reading_order(&mut h.top);
         let mut labels = BTreeMap::new();
         collect_labels(&h.top, &mut labels, 0);
@@ -528,7 +535,9 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
         sink.drop_if_empty(sec);
     }
-    sink.note(NoticeKind::Unsupported, "drawing geometry, stencils and pictures");
+    if pictures {
+        sink.note(NoticeKind::Unsupported, "pictures and embedded objects");
+    }
     Ok(())
 }
 

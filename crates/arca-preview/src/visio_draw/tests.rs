@@ -399,7 +399,7 @@ fn colour_indices_use_the_document_table_and_patterns_are_flat_colours() {
 #[test]
 fn text_is_drawn_with_size_style_colour_and_alignment() {
     let chars = r##"<Section N="Character"><Row IX="0"><Cell N="Size" V="0.16666666666666666"/><Cell N="Style" V="1"/><Cell N="Color" V="#0000ff"/></Row></Section>"##;
-    let shape = rect(&format!("{chars}")).replace("</Shape>", r#"<Text><cp IX="0"/>Hi</Text></Shape>"#);
+    let shape = rect(chars).replace("</Shape>", r#"<Text><cp IX="0"/>Hi</Text></Shape>"#);
     let p = render(&drawing(&[page(&shape)], "", &[]));
     let texts: Vec<_> = p
         .prims
