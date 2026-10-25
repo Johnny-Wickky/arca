@@ -20,6 +20,9 @@ use crate::{PreviewError, PreviewPolicy};
 const MAX_HOPS: usize = 16;
 /// Largest object number accepted (guards table allocations).
 const MAX_OBJ_NUM: u32 = 16_000_000;
+/// Cross-reference entries kept. A table entry costs at least six bytes of file, so a hostile
+/// file can ask for millions; no real document has this many objects.
+const MAX_XREF_ENTRIES: usize = 2_000_000;
 /// Most cross-reference sections followed.
 const MAX_SECTIONS: usize = 1_024;
 /// Cap on the decoded size of an object stream or xref stream.
@@ -98,7 +101,8 @@ impl<'a> PdfFile<'a> {
             cache: HashMap::new(),
             loading: HashSet::new(),
             objstms: HashMap::new(),
-            budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20),
+            budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20)
+                .with_original_input(u64::try_from(data.len()).unwrap_or(u64::MAX)),
             rebuilt: false,
             crypt: None,
             skipped: Vec::new(),
@@ -197,13 +201,27 @@ impl<'a> PdfFile<'a> {
         (!self.xref.is_empty()).then_some(())
     }
 
+    /// `true` if one more entry may be stored; if not, says so once in the skipped list.
+    fn room_for_entry(&mut self) -> bool {
+        if self.xref.len() < MAX_XREF_ENTRIES {
+            return true;
+        }
+        let note = "PDF objects beyond the first 2000000";
+        if !self.skipped.iter().any(|s| s == note) {
+            self.skipped.push(note.to_owned());
+        }
+        false
+    }
+
     fn insert_entry(&mut self, num: u32, e: Entry, override_free: bool) {
         if num > MAX_OBJ_NUM {
             return;
         }
         match self.xref.get(&num) {
             None => {
-                self.xref.insert(num, e);
+                if self.room_for_entry() {
+                    self.xref.insert(num, e);
+                }
             }
             Some(Entry::Free) if override_free => {
                 self.xref.insert(num, e);
@@ -338,6 +356,9 @@ impl<'a> PdfFile<'a> {
                 continue;
             }
             let rel = start.saturating_sub(self.base);
+            if !self.xref.contains_key(&num) && !self.room_for_entry() {
+                continue;
+            }
             self.xref.insert(num, Entry::At(rel));
             let window = data.get(p + 3..(p + 3 + 400).min(data.len())).unwrap_or(&[]);
             if find(window, b"/ObjStm", 0).is_some() {
@@ -387,7 +408,10 @@ impl<'a> PdfFile<'a> {
                     None | Some(Entry::Free | Entry::InStm(..)) => true,
                     Some(Entry::At(o)) => *o < rel,
                 };
-                if replace && n <= MAX_OBJ_NUM {
+                if replace
+                    && n <= MAX_OBJ_NUM
+                    && (self.xref.contains_key(&n) || self.room_for_entry())
+                {
                     self.xref.insert(n, Entry::InStm(num, idx));
                 }
             }

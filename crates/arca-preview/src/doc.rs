@@ -35,6 +35,9 @@ const MAX_CP: usize = 16 << 20;
 const MAX_PIECES: usize = 1 << 20;
 /// Property runs of each kind.
 const MAX_RUNS: usize = 4 << 20;
+/// Pieces visited, over the whole document, while mapping property runs onto characters. One
+/// run may legitimately span many pieces; a hostile file declares many runs over many pieces.
+const MAX_PIECE_VISITS: usize = 8 << 20;
 /// Formatted disk pages inspected per kind.
 const MAX_PAGES: usize = 1 << 19;
 /// Styles read from the style sheet.
@@ -373,19 +376,30 @@ impl FcMap {
         Self { v }
     }
 
-    /// Calls `f(cp0, cp1)` for each character range backed by file bytes `fc0..fc1`.
-    fn each(&self, fc0: usize, fc1: usize, mut f: impl FnMut(u32, u32)) {
+    /// Calls `f(cp0, cp1)` for each character range backed by file bytes `fc0..fc1`, however
+    /// many pieces that is. Every piece visited is charged to `visits`; returns `false` when it
+    /// ran out, in which case the ranges after that point were not reported.
+    fn each(
+        &self,
+        fc0: usize,
+        fc1: usize,
+        visits: &mut usize,
+        mut f: impl FnMut(u32, u32),
+    ) -> bool {
         if fc0 >= fc1 {
-            return;
+            return true;
         }
         let mut i = self.v.partition_point(|e| e.0 <= fc0).saturating_sub(1);
-        // A few steps back cover overlapping pieces of damaged files; the walk is bounded.
+        // A few steps back cover overlapping pieces of damaged files.
         i = i.saturating_sub(3);
-        let mut steps = 0usize;
         while let Some(&(p0, p1, cp0, wide)) = self.v.get(i) {
-            if p0 >= fc1 || steps > 128 {
+            if p0 >= fc1 {
                 break;
             }
+            if *visits == 0 {
+                return false;
+            }
+            *visits -= 1;
             let a = fc0.max(p0);
             let b = fc1.min(p1);
             if a < b {
@@ -397,8 +411,8 @@ impl FcMap {
                 }
             }
             i += 1;
-            steps += 1;
         }
+        true
     }
 }
 
@@ -673,8 +687,16 @@ fn fkp_pages(table: &[u8], fc: usize, lcb: usize) -> Vec<usize> {
         .collect()
 }
 
-fn collect_chp(wd: &[u8], table: &[u8], fib: &Fib, map: &FcMap) -> RunSet<Chp> {
-    let Some((fc, lcb)) = fib.pair(pair::PLCF_BTE_CHPX) else { return RunSet::empty() };
+/// Character formatting runs, and whether all of them were collected (`false`: a limit was hit
+/// and some text may carry formatting that was not applied, hidden or deleted text included).
+fn collect_chp(
+    wd: &[u8],
+    table: &[u8],
+    fib: &Fib,
+    map: &FcMap,
+    visits: &mut usize,
+) -> (RunSet<Chp>, bool) {
+    let Some((fc, lcb)) = fib.pair(pair::PLCF_BTE_CHPX) else { return (RunSet::empty(), true) };
     let mut out: Vec<(u32, u32, Chp)> = Vec::new();
     for pn in fkp_pages(table, fc, lcb) {
         let Some(page) = pn.checked_mul(PAGE).and_then(|off| slice(wd, off, PAGE)) else {
@@ -700,17 +722,24 @@ fn collect_chp(wd: &[u8], table: &[u8], fib: &Fib, map: &FcMap) -> RunSet<Chp> {
             if chp == Chp::default() {
                 continue;
             }
-            map.each(usz(f0), usz(f1), |c0, c1| out.push((c0, c1, chp)));
-            if out.len() > MAX_RUNS {
-                return RunSet::build(out);
+            let walked = map.each(usz(f0), usz(f1), visits, |c0, c1| out.push((c0, c1, chp)));
+            if !walked || out.len() > MAX_RUNS {
+                return (RunSet::build(out), false);
             }
         }
     }
-    RunSet::build(out)
+    (RunSet::build(out), true)
 }
 
-fn collect_pap(wd: &[u8], table: &[u8], fib: &Fib, map: &FcMap) -> RunSet<Pap> {
-    let Some((fc, lcb)) = fib.pair(pair::PLCF_BTE_PAPX) else { return RunSet::empty() };
+/// Paragraph formatting runs; see [`collect_chp`].
+fn collect_pap(
+    wd: &[u8],
+    table: &[u8],
+    fib: &Fib,
+    map: &FcMap,
+    visits: &mut usize,
+) -> (RunSet<Pap>, bool) {
+    let Some((fc, lcb)) = fib.pair(pair::PLCF_BTE_PAPX) else { return (RunSet::empty(), true) };
     let mut out: Vec<(u32, u32, Pap)> = Vec::new();
     for pn in fkp_pages(table, fc, lcb) {
         let Some(page) = pn.checked_mul(PAGE).and_then(|off| slice(wd, off, PAGE)) else {
@@ -744,13 +773,13 @@ fn collect_pap(wd: &[u8], table: &[u8], fib: &Fib, map: &FcMap) -> RunSet<Pap> {
             if pap == Pap::default() {
                 continue;
             }
-            map.each(usz(f0), usz(f1), |c0, c1| out.push((c0, c1, pap)));
-            if out.len() > MAX_RUNS {
-                return RunSet::build(out);
+            let walked = map.each(usz(f0), usz(f1), visits, |c0, c1| out.push((c0, c1, pap)));
+            if !walked || out.len() > MAX_RUNS {
+                return (RunSet::build(out), false);
             }
         }
     }
-    RunSet::build(out)
+    (RunSet::build(out), true)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1552,12 +1581,16 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
     // Properties.
     let (chp, pap, styles, lists) = if fib.modern {
         let map = FcMap::new(&pieces);
-        (
-            collect_chp(&wd, &table, &fib, &map),
-            collect_pap(&wd, &table, &fib, &map),
-            parse_styles(&table, &fib),
-            Lists::parse(&table, &fib),
-        )
+        let mut visits = MAX_PIECE_VISITS;
+        let (chp, chp_whole) = collect_chp(&wd, &table, &fib, &map, &mut visits);
+        let (pap, pap_whole) = collect_pap(&wd, &table, &fib, &map, &mut visits);
+        if !chp_whole {
+            sink.truncated("character formatting");
+        }
+        if !pap_whole {
+            sink.truncated("paragraph formatting");
+        }
+        (chp, pap, parse_styles(&table, &fib), Lists::parse(&table, &fib))
     } else {
         (RunSet::empty(), RunSet::empty(), Vec::new(), Lists::default())
     };
@@ -2101,6 +2134,47 @@ mod tests {
         let p = crate::preview(&w.build(), &policy).expect("preview");
         assert_eq!(text_of(body(&p)), "shown  end");
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::HiddenOmitted));
+    }
+
+    fn many_pieces() -> W {
+        // 200 pieces of two characters, one character-property run over all of them.
+        let mut w = W::new();
+        for _ in 0..200 {
+            w = w.piece("ab", true);
+        }
+        w.piece("\r", true)
+    }
+
+    #[test]
+    fn a_property_run_over_many_pieces_hides_all_of_them() {
+        // The walk over the pieces under one run used to stop after 128 of them: the rest of the
+        // hidden text came out as ordinary text, and into the sterile copy.
+        let w = many_pieces().chp(0, 400, sp1(HIDDEN, 1));
+        let policy =
+            crate::PreviewPolicy { reveal_hidden: false, ..crate::PreviewPolicy::default() };
+        let p = crate::preview(&w.build(), &policy).expect("preview");
+        let all: String = p.sections.iter().map(text_of).collect();
+        assert!(!all.contains("ab"), "hidden text left in: {} chars", all.len());
+        let (copy, _, _) =
+            crate::sanitize_legacy(&w.build(), &crate::LegacyOptions::default()).expect("a copy");
+        let q = crate::preview(&copy, &crate::PreviewPolicy::default()).expect("preview");
+        let all: String = q.sections.iter().map(text_of).collect();
+        assert!(!all.contains("ab"), "hidden text in the sterile copy");
+    }
+
+    #[test]
+    fn running_out_of_piece_visits_is_reported_by_the_walk() {
+        let pieces: Vec<Piece> = (0..10u32)
+            .map(|i| Piece { cp0: i, cp1: i + 1, fc: usize::try_from(i).unwrap_or(0), wide: false })
+            .collect();
+        let map = FcMap::new(&pieces);
+        let mut seen = 0usize;
+        let mut visits = 4usize;
+        assert!(!map.each(0, 10, &mut visits, |_, _| seen += 1), "the budget ran out");
+        assert_eq!(seen, 4);
+        let mut visits = 100usize;
+        assert!(map.each(0, 10, &mut visits, |_, _| seen += 1));
+        assert_eq!(visits, 90);
     }
 
     #[test]

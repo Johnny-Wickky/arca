@@ -69,14 +69,44 @@ impl Package {
     }
 }
 
+/// The address a link shows after its text in a copy: links are not carried over, so the reader
+/// is told where each one pointed. Internal jumps (`#bookmark`) are not addresses.
+pub(crate) fn visible_address(text: &str, href: &str) -> Option<String> {
+    if href.is_empty() || href.starts_with('#') || text.trim() == href {
+        return None;
+    }
+    Some(format!(" ({href})"))
+}
+
+/// Appends `text` to the pieces, merging it into the last one if the style is the same.
+fn push_piece(out: &mut Vec<(String, u16)>, text: &str, st: u16) {
+    match out.last_mut() {
+        Some((t, s)) if *s == st => t.push_str(text),
+        _ => out.push((text.to_owned(), st)),
+    }
+}
+
+/// Writes the address of a linked stretch that has just ended, if it is worth showing.
+fn close_link(open: &mut Option<(&str, String)>, out: &mut Vec<(String, u16)>) {
+    if let Some((href, words)) = open.take()
+        && let Some(addr) = visible_address(&words, href)
+    {
+        push_piece(out, &addr, 0);
+    }
+}
+
 /// The runs of a paragraph as they are to be written: tracked changes applied or marked, links
-/// dropped (the text stays). Returns `(text, style bits)` pieces and the number of links.
+/// turned into text (the address follows the linked words in parentheses). Returns `(text,
+/// style bits)` pieces and the number of links.
 pub(crate) fn runs_of(p: &Paragraph, opts: &LegacyOptions) -> (Vec<(String, u16)>, usize) {
     let mut out: Vec<(String, u16)> = Vec::new();
     let mut links = 0;
+    // The linked stretch being written: its address and the words shown for it so far.
+    let mut open: Option<(&str, String)> = None;
     for r in &p.runs {
-        if !r.href.is_empty() {
-            links += 1;
+        let same = open.as_ref().is_some_and(|(h, _)| *h == r.href.as_str());
+        if !same {
+            close_link(&mut open, &mut out);
         }
         let mut st = r.style & !(style::HIDDEN | style::DELETED | style::INSERTED);
         if r.style & style::DELETED != 0 {
@@ -88,11 +118,18 @@ pub(crate) fn runs_of(p: &Paragraph, opts: &LegacyOptions) -> (Vec<(String, u16)
         if r.style & style::INSERTED != 0 && !opts.accept_revisions {
             st |= style::UNDERLINE;
         }
-        match out.last_mut() {
-            Some((t, s)) if *s == st => t.push_str(&r.text),
-            _ => out.push((r.text.clone(), st)),
+        if !r.href.is_empty() {
+            if !same {
+                links += 1;
+                open = Some((r.href.as_str(), String::new()));
+            }
+            if let Some((_, words)) = open.as_mut() {
+                words.push_str(&r.text);
+            }
         }
+        push_piece(&mut out, &r.text, st);
     }
+    close_link(&mut open, &mut out);
     (out, links)
 }
 
@@ -329,6 +366,59 @@ mod tests {
         assert_eq!(xlsx::sheet_name_for_test("data  2024  q1", &mut used), "data  2024  q1 (2)");
         assert_eq!(xlsx::sheet_name_for_test("", &mut used), "Sheet3");
         assert_eq!(xlsx::sheet_name_for_test(&"x".repeat(50), &mut used).chars().count(), 31);
+    }
+
+    #[test]
+    fn sheet_names_are_unique_in_every_script() {
+        // Excel treats these as the same name; a workbook that has both is "repaired".
+        let mut used = Vec::new();
+        assert_eq!(xlsx::sheet_name_for_test("Лист", &mut used), "Лист");
+        assert_eq!(xlsx::sheet_name_for_test("ЛИСТ", &mut used), "ЛИСТ (2)");
+        assert_eq!(xlsx::sheet_name_for_test("лист", &mut used), "лист (3)");
+        assert_eq!(xlsx::sheet_name_for_test("Ünï", &mut used), "Ünï");
+        assert_eq!(xlsx::sheet_name_for_test("üNÏ", &mut used), "üNÏ (2)");
+    }
+
+    #[test]
+    fn a_linked_spreadsheet_cell_keeps_its_address_in_the_copy() {
+        use crate::model::{
+            Block, CellKind, Grid, GridCell, GridRow, Preview, PreviewStats, Section,
+        };
+        let cell = |col, text: &str, href: &str| GridCell {
+            col,
+            kind: CellKind::Text,
+            text: text.into(),
+            href: href.into(),
+        };
+        let p = Preview {
+            format: FileFormat::Xls,
+            sections: vec![Section {
+                kind: SectionKind::Sheet,
+                name: "S".into(),
+                hidden: false,
+                blocks: vec![Block::Grid(Grid {
+                    cols: 2,
+                    rows: vec![GridRow {
+                        index: 1,
+                        hidden: false,
+                        cells: vec![
+                            cell(0, "click", "https://evil.example/x"),
+                            cell(1, "plain", ""),
+                        ],
+                    }],
+                    truncated: false,
+                })],
+            }],
+            notices: Vec::new(),
+            stats: PreviewStats::default(),
+        };
+        let mut tally = Tally::default();
+        let bytes = xlsx::write(&p, &LegacyOptions::default(), &mut tally).expect("a workbook");
+        assert_eq!(tally.links, 1);
+        let back = preview(&bytes, &PreviewPolicy::default()).expect("preview");
+        let t = texts(&back);
+        assert!(t.contains("click (https://evil.example/x)"), "{t}");
+        assert!(t.contains("plain\n") || t.ends_with("plain\n"), "{t}");
     }
 
     #[test]

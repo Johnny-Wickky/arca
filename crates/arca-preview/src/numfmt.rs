@@ -881,9 +881,38 @@ impl Section {
     }
 }
 
-/// Parses a format code.
+/// Longest format code read (Excel itself refuses longer ones).
+const MAX_CODE_CHARS: usize = 255;
+/// Sections of a format code that mean anything: positive, negative, zero and text.
+const MAX_SECTIONS: usize = 4;
+/// Tokens and digit placeholders of one section. Rendering looks at the tokens around every
+/// token and pads to the number of placeholders, once per cell: a section of a million `0`s or
+/// `,`s must not turn that into a quadratic amount of work.
+const MAX_SECTION_TOKENS: usize = 64;
+const MAX_PLACEHOLDERS: usize = 40;
+
+/// Parses a format code. A code that is longer than Excel allows, or a section with more tokens
+/// or digit placeholders than any real format has, is not interpreted: such numbers show as
+/// `General`.
 pub(crate) fn parse(code: &str) -> Format {
-    Format { sections: split_sections(code).into_iter().map(parse_section).collect() }
+    if code.chars().nth(MAX_CODE_CHARS).is_some() {
+        return Format { sections: Vec::new() };
+    }
+    Format {
+        sections: split_sections(code)
+            .into_iter()
+            .take(MAX_SECTIONS)
+            .map(parse_section)
+            .map(|sec| {
+                let digits = sec.toks.iter().filter(|t| matches!(t, Tok::Digit(_))).count();
+                if sec.toks.len() > MAX_SECTION_TOKENS || digits > MAX_PLACEHOLDERS {
+                    Section { general: true, ..Section::default() }
+                } else {
+                    sec
+                }
+            })
+            .collect(),
+    }
 }
 
 impl Format {

@@ -194,6 +194,27 @@ struct TextItem {
     links: Vec<TextLink>,
     /// Positions of characters that stand for a field (slide number, date, …) and its label.
     fields: Vec<(usize, &'static str)>,
+    /// For each link (sorted by start): the furthest end of it and the links before it, so that
+    /// the links reaching into a paragraph are found without looking at all of them.
+    link_reach: Vec<usize>,
+}
+
+impl TextItem {
+    /// Puts links and fields in order and builds the lookup tables [`paragraph_runs`] uses. A
+    /// text with tens of thousands of fields and as many paragraphs must not cost their product.
+    fn finish(&mut self) {
+        self.links.sort_by_key(|l| l.start);
+        self.fields.sort_by_key(|f| f.0);
+        let mut reach = 0usize;
+        self.link_reach = self
+            .links
+            .iter()
+            .map(|l| {
+                reach = reach.max(l.end);
+                reach
+            })
+            .collect();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -424,6 +445,11 @@ fn read_items<'a>(recs: impl Iterator<Item = Rec<'a>>) -> Vec<Item> {
                 }
             }
             _ => {}
+        }
+    }
+    for item in &mut items {
+        if let Item::Text(t) = item {
+            t.finish();
         }
     }
     items
@@ -666,13 +692,28 @@ fn paragraph_runs(
         }
         cuts.push(r.end);
     }
-    for l in &t.links {
+    // The links that touch this paragraph: those that start before its end and (looking back
+    // from there) still reach past its start.
+    let mut active: Vec<&TextLink> = Vec::new();
+    let upto = t.links.partition_point(|l| l.start < end);
+    for i in (0..upto).rev() {
+        if t.link_reach.get(i).copied().unwrap_or(0) <= start {
+            break;
+        }
+        if let Some(l) = t.links.get(i)
+            && l.end > start
+        {
+            active.push(l);
+        }
+    }
+    active.reverse();
+    for l in &active {
         cuts.extend([l.start, l.end].into_iter().filter(|&p| p > start && p < end));
     }
-    for &(p, _) in &t.fields {
-        if p >= start && p < end {
-            cuts.extend([p, p + 1]);
-        }
+    let f0 = t.fields.partition_point(|f| f.0 < start);
+    let f1 = t.fields.partition_point(|f| f.0 < end);
+    for &(p, _) in t.fields.get(f0..f1).unwrap_or_default() {
+        cuts.extend([p, p + 1]);
     }
     cuts.sort_unstable();
     cuts.dedup();
@@ -681,15 +722,16 @@ fn paragraph_runs(
         if a >= z || a < start || z > end {
             continue;
         }
-        if let Some((_, label)) = t.fields.iter().find(|(p, _)| *p == a) {
+        if let Ok(i) = t.fields.binary_search_by_key(&a, |f| f.0)
+            && let Some((_, label)) = t.fields.get(i)
+        {
             b.text(label, bits, "");
             continue;
         }
         let units = t.units.get(a..z).unwrap_or(&[]);
         let text = String::from_utf16_lossy(units).replace('\u{B}', "\n");
         real |= !text.trim().is_empty();
-        let href = t
-            .links
+        let href = active
             .iter()
             .find(|l| l.start <= a && a < l.end)
             .and_then(|l| links.get(&l.id))
@@ -1338,6 +1380,33 @@ mod tests {
     use crate::model::{FileFormat, Preview};
     use crate::testkit::{Lcg, fuzz_iterations, ok, paragraphs, run, section_of};
     use arca_container::cfb::writer::CfbBuilder;
+
+    #[test]
+    fn many_fields_and_links_over_many_paragraphs_cost_their_sum_not_their_product() {
+        // 100 000 one-letter paragraphs, 65 536 fields and 256 links spread over them: every
+        // paragraph used to look at every field and link.
+        let units: Vec<u16> = (0..100_000).flat_map(|_| [u16::from(b'a'), 0x0D]).collect();
+        let mut t = TextItem { ty: 1, units, ..TextItem::default() };
+        t.fields = (0..65_536usize).map(|i| (i * 3, "‹#›")).collect();
+        t.links =
+            (0..256usize).map(|i| TextLink { start: i * 700, end: i * 700 + 10, id: 1 }).collect();
+        t.fields.reverse();
+        t.finish();
+        let started = std::time::Instant::now();
+        let mut out = Vec::new();
+        let hrefs = BTreeMap::from([(1u32, "https://x.example/".to_owned())]);
+        text_blocks(&t, 0, false, &hrefs, &mut out);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(out.len() > 50_000);
+        // The links still land on the right text.
+        let linked = out
+            .iter()
+            .filter(
+                |(_, b)| matches!(b, Block::Para(p) if p.runs.iter().any(|r| !r.href.is_empty())),
+            )
+            .count();
+        assert!(linked >= 1);
+    }
 
     fn rec(ver: u8, inst: u16, typ: u16, data: &[u8]) -> Vec<u8> {
         let mut o = (u16::from(ver) | (inst << 4)).to_le_bytes().to_vec();

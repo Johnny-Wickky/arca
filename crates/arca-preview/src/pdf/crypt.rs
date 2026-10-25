@@ -28,8 +28,8 @@ pub(super) enum Method {
     AesV3,
 }
 
-/// The key of an opened document and how it is applied.
-#[derive(Debug)]
+/// The key of an opened document and how it is applied. The key is overwritten when this is
+/// dropped and never printed.
 pub(super) struct Crypt {
     key: Vec<u8>,
     strings: Method,
@@ -37,6 +37,21 @@ pub(super) struct Crypt {
     encrypt_metadata: bool,
     /// The object that holds the encryption dictionary (never decrypted itself).
     pub(super) encrypt_obj: Option<u32>,
+}
+
+impl Drop for Crypt {
+    fn drop(&mut self) {
+        crate::decrypt::wipe(&mut self.key);
+    }
+}
+
+impl std::fmt::Debug for Crypt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Crypt")
+            .field("strings", &self.strings)
+            .field("streams", &self.streams)
+            .finish_non_exhaustive()
+    }
 }
 
 fn malformed(why: &str) -> DecryptError {
@@ -168,20 +183,28 @@ fn hash_r56(r: i64, password: &[u8], salt: &[u8], udata: &[u8]) -> Vec<u8> {
     k
 }
 
-fn method_of(d: &Dict, cf: &Dict, name: &str) -> Method {
+/// The method of the crypt filter that `d[name]` selects. A filter that is not defined, or whose
+/// method is not one of the standard ones, is an error: reading its data as if it were plain
+/// would show ciphertext as text.
+fn method_of(d: &Dict, cf: &Dict, name: &str) -> Result<Method, DecryptError> {
     let key = d.get(name).and_then(Obj::as_name).unwrap_or("Identity");
     if key == "Identity" {
-        return Method::None;
+        return Ok(Method::None);
     }
-    let cm = cf
+    let filter = cf
         .get(key)
         .and_then(|o| o.as_dict().cloned())
-        .and_then(|f| f.get("CFM").and_then(Obj::as_name).map(str::to_owned));
-    match cm.as_deref() {
-        Some("V2") => Method::Rc4,
-        Some("AESV2") => Method::AesV2,
-        Some("AESV3") => Method::AesV3,
-        _ => Method::None,
+        .ok_or_else(|| malformed("a crypt filter that is used is not defined"))?;
+    match filter.get("CFM").and_then(Obj::as_name) {
+        Some("V2") => Ok(Method::Rc4),
+        Some("AESV2") => Ok(Method::AesV2),
+        Some("AESV3") => Ok(Method::AesV3),
+        // The default, and the explicit "no encryption".
+        None | Some("None") => Ok(Method::None),
+        Some(other) => Err(DecryptError::Unsupported(format!(
+            "crypt filter method {}",
+            arca_container::text::display_safe(other, 32)
+        ))),
     }
 }
 
@@ -225,7 +248,7 @@ impl Crypt {
             encrypt_metadata,
         };
         let (strings, streams) = match v {
-            4 | 5 => (method_of(enc, cf, "StrF"), method_of(enc, cf, "StmF")),
+            4 | 5 => (method_of(enc, cf, "StrF")?, method_of(enc, cf, "StmF")?),
             _ => (Method::Rc4, Method::Rc4),
         };
         let key = if r >= 5 { key_r56(&par, password)? } else { key_r234(&par, password)? };
@@ -386,4 +409,40 @@ fn key_r56(par: &Params<'_>, password: &[u8]) -> Result<Vec<u8>, DecryptError> {
         return file_key(&ik, par.oe);
     }
     Err(DecryptError::WrongPassword)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PreviewPolicy;
+    use crate::pdf::file::PdfFile;
+    use crate::pdf::testpdf::PdfBuilder;
+
+    fn dict(body: &str) -> Dict {
+        let mut b = PdfBuilder::simple_text("x");
+        b.add_raw(10, body);
+        let data = b.build();
+        let mut pdf = PdfFile::open(&data, &PreviewPolicy::default()).expect("open");
+        pdf.object(10).as_dict().cloned().expect("a dictionary")
+    }
+
+    #[test]
+    fn crypt_filter_methods_are_known_or_refused_never_read_as_plain() {
+        let enc = dict("<< /StmF /StdCF /StrF /Identity /CF << /StdCF << /CFM /AESV2 >> >> >>");
+        let cf = enc.get("CF").and_then(Obj::as_dict).cloned().expect("CF");
+        assert_eq!(method_of(&enc, &cf, "StmF"), Ok(Method::AesV2));
+        assert_eq!(method_of(&enc, &cf, "StrF"), Ok(Method::None));
+        // An unknown method used to mean "not encrypted": ciphertext shown as text.
+        let enc = dict("<< /StmF /StdCF /CF << /StdCF << /CFM /Bogus >> >> >>");
+        let cf = enc.get("CF").and_then(Obj::as_dict).cloned().expect("CF");
+        assert!(matches!(method_of(&enc, &cf, "StmF"), Err(DecryptError::Unsupported(_))));
+        // So did a filter that is named but not defined.
+        let enc = dict("<< /StmF /Missing /CF << /StdCF << /CFM /AESV2 >> >> >>");
+        let cf = enc.get("CF").and_then(Obj::as_dict).cloned().expect("CF");
+        assert!(matches!(method_of(&enc, &cf, "StmF"), Err(DecryptError::Malformed(_))));
+        // The explicit "None" is a method of its own.
+        let enc = dict("<< /StmF /StdCF /CF << /StdCF << /CFM /None >> >> >>");
+        let cf = enc.get("CF").and_then(Obj::as_dict).cloned().expect("CF");
+        assert_eq!(method_of(&enc, &cf, "StmF"), Ok(Method::None));
+    }
 }

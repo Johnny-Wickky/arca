@@ -16,7 +16,7 @@
 //! unsanitised text or an unbounded result.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::PreviewPolicy;
 use crate::model::{
@@ -65,6 +65,23 @@ enum Class {
     Control,
     /// Dropped without being counted (carriage return).
     Silent,
+    /// A variation selector: kept only where it selects the look of a symbol (see
+    /// [`takes_presentation_selector`]), otherwise it is a channel for hidden data.
+    Selector,
+    /// Looks blank but is a letter-like character (braille blank): shown as a space, counted.
+    Blank,
+}
+
+/// `true` if a variation selector right after `prev` means something (emoji and symbol
+/// presentation, keycaps) rather than carrying a hidden bit.
+fn takes_presentation_selector(prev: char) -> bool {
+    prev.is_ascii_digit()
+        || matches!(prev, '#' | '*')
+        || (u32::from(prev) >= 0x203C && !prev.is_alphabetic() && !is_selector(prev))
+}
+
+fn is_selector(c: char) -> bool {
+    matches!(c, '\u{FE00}'..='\u{FE0F}')
 }
 
 fn classify(c: char) -> Class {
@@ -79,10 +96,18 @@ fn classify(c: char) -> Class {
         | '\u{200F}'
         | '\u{061C}' => Class::Bidi,
         '\u{E0000}'..='\u{E007F}' | '\u{E0100}'..='\u{E01EF}' => Class::Tag,
+        '\u{FE00}'..='\u{FE0F}' => Class::Selector,
+        '\u{2800}' => Class::Blank,
         '\u{200B}'
-        | '\u{2060}'..='\u{2064}'
+        | '\u{2060}'..='\u{2065}'
+        | '\u{206A}'..='\u{206F}'
         | '\u{FEFF}'
-        | '\u{180E}'
+        | '\u{180B}'..='\u{180F}'
+        | '\u{00AD}'
+        | '\u{17B4}'
+        | '\u{17B5}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
         | '\u{FFF9}'..='\u{FFFC}'
         | '\u{034F}'
         | '\u{115F}'
@@ -107,9 +132,26 @@ pub fn clean_text<'a>(s: &'a str, counts: &mut CleanCounts) -> Cow<'a, str> {
     let mut out = String::with_capacity(s.len());
     let mut local = CleanCounts::default();
     let mut changed = false;
+    let mut prev: Option<char> = None;
     for c in s.chars() {
-        match classify(c) {
+        let class = classify(c);
+        match class {
             Class::Keep => out.push(c),
+            Class::Selector => {
+                if matches!(c, '\u{FE0E}' | '\u{FE0F}')
+                    && prev.is_some_and(takes_presentation_selector)
+                {
+                    out.push(c);
+                } else {
+                    local.tags = local.tags.saturating_add(1);
+                    changed = true;
+                }
+            }
+            Class::Blank => {
+                out.push(' ');
+                local.zero_width = local.zero_width.saturating_add(1);
+                changed = true;
+            }
             Class::Newline => {
                 out.push('\n');
                 changed = true;
@@ -132,19 +174,37 @@ pub fn clean_text<'a>(s: &'a str, counts: &mut CleanCounts) -> Cow<'a, str> {
                 changed = true;
             }
         }
+        // What the next character sees as its predecessor is what was kept.
+        if matches!(class, Class::Keep | Class::Newline | Class::Selector | Class::Blank) {
+            prev = out.chars().next_back();
+        }
     }
     counts.add(local);
     if changed { Cow::Owned(out) } else { Cow::Borrowed(s) }
 }
 
-fn clean_in_place(s: &mut String, counts: &mut CleanCounts, max_bytes: usize) {
+/// Sanitises `s` in place and cuts it to `max_bytes`. Returns `true` if text was cut.
+///
+/// `single_line` is for names, markers and addresses: a line break or tab inside them would
+/// let the text pose as something else in the interface, so it becomes a space.
+fn clean_in_place(
+    s: &mut String,
+    counts: &mut CleanCounts,
+    max_bytes: usize,
+    single_line: bool,
+) -> bool {
     if let Cow::Owned(cleaned) = clean_text(s, counts) {
         *s = cleaned;
+    }
+    if single_line && s.contains(['\n', '\t']) {
+        *s = s.replace(['\n', '\t'], " ");
     }
     if s.len() > max_bytes {
         let kept = arca_container::text::truncate_utf8(s, max_bytes).len();
         s.truncate(kept);
+        return true;
     }
+    false
 }
 
 /// Upper bound on the number of listed "part skipped" notices.
@@ -235,8 +295,68 @@ fn weigh(block: &Block) -> Weight {
     }
 }
 
+/// Cuts the rows of a table or grid that do not fit in `room`. Returns `false` if not even the
+/// first row fits (or the block has no rows to cut). A cut grid is marked truncated.
+fn fit_rows(block: &mut Block, room: Weight) -> bool {
+    let mut used = Weight { chars: 0, items: 1 };
+    let mut kept = 0usize;
+    match block {
+        Block::Grid(g) => {
+            for row in &g.rows {
+                let mut w = Weight { chars: 0, items: 1_usize.saturating_add(row.cells.len()) };
+                for c in &row.cells {
+                    w.chars = w.chars.saturating_add(c.text.len());
+                }
+                let next = Weight {
+                    chars: used.chars.saturating_add(w.chars),
+                    items: used.items.saturating_add(w.items),
+                };
+                if next.chars > room.chars || next.items > room.items {
+                    break;
+                }
+                used = next;
+                kept += 1;
+            }
+            if kept == 0 {
+                return false;
+            }
+            g.rows.truncate(kept);
+            g.truncated = true;
+            true
+        }
+        Block::Table(t) => {
+            for row in &t.rows {
+                let mut w = Weight { chars: 0, items: 1 };
+                for cell in &row.cells {
+                    w.items = w.items.saturating_add(1);
+                    for p in &cell.paras {
+                        w.add(weigh_para(p));
+                    }
+                }
+                let next = Weight {
+                    chars: used.chars.saturating_add(w.chars),
+                    items: used.items.saturating_add(w.items),
+                };
+                if next.chars > room.chars || next.items > room.items {
+                    break;
+                }
+                used = next;
+                kept += 1;
+            }
+            if kept == 0 {
+                return false;
+            }
+            t.rows.truncate(kept);
+            true
+        }
+        _ => false,
+    }
+}
+
 impl<'p> Sink<'p> {
     pub(crate) fn new(policy: &'p PreviewPolicy) -> Self {
+        // A new preview starts counting foreign-namespace elements from zero.
+        let _ = crate::xml::take_foreign();
         Self {
             policy,
             sections: Vec::new(),
@@ -261,6 +381,11 @@ impl<'p> Sink<'p> {
     /// Items (runs, cells, rows, blocks) still available.
     pub(crate) fn items_left(&self) -> usize {
         self.policy.max_items.saturating_sub(self.items)
+    }
+
+    /// Bytes of text still available.
+    pub(crate) fn chars_left(&self) -> usize {
+        self.policy.max_chars.saturating_sub(self.chars)
     }
 
     /// Records that content was cut. Idempotent per `what`.
@@ -326,7 +451,9 @@ impl<'p> Sink<'p> {
             return None;
         }
         let mut name = name.to_owned();
-        clean_in_place(&mut name, &mut self.clean, 512);
+        if clean_in_place(&mut name, &mut self.clean, 512, true) {
+            self.truncated("section name");
+        }
         if hidden {
             let kind_key = match kind {
                 SectionKind::Sheet => "sheets",
@@ -378,24 +505,35 @@ impl<'p> Sink<'p> {
         if self.omitted > omitted_before && is_empty_block(&block) {
             return true;
         }
-        let w = weigh(&block);
+        let mut w = weigh(&block);
         if self.blocks >= self.policy.max_blocks {
             self.stop("blocks");
             return false;
         }
-        if self.chars.saturating_add(w.chars) > self.policy.max_chars {
-            self.stop("characters");
-            return false;
-        }
-        if self.items.saturating_add(w.items) > self.policy.max_items {
-            self.stop("items");
-            return false;
+        let room = Weight {
+            chars: self.policy.max_chars.saturating_sub(self.chars),
+            items: self.policy.max_items.saturating_sub(self.items),
+        };
+        let mut limit = None;
+        if w.chars > room.chars || w.items > room.items {
+            let which = if w.chars > room.chars { "characters" } else { "items" };
+            // A table or grid that does not fit whole is kept as far as it fits, not dropped.
+            if !fit_rows(&mut block, room) {
+                self.stop(which);
+                return false;
+            }
+            w = weigh(&block);
+            limit = Some(which);
         }
         let Some(section) = self.sections.get_mut(id.0) else { return false };
         self.chars = self.chars.saturating_add(w.chars);
         self.items = self.items.saturating_add(w.items);
         self.blocks = self.blocks.saturating_add(1);
         section.blocks.push(block);
+        if let Some(which) = limit {
+            self.stop(which);
+            return false;
+        }
         true
     }
 
@@ -417,6 +555,11 @@ impl<'p> Sink<'p> {
         let max_href = self.policy.max_href_bytes;
         let max_runs = self.policy.max_runs_per_paragraph;
         let mut cut = false;
+        let mut text_cut = false;
+        let mut marker_cut = false;
+        let mut alt_cut = false;
+        let mut hrefs_dropped = false;
+        let mut grid_cut = false;
         let mut hidden_runs = 0u64;
         let mut tracked = 0u64;
         let reveal = self.policy.reveal_hidden;
@@ -429,10 +572,14 @@ impl<'p> Sink<'p> {
                     p.runs.truncate(max_runs);
                     *cut = true;
                 }
-                clean_in_place(&mut p.marker, counts, 32);
+                marker_cut |= clean_in_place(&mut p.marker, counts, 32, true);
                 for r in &mut p.runs {
-                    clean_in_place(&mut r.text, counts, max_cell);
-                    clean_in_place(&mut r.href, counts, max_href);
+                    text_cut |= clean_in_place(&mut r.text, counts, max_cell, false);
+                    // A link address cut short is a different address: it is dropped, and said so.
+                    if clean_in_place(&mut r.href, counts, max_href, true) {
+                        r.href.clear();
+                        hrefs_dropped = true;
+                    }
                     r.style &= style::ALL;
                     if r.style & style::HIDDEN != 0 {
                         hidden_runs = hidden_runs.saturating_add(1);
@@ -468,22 +615,41 @@ impl<'p> Sink<'p> {
                         omitted_rows = omitted_rows
                             .saturating_add(u64::try_from(before - g.rows.len()).unwrap_or(0));
                     }
+                    grid_cut |= g.truncated;
                     for row in &mut g.rows {
                         for c in &mut row.cells {
-                            clean_in_place(&mut c.text, counts, max_cell);
-                            clean_in_place(&mut c.href, counts, max_href);
+                            text_cut |= clean_in_place(&mut c.text, counts, max_cell, false);
+                            if clean_in_place(&mut c.href, counts, max_href, true) {
+                                c.href.clear();
+                                hrefs_dropped = true;
+                            }
                         }
                     }
                 }
                 Block::Image(i) => {
-                    clean_in_place(&mut i.alt, counts, 1024);
-                    clean_in_place(&mut i.media, counts, 32);
+                    alt_cut |= clean_in_place(&mut i.alt, counts, 1024, true);
+                    clean_in_place(&mut i.media, counts, 32, true);
                 }
                 Block::Rule => {}
             }
         }
         if cut {
             self.truncated("runs per paragraph");
+        }
+        if text_cut {
+            self.truncated("text length");
+        }
+        if marker_cut {
+            self.truncated("list marker");
+        }
+        if alt_cut {
+            self.truncated("picture description");
+        }
+        if hrefs_dropped {
+            self.truncated("link address (too long, link dropped)");
+        }
+        if grid_cut {
+            self.truncated("grid");
         }
         if hidden_runs > 0 && reveal {
             self.count(NoticeKind::HiddenShown, "text", hidden_runs);
@@ -511,6 +677,14 @@ impl<'p> Sink<'p> {
                     "bidi={},tags={},zero-width={},control={}",
                     clean.bidi, clean.tags, clean.zero_width, clean.control
                 ),
+            });
+        }
+        let foreign = crate::xml::take_foreign();
+        if foreign > 0 {
+            self.notices.push(Notice {
+                kind: NoticeKind::Unsupported,
+                count: foreign,
+                detail: "elements in a foreign namespace were ignored".to_owned(),
             });
         }
         let counted = std::mem::take(&mut self.counted);
@@ -594,7 +768,7 @@ impl ParaBuilder {
     }
 }
 
-/// Builds a [`Grid`] row by row under a per-grid cell budget.
+/// Builds a [`Grid`] row by row under a per-grid cell and byte budget.
 #[derive(Debug)]
 pub(crate) struct GridBuilder {
     grid: Grid,
@@ -603,6 +777,16 @@ pub(crate) struct GridBuilder {
     max_rows: u32,
     max_cols: u32,
     current: Option<GridRow>,
+    /// Bytes of text and addresses taken so far, and the most the grid may take: a workbook of
+    /// a few shared strings referenced by hundreds of thousands of cells must not multiply.
+    bytes: usize,
+    max_bytes: usize,
+    max_cell_bytes: usize,
+    /// Ranges `(first, last)` of columns the document hides.
+    hidden_cols: Vec<(u32, u32)>,
+    reveal_hidden: bool,
+    /// Hidden columns that hold data.
+    hidden_seen: BTreeSet<u32>,
 }
 
 impl GridBuilder {
@@ -615,7 +799,38 @@ impl GridBuilder {
             max_rows: policy.max_grid_rows,
             max_cols: policy.max_grid_cols,
             current: None,
+            bytes: 0,
+            max_bytes: policy.max_chars,
+            max_cell_bytes: policy.max_cell_bytes,
+            hidden_cols: Vec::new(),
+            reveal_hidden: policy.reveal_hidden,
+            hidden_seen: BTreeSet::new(),
         }
+    }
+
+    /// Limits the text the grid may hold to what the sink can still take.
+    #[must_use]
+    pub(crate) fn with_char_budget(mut self, chars: usize) -> Self {
+        self.max_bytes = self.max_bytes.min(chars);
+        self
+    }
+
+    /// Declares columns `first..=last` hidden by the document. Their cells are left out unless
+    /// the policy asks for hidden content; either way [`GridBuilder::hidden_columns`] counts them.
+    pub(crate) fn hide_columns(&mut self, first: u32, last: u32) {
+        if self.hidden_cols.len() < 4_096 && first <= last {
+            self.hidden_cols.push((first, last));
+        }
+    }
+
+    /// Number of hidden columns that hold data.
+    pub(crate) fn hidden_columns(&self) -> u64 {
+        u64::try_from(self.hidden_seen.len()).unwrap_or(u64::MAX)
+    }
+
+    /// `true` if the policy leaves hidden content out.
+    pub(crate) const fn omits_hidden(&self) -> bool {
+        !self.reveal_hidden
     }
 
     /// Starts row `index` (one-based). Returns `false` once the grid is full.
@@ -656,6 +871,24 @@ impl GridBuilder {
             self.grid.truncated = true;
             return false;
         }
+        if self.hidden_cols.iter().any(|&(a, b)| a <= col && col <= b) {
+            self.hidden_seen.insert(col);
+            if !self.reveal_hidden {
+                return true;
+            }
+        }
+        let mut text = text;
+        if text.len() > self.max_cell_bytes {
+            let kept = arca_container::text::truncate_utf8(&text, self.max_cell_bytes).len();
+            text.truncate(kept);
+            self.grid.truncated = true;
+        }
+        let taken = text.len().saturating_add(href.len());
+        if self.bytes.saturating_add(taken) > self.max_bytes {
+            self.grid.truncated = true;
+            return false;
+        }
+        self.bytes = self.bytes.saturating_add(taken);
         let Some(row) = self.current.as_mut() else { return false };
         row.cells.push(GridCell { col, kind, text, href });
         self.cells = self.cells.saturating_add(1);
@@ -664,15 +897,22 @@ impl GridBuilder {
     }
 
     fn flush_row(&mut self) {
-        if let Some(row) = self.current.take()
+        if let Some(mut row) = self.current.take()
             && !row.cells.is_empty()
         {
+            // Documents are free to list cells in any order; lookups by position need them sorted.
+            if row.cells.windows(2).any(|w| matches!(w, [a, b] if a.col > b.col)) {
+                row.cells.sort_by_key(|c| c.col);
+            }
             self.grid.rows.push(row);
         }
     }
 
     pub(crate) fn finish(mut self) -> Grid {
         self.flush_row();
+        if self.grid.rows.windows(2).any(|w| matches!(w, [a, b] if a.index > b.index)) {
+            self.grid.rows.sort_by_key(|r| r.index);
+        }
         self.grid
     }
 }
@@ -689,48 +929,46 @@ pub(crate) struct CellLink {
 
 /// Links kept per sheet.
 const MAX_LINKS: usize = 20_000;
-/// Rows of one link that are looked up (a link over a whole column covers only its first rows).
-const MAX_LINK_ROWS: u32 = 256;
-/// Row/link pairs in total, and cells examined while attaching them: the work is bounded
-/// whatever the file declares.
-const MAX_LINK_ROW_PAIRS: usize = 100_000;
-const MAX_LINK_CELL_CHECKS: usize = 2_000_000;
+/// Rows and cells examined while attaching links: the work is bounded whatever the file declares.
+const MAX_LINK_STEPS: usize = 4_000_000;
 
 impl Grid {
     /// Attaches hyperlinks to the cells they cover. Only cells that exist are marked (a link on an
-    /// empty cell has nothing to show), the first link of a cell wins, and the work is bounded.
-    pub(crate) fn attach_links(&mut self, links: &[CellLink]) {
-        if links.is_empty() {
-            return;
-        }
-        let mut by_row: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-        let mut pairs = 0usize;
-        'links: for (i, l) in links.iter().enumerate().take(MAX_LINKS) {
-            let last = l.row1.saturating_add(l.row2.saturating_sub(l.row1).min(MAX_LINK_ROWS));
-            for r in l.row1..=last {
-                if pairs >= MAX_LINK_ROW_PAIRS {
-                    break 'links;
+    /// empty cell has nothing to show) and the first link of a cell wins.
+    ///
+    /// Each link looks up the rows it covers by position, so a link over a whole column reaches
+    /// every row that has data. Returns `false` if a limit stopped the work (more than
+    /// [`MAX_LINKS`] links, or too many cells to examine): some links are then missing.
+    pub(crate) fn attach_links(&mut self, links: &[CellLink]) -> bool {
+        let mut complete = links.len() <= MAX_LINKS;
+        let mut steps = 0usize;
+        for l in links.iter().take(MAX_LINKS) {
+            let first = self.rows.partition_point(|r| r.index < l.row1);
+            for row in self.rows.iter_mut().skip(first) {
+                if row.index > l.row2 {
+                    break;
                 }
-                by_row.entry(r).or_default().push(i);
-                pairs += 1;
-            }
-        }
-        let mut checks = 0usize;
-        for row in &mut self.rows {
-            let Some(ids) = by_row.get(&row.index) else { continue };
-            for &i in ids {
-                let Some(l) = links.get(i) else { continue };
-                for cell in &mut row.cells {
-                    checks += 1;
-                    if checks > MAX_LINK_CELL_CHECKS {
-                        return;
+                steps = steps.saturating_add(1);
+                let at = row.cells.partition_point(|c| c.col < l.col1);
+                for cell in row.cells.iter_mut().skip(at) {
+                    if cell.col > l.col2 {
+                        break;
                     }
-                    if cell.col >= l.col1 && cell.col <= l.col2 && cell.href.is_empty() {
+                    steps = steps.saturating_add(1);
+                    if cell.href.is_empty() {
                         cell.href.clone_from(&l.href);
                     }
                 }
+                if steps > MAX_LINK_STEPS {
+                    return false;
+                }
+            }
+            if steps > MAX_LINK_STEPS {
+                return false;
             }
         }
+        complete &= steps <= MAX_LINK_STEPS;
+        complete
     }
 }
 

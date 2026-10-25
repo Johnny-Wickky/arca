@@ -56,7 +56,12 @@ fn sheet_name(raw: &str, used: &mut Vec<String>, n: usize) -> String {
     }
     let mut candidate = name.clone();
     let mut k = 2;
-    while used.iter().any(|u| u.eq_ignore_ascii_case(&candidate)) {
+    // Excel compares sheet names without regard to case in every script, not only ASCII.
+    let fold = |s: &str| s.to_lowercase();
+    while used
+        .iter()
+        .any(|u| fold(u) == fold(&candidate) || u.to_uppercase() == candidate.to_uppercase())
+    {
         let suffix = format!(" ({k})");
         candidate = format!(
             "{}{suffix}",
@@ -108,10 +113,16 @@ fn collect(blocks: &[Block], tally: &mut Tally) -> Cells {
                         if c.col >= MAX_COLS {
                             continue;
                         }
+                        let mut kind = c.kind;
+                        let mut text = c.text.clone();
                         if !c.href.is_empty() {
                             tally.links += 1;
+                            if let Some(addr) = super::visible_address(&c.text, &c.href) {
+                                text.push_str(&addr);
+                                kind = CellKind::Text;
+                            }
                         }
-                        cells.entry(row.index).or_default().insert(c.col, (c.kind, c.text.clone()));
+                        cells.entry(row.index).or_default().insert(c.col, (kind, text));
                     }
                 }
             }

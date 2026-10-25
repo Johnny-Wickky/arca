@@ -60,6 +60,8 @@ mod xml;
 
 #[cfg(test)]
 mod testkit;
+#[cfg(test)]
+mod tests_hardening;
 
 use arca_container::cfb::CfbLimits;
 use arca_container::xml::XmlLimits;

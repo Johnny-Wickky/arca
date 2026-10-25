@@ -31,6 +31,9 @@ use crate::numfmt;
 
 /// Longest formula (in characters) that is looked at.
 const MAX_FORMULA_CHARS: usize = 4096;
+/// Longest text a lookup key or a criterion may have (Excel answers `#VALUE!` beyond it); it
+/// bounds the cost of wildcard matching, which is the product of pattern and text lengths.
+const MAX_KEY_CHARS: usize = 255;
 /// Most tokens in one formula.
 const MAX_TOKENS: usize = 2048;
 /// Deepest nesting of parentheses and function calls.
@@ -333,7 +336,9 @@ fn match_cell(cs: &[(usize, char)], i: usize) -> Option<(CellTok, usize)> {
 }
 
 fn lex(src: &str) -> Option<Vec<Lexed>> {
-    if src.chars().count() > MAX_FORMULA_CHARS {
+    // The byte test first: counting the characters of a megabyte formula is itself work, and a
+    // file may ask for it once per cell.
+    if src.len() > MAX_FORMULA_CHARS * 4 || src.chars().count() > MAX_FORMULA_CHARS {
         return None;
     }
     let cs: Vec<(usize, char)> = src.char_indices().collect();
@@ -1162,10 +1167,12 @@ impl Eval<'_> {
         let sh = book.sheet(r.sheet).ok_or(UNSUPPORTED)?;
         let mut out = Vec::new();
         for (&(row, col), cell) in sh.cells.range((r.r1, 0)..=(r.r2, u32::MAX)) {
+            // Cells beside the range are walked past, so they are charged too: a narrow column
+            // range over a wide sheet is as much work as a wide one.
+            self.step(1)?;
             if col < r.c1 || col > r.c2 {
                 continue;
             }
-            self.step(1)?;
             let v = match cell.formula {
                 None => cell.value.clone(),
                 Some(_) => self.cell(r.sheet, row, col)?,
@@ -1934,7 +1941,7 @@ impl Eval<'_> {
             }
             "MATCH" => {
                 need(2, 3)?;
-                let key = self.arg_val(args, 0)?;
+                let key = lookup_key(self.arg_val(args, 0)?)?;
                 let r = self.arg_range(args, 1)?;
                 let kind = self.arg_opt_num(args, 2, 1.0)?.trunc();
                 if r.rows() != 1 && r.cols() != 1 {
@@ -1972,7 +1979,7 @@ impl Eval<'_> {
             }
             "VLOOKUP" | "HLOOKUP" => {
                 need(3, 4)?;
-                let key = self.arg_val(args, 0)?;
+                let key = lookup_key(self.arg_val(args, 0)?)?;
                 let r = self.arg_range(args, 1)?;
                 let idx = self.arg_num(args, 2)?.trunc();
                 let approx = match args.get(3) {
@@ -2149,6 +2156,14 @@ fn same_kind(a: &Val, b: &Val) -> bool {
     rank(a) == rank(b) && !matches!(b, Val::Empty)
 }
 
+/// A lookup key; text longer than Excel allows is `#VALUE!`.
+fn lookup_key(v: Val) -> X<Val> {
+    match &v {
+        Val::Str(s) if s.chars().nth(MAX_KEY_CHARS).is_some() => err(ErrCode::Value),
+        _ => Ok(v),
+    }
+}
+
 /// Exact-match lookup: same kind, equal; text may use `*` and `?`.
 fn exact_equal(key: &Val, cell: &Val) -> bool {
     match (key, cell) {
@@ -2220,6 +2235,7 @@ impl Criterion {
     fn new(v: &Val) -> X<Self> {
         match v {
             Val::Err(c) => err(*c),
+            Val::Str(s) if s.chars().nth(MAX_KEY_CHARS + 2).is_some() => err(ErrCode::Value),
             Val::Str(s) => {
                 let (op, rest) = ["<>", "<=", ">=", "<", ">", "="]
                     .iter()

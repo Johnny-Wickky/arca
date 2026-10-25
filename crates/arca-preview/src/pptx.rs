@@ -257,8 +257,8 @@ impl Handler for SlideHandler {
                 self.pic = Some(ImageInfo::default());
             }
             "blip" if self.in_pic > 0 => {
-                let embed = tag.attr("embed");
-                let link = tag.attr("link");
+                let embed = tag.attr_rel("embed");
+                let link = tag.attr_rel("link");
                 if let Some(p) = self.pic.as_mut() {
                     if let Some(r) =
                         embed.as_deref().or(link.as_deref()).and_then(|id| self.rels.get(id))
@@ -364,7 +364,7 @@ impl Handler for SlideHandler {
                 }
             }
             "hlinkClick" if self.in_run => {
-                if let Some(id) = tag.attr("id")
+                if let Some(id) = tag.attr_rel("id")
                     && let Some(r) = self.rels.get(&*id)
                     && r.external
                 {
@@ -524,6 +524,8 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
     }
 
     let mut unsupported = false;
+    // Every slide part the presentation names, shown or not.
+    let mut named: Vec<String> = Vec::new();
     for rid in &ph.slides {
         if sink.is_full() {
             break;
@@ -532,6 +534,7 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         if external {
             continue;
         }
+        named.push(part.clone());
         let Some(slide_xml) = read_xml(pkg, &part)? else {
             sink.skipped(&part);
             continue;
@@ -582,6 +585,15 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             if !pushed {
                 break;
             }
+        }
+    }
+    if !sink.is_full() {
+        let extra = pkg.count_unlisted("ppt/slides/", &named);
+        if extra > 0 {
+            sink.note_detail(
+                NoticeKind::Skipped,
+                format!("{extra} slide part(s) that the presentation does not list"),
+            );
         }
     }
     if unsupported {

@@ -70,7 +70,7 @@ fn open_zip<'a>(data: &'a [u8], policy: &PreviewPolicy) -> Result<Doc<'a>, Previ
         .map_err(|e| PreviewError::Malformed(format!("archive: {e}")))?;
     let is_opc = zip.entry("[Content_Types].xml").is_some();
     let is_odf = zip.entry("mimetype").is_some();
-    let mut pkg = Package::new(zip, policy)?;
+    let mut pkg = Package::new(zip, policy, data.len())?;
     if is_opc {
         let format = match pkg.main_part()? {
             Some(part) => opc_format_from_content_type(pkg.content_type(&part)),

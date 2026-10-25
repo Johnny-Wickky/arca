@@ -8,7 +8,7 @@ use arca_container::cfb::CompoundFile;
 use arca_container::crypto::aes::Aes;
 use arca_container::crypto::{Hash, constant_time_eq};
 
-use super::{DecryptError, MAX_SPIN};
+use super::{DecryptError, MAX_SPIN, Secret};
 use crate::PreviewPolicy;
 use crate::xml::{self, Flow, Handler, Tag, XmlError};
 
@@ -89,14 +89,15 @@ fn standard(info: &[u8], package: &[u8], password: &str) -> Result<Vec<u8>, Decr
     }
 
     // 50 000 rounds of SHA-1 over the password, then the derivation of MS-OFFCRYPTO 2.3.4.7.
-    let pw = utf16(password);
+    let pw = Secret::new(utf16(password));
     let mut buf = [0u8; 64];
     let mut n = Hash::Sha1.digest_into(&[salt, &pw], &mut buf);
     for i in 0..50_000u32 {
         let prev = buf;
         n = Hash::Sha1.digest_into(&[&i.to_le_bytes(), prev.get(..n).unwrap_or(&[])], &mut buf);
     }
-    let h = buf.get(..n).unwrap_or(&[]).to_vec();
+    let h = Secret::new(buf.get(..n).unwrap_or(&[]).to_vec());
+    super::wipe(&mut buf);
     let h_final = Hash::Sha1.digest(&[&h, &0u32.to_le_bytes()]);
     let pad = |byte: u8| -> Vec<u8> {
         let mut b = vec![byte; 64];
@@ -108,6 +109,7 @@ fn standard(info: &[u8], package: &[u8], password: &str) -> Result<Vec<u8>, Decr
     let mut derived = pad(0x36);
     derived.extend(pad(0x5C));
     derived.truncate(key_bits / 8);
+    let derived = Secret::new(derived);
     let aes = Aes::new(&derived).ok_or_else(|| malformed("bad key length"))?;
 
     let verifier_plain = aes.ecb_decrypt(enc_verifier);
@@ -162,6 +164,8 @@ struct PasswordKey {
 struct AgileInfo {
     key_data: Option<KeyData>,
     password: Option<PasswordKey>,
+    /// `dataIntegrity`: the encrypted HMAC key and the encrypted HMAC value.
+    integrity: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 fn base64(s: &str) -> Vec<u8> {
@@ -225,6 +229,10 @@ impl Handler for AgileInfo {
                     key_value: b("encryptedKeyValue"),
                 });
             }
+            "dataIntegrity" if self.integrity.is_none() => {
+                let b = |n: &str| tag.attr(n).map(|v| base64(&v)).unwrap_or_default();
+                self.integrity = Some((b("encryptedHmacKey"), b("encryptedHmacValue")));
+            }
             _ => {}
         }
         Flow::Continue
@@ -235,6 +243,46 @@ impl Handler for AgileInfo {
     fn text(&mut self, _raw: &str, _cdata: bool) -> Result<(), XmlError> {
         Ok(())
     }
+}
+
+/// HMAC (RFC 2104) of the concatenation of `parts`.
+fn hmac(hash: Hash, key: &[u8], parts: &[&[u8]]) -> Vec<u8> {
+    let block = if matches!(hash, Hash::Sha384 | Hash::Sha512) { 128 } else { 64 };
+    let mut k = if key.len() > block { hash.digest(&[key]) } else { key.to_vec() };
+    k.resize(block, 0);
+    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5C).collect();
+    let mut inner_parts: Vec<&[u8]> = Vec::with_capacity(parts.len() + 1);
+    inner_parts.push(&ipad);
+    inner_parts.extend_from_slice(parts);
+    let inner = hash.digest(&inner_parts);
+    hash.digest(&[&opad, &inner])
+}
+
+/// Checks the `dataIntegrity` of an agile package (MS-OFFCRYPTO 2.3.4.14): an HMAC, under a key
+/// stored encrypted with the package key, over the whole `EncryptedPackage` stream. A package
+/// that was altered after it was encrypted fails it, whatever the password.
+fn check_integrity(
+    integrity: &(Vec<u8>, Vec<u8>),
+    kd: &KeyData,
+    kd_hash: Hash,
+    aes: &Aes,
+    package: &[u8],
+) -> Result<(), DecryptError> {
+    let failed = || malformed("the integrity check failed: the package was altered");
+    let iv_of = |block: [u8; 8]| {
+        let d = kd_hash.digest(&[&kd.salt, &block]);
+        d.get(..kd.block_size).unwrap_or(&d).to_vec()
+    };
+    let open = |block: [u8; 8], data: &[u8]| {
+        aes.cbc_decrypt(&iv_of(block), data).map(Secret::new).ok_or_else(failed)
+    };
+    let size = kd_hash.size();
+    let hmac_key = open([0x5f, 0xb2, 0xad, 0x01, 0x0c, 0xb9, 0xe1, 0xf6], &integrity.0)?;
+    let stored = open([0xa0, 0x67, 0x7f, 0x02, 0xb2, 0x2c, 0x84, 0x33], &integrity.1)?;
+    let key = hmac_key.get(..size).ok_or_else(failed)?;
+    let expected = stored.get(..size).ok_or_else(failed)?;
+    if constant_time_eq(&hmac(kd_hash, key, &[package]), expected) { Ok(()) } else { Err(failed()) }
 }
 
 /// `key` fitted to `len` bytes: cut, or padded with `0x36`.
@@ -250,6 +298,7 @@ fn agile(info: &[u8], package: &[u8], password: &str) -> Result<Vec<u8>, Decrypt
     let mut parsed = AgileInfo::default();
     xml::drive(text, &PreviewPolicy::default().xml, &mut parsed)
         .map_err(|e| DecryptError::Malformed(format!("descriptor: {e}")))?;
+    let parsed_integrity = parsed.integrity.take();
     let (Some(kd), Some(pk)) = (parsed.key_data, parsed.password) else {
         return Err(DecryptError::Unsupported("no password key encryptor".into()));
     };
@@ -272,19 +321,20 @@ fn agile(info: &[u8], package: &[u8], password: &str) -> Result<Vec<u8>, Decrypt
     }
 
     // The password hash, stretched.
-    let pw = utf16(password);
+    let pw = Secret::new(utf16(password));
     let mut buf = [0u8; 64];
     let mut n = pk_hash.digest_into(&[&pk.data.salt, &pw], &mut buf);
     for i in 0..pk.spin {
         let prev = buf;
         n = pk_hash.digest_into(&[&i.to_le_bytes(), prev.get(..n).unwrap_or(&[])], &mut buf);
     }
-    let h = buf.get(..n).unwrap_or(&[]).to_vec();
+    let h = Secret::new(buf.get(..n).unwrap_or(&[]).to_vec());
+    super::wipe(&mut buf);
     let key_len = pk.data.key_bits / 8;
-    let derive = |block: [u8; 8]| fit(pk_hash.digest(&[&h, &block]), key_len);
-    let decrypt = |block: [u8; 8], data: &[u8]| -> Result<Vec<u8>, DecryptError> {
+    let derive = |block: [u8; 8]| Secret::new(fit(pk_hash.digest(&[&h, &block]), key_len));
+    let decrypt = |block: [u8; 8], data: &[u8]| -> Result<Secret, DecryptError> {
         let aes = Aes::new(&derive(block)).ok_or_else(|| malformed("bad key length"))?;
-        aes.cbc_decrypt(&pk.data.salt, data).ok_or_else(|| malformed("bad block"))
+        aes.cbc_decrypt(&pk.data.salt, data).map(Secret::new).ok_or_else(|| malformed("bad block"))
     };
     let verifier = decrypt([0xfe, 0xa7, 0xd2, 0x76, 0x3b, 0x4b, 0x9e, 0x79], &pk.verifier_input)?;
     let expected = pk_hash.digest(&[verifier.get(..16).unwrap_or(&verifier)]);
@@ -292,9 +342,12 @@ fn agile(info: &[u8], package: &[u8], password: &str) -> Result<Vec<u8>, Decrypt
     if !constant_time_eq(&expected, stored.get(..expected.len()).unwrap_or(&[])) {
         return Err(DecryptError::WrongPassword);
     }
-    let mut key = decrypt([0x14, 0x6e, 0x0b, 0xe7, 0xab, 0xac, 0xd0, 0xd6], &pk.key_value)?;
-    key.truncate(kd.key_bits / 8);
-    let aes = Aes::new(&key).ok_or_else(|| malformed("bad package key"))?;
+    let key = decrypt([0x14, 0x6e, 0x0b, 0xe7, 0xab, 0xac, 0xd0, 0xd6], &pk.key_value)?;
+    let key = key.get(..kd.key_bits / 8).unwrap_or(&key);
+    let aes = Aes::new(key).ok_or_else(|| malformed("bad package key"))?;
+    if let Some(integrity) = &parsed_integrity {
+        check_integrity(integrity, &kd, kd_hash, &aes, package)?;
+    }
 
     // The package, in segments of 4096 bytes with an IV each.
     let size = package_size(package)?;
@@ -343,6 +396,55 @@ mod tests {
             assert_eq!(got, fixture(plain), "{file}");
             assert!(texts(&got).contains("Квартальный отчёт") || texts(&got).contains("Яблоки"));
         }
+    }
+
+    #[test]
+    fn an_altered_agile_package_fails_its_integrity_check() {
+        for file in ["enc-agile.docx", "enc-agile.xlsx"] {
+            let data = fixture(file);
+            let cf =
+                CompoundFile::parse(&data, PreviewPolicy::default().cfb).expect("a compound file");
+            let info = cf.read_stream(cf.find("EncryptionInfo").expect("info")).expect("info");
+            let package =
+                cf.read_stream(cf.find("EncryptedPackage").expect("package")).expect("package");
+            let password = if file.ends_with("docx") { "пароль-123" } else { "s3cret" };
+            assert!(agile(&info, &package, password).is_ok(), "{file}");
+            // A single flipped bit anywhere in the encrypted stream, the size header included.
+            for at in [0, 8, package.len() / 2, package.len() - 1] {
+                let mut altered = package.clone();
+                altered[at] ^= 1;
+                let r = agile(&info, &altered, password);
+                assert!(
+                    matches!(&r, Err(DecryptError::Malformed(m)) if m.contains("integrity")),
+                    "{file} byte {at}: {r:?}"
+                );
+            }
+            // The wrong password is still the wrong password, not an integrity failure.
+            assert_eq!(agile(&info, &package, "nope"), Err(DecryptError::WrongPassword));
+        }
+    }
+
+    #[test]
+    fn hmac_matches_the_published_test_vectors() {
+        // RFC 2202 test case 2 (SHA-1) and RFC 4231 test case 2 (SHA-256).
+        let key = b"Jefe";
+        let msg: &[&[u8]] = &[b"what do ya want ", b"for nothing?"];
+        let hex = |v: Vec<u8>| v.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(hex(hmac(Hash::Sha1, key, msg)), "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79");
+        assert_eq!(
+            hex(hmac(Hash::Sha256, key, msg)),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        // A key longer than the block is hashed first (RFC 4231 test case 6).
+        let long = vec![0xAAu8; 131];
+        assert_eq!(
+            hex(hmac(
+                Hash::Sha256,
+                &long,
+                &[b"Test Using Larger Than Block-Size Key - Hash Key First"]
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
     }
 
     #[test]

@@ -11,6 +11,10 @@ use super::lex::{Lexer, Tok};
 
 /// Most mappings kept per CMap.
 const MAX_ENTRIES: usize = 1 << 19;
+/// Longest text one code may map to, in UTF-16 units. Real maps send a code to a letter or to a
+/// ligature's few letters; a map of half a million codes to megabyte strings would multiply
+/// into every string shown. A longer destination is not a mapping at all.
+const MAX_TARGET_UNITS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Target {
@@ -58,6 +62,15 @@ fn units_to_string(units: &[u16]) -> String {
         .collect()
 }
 
+/// The text of a destination string; empty (no mapping) when it is longer than
+/// [`MAX_TARGET_UNITS`].
+fn target_text(bytes: &[u8]) -> String {
+    if bytes.len() > MAX_TARGET_UNITS * 2 {
+        return String::new();
+    }
+    units_to_string(&utf16_units(bytes))
+}
+
 impl CMap {
     /// Parses a CMap program.
     pub(super) fn parse(data: &[u8]) -> Self {
@@ -80,7 +93,7 @@ impl CMap {
                 Tok::Kw(b"beginbfchar") => {
                     while let Tok::Str(src) = lx.next_tok() {
                         let dst = match lx.next_tok() {
-                            Tok::Str(d) => units_to_string(&utf16_units(&d)),
+                            Tok::Str(d) => target_text(&d),
                             Tok::Name(n) => glyph_to_string(&n).unwrap_or_default(),
                             _ => break,
                         };
@@ -99,12 +112,16 @@ impl CMap {
                     while let Tok::Str(lo) = lx.next_tok() {
                         let Tok::Str(hi) = lx.next_tok() else { break };
                         let target = match lx.next_tok() {
-                            Tok::Str(d) => Target::Base(utf16_units(&d)),
+                            Tok::Str(d) if d.len() <= MAX_TARGET_UNITS * 2 => {
+                                Target::Base(utf16_units(&d))
+                            }
+                            // Too long to be a mapping: the range maps nothing.
+                            Tok::Str(_) => Target::List(Vec::new()),
                             Tok::ArrOpen => {
                                 let mut list = Vec::new();
                                 loop {
                                     match lx.next_tok() {
-                                        Tok::Str(d) => list.push(units_to_string(&utf16_units(&d))),
+                                        Tok::Str(d) => list.push(target_text(&d)),
                                         Tok::Name(n) => {
                                             list.push(glyph_to_string(&n).unwrap_or_default())
                                         }

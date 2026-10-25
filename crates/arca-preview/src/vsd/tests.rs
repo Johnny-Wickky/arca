@@ -347,3 +347,65 @@ fn real_files_read_like_libvisio() {
         }
     }
 }
+
+/// A page with two shapes and the chunks whose layouts are not verified: a connection list (as
+/// pairs of ids that look like a link between the shapes), shape data and a hyperlink.
+fn page_with_unread_chunks(version: u16) -> Vec<u8> {
+    let mut p = chunk(version, 0x15, u32::MAX, &[0u8; 80]);
+    p.extend(chunk(version, 0x48, 1, &[0u8; 20]));
+    p.extend(text_chunk(version, 0, "Start"));
+    p.extend(chunk(version, 0x48, 2, &[0u8; 20]));
+    p.extend(text_chunk(version, 0, "Finish"));
+    // Eight bytes that read as the pair (1, 2) if one looks for pairs.
+    let mut pair = 1u32.to_le_bytes().to_vec();
+    pair.extend(2u32.to_le_bytes());
+    p.extend(chunk(version, 0x71, 9, &pair));
+    p.extend(chunk(version, 0x99, 9, &pair));
+    let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+    p.extend(chunk(version, 0xb6, 3, &utf16("Cost\0\0Twelve\0\0")));
+    p.extend(chunk(version, 0xc4, 4, &utf16("http://evil.example/login\0\0")));
+    p
+}
+
+#[test]
+fn connections_shape_data_and_hyperlinks_are_reported_not_guessed() {
+    let data = drawing(11, &[page_with_unread_chunks(11)], &[]);
+    let p = run(&data).unwrap();
+    let lines: Vec<_> = paragraphs(&p, 0).into_iter().map(|(_, t)| t).collect();
+    // Only the text the file holds: no invented link between the shapes, no scraped strings
+    // labelled as data or as an external link.
+    assert_eq!(lines, ["Start", "Finish"]);
+    let all: String = p
+        .sections
+        .iter()
+        .flat_map(|s| &s.blocks)
+        .filter_map(|b| if let Block::Para(q) = b { Some(q.runs.clone()) } else { None })
+        .flatten()
+        .map(|r| format!("{}|{}", r.text, r.href))
+        .collect();
+    assert!(!all.contains("evil.example") && !all.contains("Cost"), "{all}");
+    let said = |what: &str| {
+        p.notices
+            .iter()
+            .any(|n| n.kind == crate::model::NoticeKind::Unsupported && n.detail.contains(what))
+    };
+    assert!(said("connections between shapes"));
+    assert!(said("shape data"));
+    assert!(said("hyperlinks"));
+    assert!(said("masters"));
+}
+
+#[test]
+fn a_drawing_without_those_chunks_does_not_claim_to_have_skipped_them() {
+    let p = run(&drawing(11, &[page(11)], &[])).unwrap();
+    let said = |what: &str| p.notices.iter().any(|n| n.detail.contains(what));
+    assert!(!said("connections") && !said("shape data") && !said("hyperlinks"));
+}
+
+#[test]
+fn stored_streams_are_charged_to_the_budget_like_inflated_ones() {
+    let data = drawing(11, &[page(11)], &[]);
+    assert!(run(&data).is_ok());
+    let tight = PreviewPolicy { inflate_budget: 64, ..PreviewPolicy::default() };
+    assert!(preview(&data, &tight).is_err(), "copies of stored streams must not be free");
+}

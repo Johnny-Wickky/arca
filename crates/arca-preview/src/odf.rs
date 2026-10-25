@@ -17,8 +17,12 @@ use crate::opc::Package;
 use crate::sink::{GridBuilder, ParaBuilder, Sink};
 use crate::xml::{self, Flow, Handler, Tag, XmlError, unescape};
 
-/// Largest number of copies made of a repeated row or cell.
+/// Largest number of copies made of a repeated row or cell of a spreadsheet.
 const MAX_REPEAT: u32 = 64;
+/// The same for rows of a table in a text document or slide.
+const MAX_TABLE_REPEAT: u32 = 16;
+/// The same for cells of such a table.
+const MAX_TABLE_COL_REPEAT: u32 = 8;
 /// Largest list nesting that is tracked.
 const MAX_LIST_DEPTH: usize = 12;
 /// Longest style inheritance chain that is followed.
@@ -400,6 +404,8 @@ struct SheetCtx {
     row_cells: Vec<(u32, CellKind, String, String)>,
     cell: Option<CellCtx>,
     full: bool,
+    /// Next column described by a `table:table-column` element.
+    colinfo: u32,
 }
 
 struct PageCtx {
@@ -838,7 +844,8 @@ impl<'a, 'p> Odf<'a, 'p> {
                 self.sheet = Some(SheetCtx {
                     name,
                     hidden,
-                    grid: GridBuilder::new(self.sink.policy, self.sink.items_left()),
+                    grid: GridBuilder::new(self.sink.policy, self.sink.items_left())
+                        .with_char_budget(self.sink.chars_left()),
                     row: 1,
                     col: 0,
                     row_rep: 1,
@@ -846,6 +853,7 @@ impl<'a, 'p> Odf<'a, 'p> {
                     row_cells: Vec::new(),
                     cell: None,
                     full: false,
+                    colinfo: 0,
                 });
             }
             Mode::Text | Mode::Slides => self.tables.push(TblCtx::default()),
@@ -861,6 +869,15 @@ impl<'a, 'p> Odf<'a, 'p> {
                 if self.table_depth == 0
                     && let Some(sh) = self.sheet.take()
                 {
+                    let hidden_cols = sh.grid.hidden_columns();
+                    if hidden_cols > 0 {
+                        let kind = if sh.grid.omits_hidden() {
+                            NoticeKind::HiddenOmitted
+                        } else {
+                            NoticeKind::HiddenShown
+                        };
+                        self.sink.count(kind, "columns", hidden_cols);
+                    }
                     let grid = sh.grid.finish();
                     let truncated = grid.truncated;
                     if let Some(sec) =
@@ -901,9 +918,22 @@ impl<'a, 'p> Odf<'a, 'p> {
         }
     }
 
+    fn start_column(&mut self, tag: &Tag<'_>) {
+        let rep = rep_attr(tag, "number-columns-repeated");
+        if let Some(sh) = self.sheet.as_mut() {
+            let first = sh.colinfo;
+            sh.colinfo = first.saturating_add(rep);
+            if tag.attr("visibility").is_some_and(|v| v == "collapse" || v == "filter") {
+                sh.grid.hide_columns(first, sh.colinfo.saturating_sub(1));
+            }
+        }
+    }
+
     fn end_row(&mut self) {
+        let mut repeats_cut = false;
         if let Some(sh) = self.sheet.as_mut() {
             let rep = sh.row_rep.min(MAX_REPEAT);
+            repeats_cut = sh.row_rep > MAX_REPEAT && !sh.row_cells.is_empty() && !sh.full;
             if !sh.row_cells.is_empty() && !sh.full {
                 let cells = std::mem::take(&mut sh.row_cells);
                 for k in 0..rep {
@@ -932,11 +962,15 @@ impl<'a, 'p> Odf<'a, 'p> {
             if cells.is_empty() {
                 return;
             }
-            let rep = t.row_rep.clamp(1, 16);
+            let rep = t.row_rep.clamp(1, MAX_TABLE_REPEAT);
+            repeats_cut = t.row_rep > MAX_TABLE_REPEAT;
             for _ in 1..rep {
                 t.rows.push(Row { cells: cells.clone() });
             }
             t.rows.push(Row { cells });
+        }
+        if repeats_cut {
+            self.sink.truncated("repeated rows");
         }
     }
 
@@ -1009,6 +1043,9 @@ impl<'a, 'p> Odf<'a, 'p> {
                 }
             }
             if !text.is_empty() {
+                if c.rep > MAX_REPEAT {
+                    self.sink.truncated("repeated cells");
+                }
                 for k in 0..c.rep.min(MAX_REPEAT) {
                     sh.row_cells.push((
                         sh.col.saturating_add(k),
@@ -1025,7 +1062,10 @@ impl<'a, 'p> Odf<'a, 'p> {
                 t.covered = false;
                 return;
             }
-            for _ in 1..t.col_rep.min(8) {
+            if t.col_rep > MAX_TABLE_COL_REPEAT && !cell.paras.is_empty() {
+                self.sink.truncated("repeated cells");
+            }
+            for _ in 1..t.col_rep.min(MAX_TABLE_COL_REPEAT) {
                 t.cells.push(cell.clone());
             }
             t.cells.push(cell);
@@ -1262,6 +1302,7 @@ impl Handler for Odf<'_, '_> {
             "table" => return self.start_table(tag),
             "table-header-rows" => self.header_rows += 1,
             "table-row" => self.start_row(tag),
+            "table-column" => self.start_column(tag),
             "table-cell" => self.start_cell(tag, false),
             "covered-table-cell" => self.start_cell(tag, true),
 
@@ -1680,6 +1721,71 @@ mod tests {
                 (1, "IV.".to_owned(), "iv".to_owned()),
                 (1, "V.".to_owned(), "v".to_owned()),
             ]
+        );
+    }
+
+    fn cut_notice(p: &Preview, what: &str) -> bool {
+        p.notices.iter().any(|n| n.kind == NoticeKind::Truncated && n.detail == what)
+    }
+
+    #[test]
+    fn repeated_rows_and_cells_beyond_the_copies_made_are_reported() {
+        let cell =
+            r#"<table:table-cell office:value-type="string"><text:p>x</text:p></table:table-cell>"#;
+        let rows = format!(
+            r#"<table:table table:name="T"><table:table-row table:number-rows-repeated="1000">{cell}</table:table-row></table:table>"#
+        );
+        let p = ok(&ods("", &rows));
+        let Some(Block::Grid(g)) = p.sections.first().and_then(|s| s.blocks.first()) else {
+            panic!("no grid")
+        };
+        assert_eq!(g.rows.len(), 64);
+        assert!(cut_notice(&p, "repeated rows") && p.stats.truncated);
+
+        let wide =
+            r#"<table:table table:name="T"><table:table-row><table:table-cell table:number-columns-repeated="500" office:value-type="string"><text:p>x</text:p></table:table-cell></table:table-row></table:table>"#.to_owned();
+        let p = ok(&ods("", &wide));
+        assert!(cut_notice(&p, "repeated cells"));
+
+        // The same repetition inside a table of a text document.
+        let text_table =
+            r#"<table:table table:name="T"><table:table-row table:number-rows-repeated="100"><table:table-cell><text:p>x</text:p></table:table-cell><table:table-cell table:number-columns-repeated="50"><text:p>y</text:p></table:table-cell></table:table-row></table:table>"#.to_owned();
+        let p = ok(&odt("", &text_table));
+        assert!(cut_notice(&p, "repeated rows") && cut_notice(&p, "repeated cells"));
+
+        // Nothing is said when nothing was cut (empty repeated cells are padding).
+        let pad = r#"<table:table table:name="T"><table:table-row table:number-rows-repeated="1000000"><table:table-cell table:number-columns-repeated="1000000"/></table:table-row></table:table>"#;
+        let p = ok(&ods("", pad));
+        assert!(!p.stats.truncated);
+    }
+
+    #[test]
+    fn hidden_columns_are_counted_and_left_out_when_not_asked_for() {
+        let body = r#"<table:table table:name="T"><table:table-column table:visibility="collapse"/><table:table-column table:number-columns-repeated="2"/>
+            <table:table-row><table:table-cell office:value-type="string"><text:p>secret</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>b</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>c</text:p></table:table-cell></table:table-row></table:table>"#;
+        let data = ods("", body);
+        let p = ok(&data);
+        let Some(Block::Grid(g)) = p.sections.first().and_then(|s| s.blocks.first()) else {
+            panic!("no grid")
+        };
+        assert_eq!(g.rows[0].cells.len(), 3);
+        assert!(
+            p.notices.iter().any(|n| n.kind == NoticeKind::HiddenShown
+                && n.detail == "columns"
+                && n.count == 1)
+        );
+        let policy =
+            crate::PreviewPolicy { reveal_hidden: false, ..crate::PreviewPolicy::default() };
+        let p = crate::preview(&data, &policy).expect("preview");
+        let Some(Block::Grid(g)) = p.sections.first().and_then(|s| s.blocks.first()) else {
+            panic!("no grid")
+        };
+        let texts: Vec<&str> = g.rows[0].cells.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["b", "c"]);
+        assert!(
+            p.notices.iter().any(|n| n.kind == NoticeKind::HiddenOmitted
+                && n.detail == "columns"
+                && n.count == 1)
         );
     }
 

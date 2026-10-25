@@ -3,10 +3,35 @@
 //! None of these formats can carry active content, but their text is still
 //! untrusted: it passes through the same sink as everything else.
 
+use std::cell::Cell as Flag;
+
 use crate::model::{
-    Align, Block, Cell, CellKind, FileFormat, ImageInfo, ParaStyle, Row, SectionKind, Table, style,
+    Align, Block, Cell, CellKind, FileFormat, ImageInfo, NoticeKind, ParaStyle, Row, SectionKind,
+    Table, style,
 };
 use crate::sink::{GridBuilder, ParaBuilder, Sink};
+
+/// Characters of one Markdown line that are scanned for inline markup; the rest of a longer line
+/// is shown as it is. Markup scanning needs the line as characters and several look-ahead
+/// tables, so its cost and memory must not follow the length of a hostile line.
+const MAX_INLINE_CHARS: usize = 16_384;
+
+/// Lines of `text`, split at `\n`, `\r\n` and a lone `\r` (old Mac files). A lone carriage return
+/// is a line break; dropping it would glue two lines into one.
+fn lines_of(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest.find(['\r', '\n']).unwrap_or(rest.len());
+        let line = rest.get(..end)?;
+        let tail = rest.get(end..).unwrap_or_default();
+        rest =
+            tail.strip_prefix("\r\n").or_else(|| tail.strip_prefix(['\r', '\n'])).unwrap_or(tail);
+        Some(line)
+    })
+}
 
 /// Lines per block for plain text: keeps list rows small for the UI.
 const LINES_PER_BLOCK: usize = 200;
@@ -51,7 +76,7 @@ pub(crate) fn plain(sink: &mut Sink<'_>, text: &str) {
     let Some(sec) = sink.open_section(SectionKind::Body, "", false) else { return };
     let mut chunk = String::new();
     let mut lines = 0usize;
-    for line in text.lines() {
+    for line in lines_of(text) {
         chunk.push_str(line);
         chunk.push('\n');
         lines += 1;
@@ -108,10 +133,12 @@ pub(crate) fn detect_delimiter(text: &str, default: char) -> char {
     }
 }
 
-/// Splits delimited text into records (RFC 4180 quoting, `\r\n` or `\n`).
+/// Splits delimited text into records (RFC 4180 quoting; a record ends at `\r\n`, `\n` or a lone
+/// `\r`).
 ///
-/// Calls `row` for every record; stops when it returns `false`.
-fn records(text: &str, delim: char, mut row: impl FnMut(&[String]) -> bool) {
+/// Calls `row` for every record; stops when it returns `false`. Returns `true` if the text ended
+/// inside a quoted field, whose quote was never closed: everything after it is one field.
+fn records(text: &str, delim: char, mut row: impl FnMut(&[String]) -> bool) -> bool {
     let mut fields: Vec<String> = Vec::new();
     let mut field = String::new();
     let mut quoted = false;
@@ -127,6 +154,11 @@ fn records(text: &str, delim: char, mut row: impl FnMut(&[String]) -> bool) {
                 } else {
                     quoted = false;
                 }
+            } else if c == '\r' {
+                // A line break inside a quoted field is kept as one.
+                if chars.peek() != Some(&'\n') {
+                    field.push('\n');
+                }
             } else {
                 field.push(c);
             }
@@ -135,11 +167,13 @@ fn records(text: &str, delim: char, mut row: impl FnMut(&[String]) -> bool) {
         match c {
             '"' if field.is_empty() => quoted = true,
             c if c == delim => fields.push(std::mem::take(&mut field)),
-            '\r' => {}
-            '\n' => {
+            '\r' | '\n' => {
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    continue;
+                }
                 fields.push(std::mem::take(&mut field));
                 if !row(&fields) {
-                    return;
+                    return false;
                 }
                 fields.clear();
                 any = false;
@@ -151,6 +185,7 @@ fn records(text: &str, delim: char, mut row: impl FnMut(&[String]) -> bool) {
         fields.push(field);
         row(&fields);
     }
+    quoted
 }
 
 fn looks_numeric(s: &str) -> bool {
@@ -169,9 +204,10 @@ fn looks_numeric(s: &str) -> bool {
 /// Extracts a CSV / TSV file as a grid.
 pub(crate) fn delimited(sink: &mut Sink<'_>, text: &str, delim: char) {
     let Some(sec) = sink.open_section(SectionKind::Sheet, "", false) else { return };
-    let mut grid = GridBuilder::new(sink.policy, sink.items_left());
+    let mut grid =
+        GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
     let mut row_no = 0u32;
-    records(text, delim, |fields| {
+    let open_quote = records(text, delim, |fields| {
         row_no = row_no.saturating_add(1);
         if fields.iter().all(|f| f.trim().is_empty()) {
             return true;
@@ -192,6 +228,9 @@ pub(crate) fn delimited(sink: &mut Sink<'_>, text: &str, delim: char) {
     if g.truncated {
         sink.truncated("grid");
     }
+    if open_quote {
+        sink.note(NoticeKind::BestEffort, "a quoted field is never closed: the rest is one cell");
+    }
     sink.push(sec, Block::Grid(g));
 }
 
@@ -202,7 +241,20 @@ pub(crate) fn delimited(sink: &mut Sink<'_>, text: &str, delim: char) {
 /// Extracts a Markdown file. HTML in the source is shown literally.
 pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
     let Some(sec) = sink.open_section(SectionKind::Body, "", false) else { return };
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<&str> = lines_of(text).collect();
+    let cut = Flag::new(false);
+    markdown_lines(sink, sec, &lines, &cut);
+    if cut.get() {
+        sink.note(NoticeKind::BestEffort, "markdown: markup of very long lines is not interpreted");
+    }
+}
+
+fn markdown_lines(
+    sink: &mut Sink<'_>,
+    sec: crate::sink::SectionId,
+    lines: &[&str],
+    cut: &Flag<bool>,
+) {
     let mut i = 0usize;
     let mut para: Vec<&str> = Vec::new();
     while let Some(&line) = lines.get(i) {
@@ -214,7 +266,7 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
 
         // Fenced code block.
         if let Some(fence) = fence_of(trimmed) {
-            if !flush_para(sink, sec, &mut para) {
+            if !flush_para(sink, sec, &mut para, cut) {
                 return;
             }
             let mut code = String::new();
@@ -237,7 +289,7 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
         }
 
         if trimmed.is_empty() {
-            if !flush_para(sink, sec, &mut para) {
+            if !flush_para(sink, sec, &mut para, cut) {
                 return;
             }
             i += 1;
@@ -245,7 +297,7 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
         }
 
         if is_rule(trimmed) {
-            if !flush_para(sink, sec, &mut para) || !sink.push(sec, Block::Rule) {
+            if !flush_para(sink, sec, &mut para, cut) || !sink.push(sec, Block::Rule) {
                 return;
             }
             i += 1;
@@ -253,11 +305,11 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
         }
 
         if let Some((level, rest)) = heading_of(trimmed) {
-            if !flush_para(sink, sec, &mut para) {
+            if !flush_para(sink, sec, &mut para, cut) {
                 return;
             }
             let mut b = ParaBuilder::new();
-            inline(&mut b, rest.trim().trim_end_matches('#').trim_end(), 0);
+            inline(&mut b, rest.trim().trim_end_matches('#').trim_end(), 0, cut);
             let mut p = b.take(ParaStyle::heading(level));
             p.align = Align::Start;
             if !sink.para(sec, p) {
@@ -269,7 +321,7 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
 
         // Table: a row with pipes followed by a separator row.
         if trimmed.contains('|') && lines.get(i + 1).is_some_and(|n| is_table_separator(n.trim())) {
-            if !flush_para(sink, sec, &mut para) {
+            if !flush_para(sink, sec, &mut para, cut) {
                 return;
             }
             let mut rows = Vec::new();
@@ -286,7 +338,7 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
                             .into_iter()
                             .map(|c| {
                                 let mut b = ParaBuilder::new();
-                                inline(&mut b, c.trim(), if first { style::BOLD } else { 0 });
+                                inline(&mut b, c.trim(), if first { style::BOLD } else { 0 }, cut);
                                 Cell {
                                     span: 1,
                                     header: first,
@@ -308,11 +360,11 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
 
         // Quote.
         if let Some(rest) = trimmed.strip_prefix('>') {
-            if !flush_para(sink, sec, &mut para) {
+            if !flush_para(sink, sec, &mut para, cut) {
                 return;
             }
             let mut b = ParaBuilder::new();
-            inline(&mut b, rest.trim_start(), 0);
+            inline(&mut b, rest.trim_start(), 0, cut);
             if !sink.para(sec, b.take(ParaStyle::Quote)) {
                 return;
             }
@@ -322,11 +374,11 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
 
         // List item.
         if let Some((marker, rest)) = list_item(trimmed) {
-            if !flush_para(sink, sec, &mut para) {
+            if !flush_para(sink, sec, &mut para, cut) {
                 return;
             }
             let mut b = ParaBuilder::new();
-            inline(&mut b, rest, 0);
+            inline(&mut b, rest, 0, cut);
             let mut p = b.take(ParaStyle::Body);
             p.marker = marker;
             p.level = u8::try_from((indent / 2).min(6) + 1).unwrap_or(1);
@@ -340,7 +392,7 @@ pub(crate) fn markdown(sink: &mut Sink<'_>, text: &str) {
         para.push(line);
         i += 1;
     }
-    flush_para(sink, sec, &mut para);
+    flush_para(sink, sec, &mut para, cut);
 }
 
 fn fence_of(t: &str) -> Option<&'static str> {
@@ -403,7 +455,12 @@ fn list_item(t: &str) -> Option<(String, &str)> {
     None
 }
 
-fn flush_para(sink: &mut Sink<'_>, sec: crate::sink::SectionId, para: &mut Vec<&str>) -> bool {
+fn flush_para(
+    sink: &mut Sink<'_>,
+    sec: crate::sink::SectionId,
+    para: &mut Vec<&str>,
+    cut: &Flag<bool>,
+) -> bool {
     if para.is_empty() {
         return true;
     }
@@ -412,7 +469,7 @@ fn flush_para(sink: &mut Sink<'_>, sec: crate::sink::SectionId, para: &mut Vec<&
     for (k, l) in para.iter().enumerate() {
         let hard = l.ends_with("  ") || l.ends_with('\\');
         let body = l.trim().trim_end_matches('\\');
-        inline(&mut b, body, 0);
+        inline(&mut b, body, 0, cut);
         if k != last {
             b.text(if hard { "\n" } else { " " }, 0, "");
         }
@@ -422,8 +479,70 @@ fn flush_para(sink: &mut Sink<'_>, sec: crate::sink::SectionId, para: &mut Vec<&
 }
 
 /// Inline Markdown: `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, links, images.
-fn inline(b: &mut ParaBuilder, s: &str, base: u16) {
+///
+/// Only the first [`MAX_INLINE_CHARS`] characters are scanned for markup; the rest of a longer
+/// line is appended as it is and `cut` is set so that the caller can say so.
+fn inline(b: &mut ParaBuilder, s: &str, base: u16, cut: &Flag<bool>) {
+    let split = if s.len() <= MAX_INLINE_CHARS {
+        s.len()
+    } else {
+        s.char_indices().nth(MAX_INLINE_CHARS).map_or(s.len(), |(i, _)| i)
+    };
+    let (head, tail) = (s.get(..split).unwrap_or(s), s.get(split..).unwrap_or_default());
+    inline_head(b, head, base);
+    if !tail.is_empty() {
+        cut.set(true);
+        b.text(tail, base, "");
+    }
+}
+
+/// Look-ahead tables for the links of one line, built in one pass so that a line of nothing but
+/// `[` or `[a](` costs the same per character as any other.
+struct LinkTables {
+    /// For each `[`: the index of its matching `]`.
+    close_of: Vec<Option<usize>>,
+    /// For each position: the first `)` at or after it (`usize::MAX` if none); one entry longer
+    /// than the line.
+    next_rparen: Vec<usize>,
+}
+
+impl LinkTables {
+    fn new(chars: &[char]) -> Self {
+        let mut close_of = vec![None; chars.len()];
+        let mut open: Vec<usize> = Vec::new();
+        for (k, &c) in chars.iter().enumerate() {
+            match c {
+                '[' => open.push(k),
+                ']' => {
+                    if let Some(o) = open.pop()
+                        && let Some(slot) = close_of.get_mut(o)
+                    {
+                        *slot = Some(k);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut next_rparen = vec![usize::MAX; chars.len().saturating_add(1)];
+        let mut next = usize::MAX;
+        for (k, &c) in chars.iter().enumerate().rev() {
+            if c == ')' {
+                next = k;
+            }
+            if let Some(slot) = next_rparen.get_mut(k) {
+                *slot = next;
+            }
+        }
+        Self { close_of, next_rparen }
+    }
+}
+
+fn inline_head(b: &mut ParaBuilder, s: &str, base: u16) {
     let chars: Vec<char> = s.chars().collect();
+    let links = chars.contains(&'[').then(|| LinkTables::new(&chars));
+    // Backtick run lengths for which no closing run exists: asking again would scan the whole
+    // line again.
+    let mut unclosed: Vec<usize> = Vec::new();
     let mut st = base;
     let mut lit = String::new();
     let mut i = 0usize;
@@ -446,7 +565,15 @@ fn inline(b: &mut ParaBuilder, s: &str, base: u16) {
             }
             '`' => {
                 let ticks = (i..chars.len()).take_while(|&k| at(k) == Some('`')).count();
-                let close = find_run(&chars, i + ticks, '`', ticks);
+                let close = if unclosed.contains(&ticks) {
+                    None
+                } else {
+                    let found = find_run(&chars, i + ticks, '`', ticks);
+                    if found.is_none() {
+                        unclosed.push(ticks);
+                    }
+                    found
+                };
                 if let Some(end) = close {
                     flush!();
                     let code: String =
@@ -484,7 +611,7 @@ fn inline(b: &mut ParaBuilder, s: &str, base: u16) {
                 i += 2;
             }
             '!' if at(i + 1) == Some('[') => {
-                if let Some((label, _target, end)) = link_at(&chars, i + 1) {
+                if let Some((label, _target, end)) = link_at(&chars, links.as_ref(), i + 1) {
                     flush!();
                     b.text(&format!("[{label}]"), st | style::ITALIC, "");
                     i = end;
@@ -494,7 +621,7 @@ fn inline(b: &mut ParaBuilder, s: &str, base: u16) {
                 }
             }
             '[' => {
-                if let Some((label, target, end)) = link_at(&chars, i) {
+                if let Some((label, target, end)) = link_at(&chars, links.as_ref(), i) {
                     flush!();
                     b.text(&label, st | style::UNDERLINE, &target);
                     i = end;
@@ -529,34 +656,24 @@ fn find_run(chars: &[char], from: usize, ch: char, len: usize) -> Option<usize> 
 }
 
 /// Parses `[label](target)` starting at `chars[start] == '['`.
-fn link_at(chars: &[char], start: usize) -> Option<(String, String, usize)> {
-    let mut depth = 0usize;
-    let mut k = start;
-    let mut close = None;
-    while let Some(&c) = chars.get(k) {
-        match c {
-            '[' => depth += 1,
-            ']' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    close = Some(k);
-                    break;
-                }
-            }
-            _ => {}
-        }
-        k += 1;
-    }
-    let close = close?;
+fn link_at(
+    chars: &[char],
+    tables: Option<&LinkTables>,
+    start: usize,
+) -> Option<(String, String, usize)> {
+    let tables = tables?;
+    let close = tables.close_of.get(start).copied().flatten()?;
     if chars.get(close + 1) != Some(&'(') {
         return None;
     }
-    let tail = chars.get(close + 2..)?;
-    let end = tail.iter().position(|&c| c == ')')?;
+    let rparen = *tables.next_rparen.get(close + 2)?;
+    if rparen == usize::MAX {
+        return None;
+    }
     let label: String = chars.get(start + 1..close)?.iter().collect();
-    let target: String = tail.get(..end)?.iter().collect();
+    let target: String = chars.get(close + 2..rparen)?.iter().collect();
     let target = target.split_whitespace().next().unwrap_or("").to_owned();
-    Some((label, target, close + 2 + end + 1))
+    Some((label, target, rparen + 1))
 }
 
 /// A picture placeholder for formats where text embeds an image reference.

@@ -11,13 +11,33 @@
 //!   unpacked or previewed — except an attached *message*, which is a message of its own and is
 //!   shown like one, a few levels deep and no more than a few dozen of them.
 
+use std::cell::Cell;
+
 use arca_container::bytes::{u16_le, u32_le};
-use arca_container::cfb::{CompoundFile, EntryKind};
+use arca_container::cfb::{CfbError, CompoundFile, EntryKind};
 use arca_container::text::{CodePage, decode_codepage, utf16le_until_nul};
 
 use crate::PreviewError;
 use crate::model::{NoticeKind, ParaStyle, SectionKind, style};
 use crate::sink::{ParaBuilder, Sink};
+
+thread_local! {
+    /// A stream could not be read because the file's total read budget was spent (a compound
+    /// file whose directory entries share one chain is read once per entry).
+    static BUDGET_SPENT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A stream's bytes; a spent read budget is remembered so that the preview can say so.
+fn read(cf: &CompoundFile<'_>, index: usize) -> Option<Vec<u8>> {
+    match cf.read_stream(index) {
+        Ok(d) => Some(d),
+        Err(CfbError::ReadBudgetExceeded) => {
+            BUDGET_SPENT.with(|b| b.set(true));
+            None
+        }
+        Err(_) => None,
+    }
+}
 
 /// Recipients and attachments listed.
 const MAX_ITEMS: usize = 4_096;
@@ -80,7 +100,7 @@ fn props_of(cf: &CompoundFile<'_>, storage: Option<usize>, header: usize) -> Vec
         Some(s) => cf.child(s, name),
         None => cf.find(name),
     };
-    let Some(data) = idx.and_then(|i| cf.read_stream(i).ok()) else { return Vec::new() };
+    let Some(data) = idx.and_then(|i| read(cf, i)) else { return Vec::new() };
     data.get(header..)
         .unwrap_or(&[])
         .chunks_exact(16)
@@ -116,7 +136,7 @@ fn raw_prop(
             None => cf.find(&name),
         };
         if let Some(i) = idx
-            && let Ok(d) = cf.read_stream(i)
+            && let Some(d) = read(cf, i)
         {
             return Some((ty, d));
         }
@@ -461,7 +481,12 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         return Err(malformed("the property stream is missing"));
     }
     let Some(sec) = sink.open_section(SectionKind::Body, "", false) else { return Ok(()) };
-    message(cf, None, 32, 0, &mut Walk::default(), sink, sec)
+    BUDGET_SPENT.with(|b| b.set(false));
+    let res = message(cf, None, 32, 0, &mut Walk::default(), sink, sec);
+    if BUDGET_SPENT.with(Cell::take) {
+        sink.truncated("message streams (read budget)");
+    }
+    res
 }
 
 /// The message stored in `store` (`None`: the whole file) written into section `sec`. `header` is
@@ -812,6 +837,26 @@ mod tests {
             p.notices
                 .iter()
                 .any(|n| n.kind == NoticeKind::Unsupported && n.detail.contains("attachments"))
+        );
+    }
+
+    #[test]
+    fn a_spent_read_budget_is_reported_not_silently_an_empty_message() {
+        let m = Msg::default().text(0x0037, "Subject").text(0x1000, &"body line\r\n".repeat(2_000));
+        let data = m.build();
+        let policy = crate::PreviewPolicy {
+            cfb: arca_container::cfb::CfbLimits {
+                max_total_read: 2_048,
+                ..arca_container::cfb::CfbLimits::default()
+            },
+            ..crate::PreviewPolicy::default()
+        };
+        let p = crate::preview(&data, &policy).expect("preview");
+        assert!(p.stats.truncated);
+        assert!(
+            p.notices
+                .iter()
+                .any(|n| n.kind == NoticeKind::Truncated && n.detail.contains("read budget"))
         );
     }
 

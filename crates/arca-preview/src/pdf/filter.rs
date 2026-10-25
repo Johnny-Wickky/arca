@@ -415,7 +415,9 @@ fn predict(data: Vec<u8>, spec: &FilterSpec) -> Vec<u8> {
         return data;
     }
     let mut out: Vec<u8> = Vec::with_capacity(data.len());
-    let mut prev: Vec<u8> = vec![0; row_bytes];
+    // The row above; beyond its end (or before the first row) everything reads as zero, so it
+    // never needs to be padded to `row_bytes`, which a file may declare as tens of megabytes.
+    let mut prev: Vec<u8> = Vec::new();
     for chunk in data.chunks(row_bytes + 1) {
         let Some((&filter, body)) = chunk.split_first() else { break };
         let mut cur: Vec<u8> = body.to_vec();
@@ -435,7 +437,6 @@ fn predict(data: Vec<u8>, spec: &FilterSpec) -> Vec<u8> {
             }
         }
         out.extend_from_slice(&cur);
-        cur.resize(row_bytes, 0);
         prev = cur;
     }
     out
@@ -504,6 +505,26 @@ mod tests {
         let hex: String = z.iter().map(|b| format!("{b:02x}")).collect();
         let d = run(format!("{hex}>").as_bytes(), &["AHx", "Fl"]);
         assert_eq!(d.data, raw);
+    }
+
+    #[test]
+    fn a_predictor_row_of_sixty_megabytes_is_not_allocated_per_row() {
+        // 32 colours x 16 bits x a million columns: a row the stream does not have.
+        let mut s = FilterSpec::new("FlateDecode");
+        s.predictor = 12;
+        s.colors = 32;
+        s.bpc = 16;
+        s.columns = 1 << 20;
+        let mut rows = Vec::new();
+        for _ in 0..300 {
+            rows.extend([0u8, 1, 2, 3, 4]);
+        }
+        let z = compress_to_vec_zlib(&rows, 6);
+        let started = std::time::Instant::now();
+        let d = apply(&z, &[s], 1 << 20, &mut budget()).unwrap_or_default();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+        // The one (short) row is reconstructed; nothing was padded to 64 MiB per row.
+        assert_eq!(d.data.len(), 1499);
     }
 
     #[test]

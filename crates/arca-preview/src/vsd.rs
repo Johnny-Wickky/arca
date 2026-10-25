@@ -8,8 +8,11 @@
 //!
 //! What a reader needs from a diagram is shown, as for `.vsdx`: the text of every shape, in
 //! reading order and with groups kept together, and a marker for pictures. Geometry, connections,
-//! shape data, hyperlinks and pictures themselves are not read, and nothing is executed. Masters
-//! (the stencil shapes) are not shown: they are the library the page draws from, not the drawing.
+//! shape data, hyperlinks, masters (the stencil shapes) and pictures themselves are **not read**,
+//! and nothing is executed. The layouts of the chunks that carry connections, shape data and
+//! hyperlinks are not verified against real files, so they are counted and reported
+//! ([`NoticeKind::Unsupported`]) instead of being guessed at: a connection invented from bytes
+//! that are not one is worse than none.
 //!
 //! The structure follows the public descriptions of the format (the HDGF documentation of Apache
 //! POI and the VSDump notes it cites); it was checked against the text LibreOffice reads from the
@@ -67,8 +70,6 @@ const CHUNK_XFORM: u32 = 0x9b;
 const CHUNK_USER: u32 = 0xb4;
 const CHUNK_CUSTOM_PROP: u32 = 0xb6;
 const CHUNK_HYPERLINK: u32 = 0xc4;
-
-const POINTER_MASTERS: i32 = 0x28;
 
 /// A pointer to a stream.
 #[derive(Debug, Clone, Copy)]
@@ -247,6 +248,11 @@ impl Visio<'_> {
             }
             Some(Content { data, start: 4 })
         } else {
+            // A stored stream is copied, so it is charged like an inflated one.
+            if raw.len() > self.budget {
+                return None;
+            }
+            self.budget -= raw.len();
             Some(Content { data: raw.to_vec(), start: 0 })
         }
     }
@@ -274,63 +280,12 @@ impl Visio<'_> {
     }
 }
 
-/// Most master pages read.
-const MAX_MASTERS_READ: usize = 512;
-/// Most connections kept per page.
-const MAX_CONNECTS: usize = 10_000;
-/// Most strings taken from one chunk.
-const MAX_CHUNK_STRINGS: usize = 256;
-
-/// Printable text runs of at least two characters in a chunk body: UTF-16LE for Visio 2000 and
-/// later, single bytes before. A heuristic (the chunk layouts are not parsed), bounded in the
-/// number and the length of the strings.
-fn extract_chunk_strings(body: &[u8], version: u16) -> Vec<String> {
-    let mut strings: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let flush = |cur: &mut String, strings: &mut Vec<String>| {
-        let trimmed = cur.trim();
-        if cur.chars().count() >= 2
-            && !trimmed.is_empty()
-            && trimmed.len() <= MAX_NAME
-            && strings.len() < MAX_CHUNK_STRINGS
-        {
-            strings.push(trimmed.to_owned());
-        }
-        cur.clear();
-    };
-    if version > 6 {
-        for pair in body.chunks_exact(2) {
-            let ch = u16::from_le_bytes([
-                pair.first().copied().unwrap_or(0),
-                pair.get(1).copied().unwrap_or(0),
-            ]);
-            match char::from_u32(u32::from(ch)) {
-                Some(c) if ch >= 0x20 && ch != 0x7F && ch < 0xFFFE && cur.len() <= MAX_NAME => {
-                    cur.push(c);
-                }
-                _ => flush(&mut cur, &mut strings),
-            }
-        }
-    } else {
-        for &b in body {
-            if (0x20..=0x7E).contains(&b) && cur.len() <= MAX_NAME {
-                cur.push(char::from(b));
-            } else {
-                flush(&mut cur, &mut strings);
-            }
-        }
-    }
-    flush(&mut cur, &mut strings);
-    strings
-}
 /// A shape read from a page.
 #[derive(Default)]
 struct Shape {
     ty: u32,
     pin: Option<(f64, f64)>,
     text: String,
-    props: Vec<(String, String)>,
-    links: Vec<String>,
     /// Ids of the shapes a group holds.
     kids: Vec<u32>,
 }
@@ -343,7 +298,24 @@ struct Page {
     roots: Vec<u32>,
     /// Shapes in the order they appear.
     order: Vec<u32>,
-    connects: Vec<(u32, u32)>,
+    /// Chunks of kinds that are counted but not read (see the module documentation).
+    unread: Unread,
+}
+
+/// How many chunks of the kinds that are not read a page held.
+#[derive(Default, Clone, Copy)]
+struct Unread {
+    connections: usize,
+    shape_data: usize,
+    hyperlinks: usize,
+}
+
+impl Unread {
+    fn add(&mut self, other: Self) {
+        self.connections = self.connections.saturating_add(other.connections);
+        self.shape_data = self.shape_data.saturating_add(other.shape_data);
+        self.hyperlinks = self.hyperlinks.saturating_add(other.hyperlinks);
+    }
 }
 
 /// Where the shape ids that follow a shape list belong.
@@ -406,42 +378,13 @@ fn read_page(data: &[u8], version: u16) -> Page {
                 }
             }
             CHUNK_CUSTOM_PROP | CHUNK_USER => {
-                if let Some(shape) = current.and_then(|id| page.shapes.get_mut(&id)) {
-                    let strs = extract_chunk_strings(c.body, version);
-                    let mut it = strs.into_iter();
-                    while let Some(k) = it.next() {
-                        let v = it.next().unwrap_or_default();
-                        if shape.props.len() < 64 {
-                            shape.props.push((k, v));
-                        }
-                    }
-                }
+                page.unread.shape_data = page.unread.shape_data.saturating_add(1);
             }
             CHUNK_HYPERLINK => {
-                if let Some(shape) = current.and_then(|id| page.shapes.get_mut(&id)) {
-                    let strs = extract_chunk_strings(c.body, version);
-                    for s in strs {
-                        if shape.links.len() < 16 && !shape.links.contains(&s) {
-                            shape.links.push(s);
-                        }
-                    }
-                }
+                page.unread.hyperlinks = page.unread.hyperlinks.saturating_add(1);
             }
             CHUNK_CONNECTION_LIST | CHUNK_CONNECTION => {
-                // Best effort: the body is read as consecutive (from, to) shape-id pairs, which
-                // are shown only when both ids name shapes of the page.
-                for pair in c.body.chunks_exact(8) {
-                    if page.connects.len() >= MAX_CONNECTS {
-                        break;
-                    }
-                    if let (Some(from), Some(to)) = (u32_le(pair, 0), u32_le(pair, 4))
-                        && from > 0
-                        && to > 0
-                        && from != to
-                    {
-                        page.connects.push((from, to));
-                    }
-                }
+                page.unread.connections = page.unread.connections.saturating_add(1);
             }
             _ => {}
         }
@@ -483,7 +426,7 @@ fn names(v: &mut Visio<'_>, p: Pointer) -> Vec<String> {
         let d = c.body();
         // An entry is [size][level][text] when `size` is the rest of the entry, else [level][text].
         let skip = match u32_le(d, 0).and_then(|s| usize::try_from(s).ok()) {
-            Some(size) if size > 0 && size + 4 == d.len() => 8,
+            Some(size) if size > 0 && size.checked_add(4) == Some(d.len()) => 8,
             _ => 4,
         };
         let raw = d.get(skip..).unwrap_or(&[]);
@@ -540,29 +483,6 @@ fn emit(
             let p = Paragraph {
                 level,
                 runs: vec![Run { text: line.to_owned(), style: 0, href: String::new() }],
-                ..Paragraph::default()
-            };
-            if !sink.para(sec, p) {
-                return false;
-            }
-        }
-        let prop_level = u8::try_from(depth.saturating_add(1).min(6)).unwrap_or(6);
-        for (k, v) in &shape.props {
-            let text = if v.is_empty() { k.clone() } else { format!("{k}: {v}") };
-            let p = Paragraph {
-                level: prop_level,
-                runs: vec![Run { text, style: 0, href: String::new() }],
-                ..Paragraph::default()
-            };
-            if !sink.para(sec, p) {
-                return false;
-            }
-        }
-        for link in &shape.links {
-            let text = format!("[внешняя ссылка] {link}");
-            let p = Paragraph {
-                level: prop_level,
-                runs: vec![Run { text, style: 0, href: link.clone() }],
                 ..Paragraph::default()
             };
             if !sink.para(sec, p) {
@@ -635,8 +555,12 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
     if pages.is_empty() {
         return Err(PreviewError::Malformed("the drawing lists no pages".into()));
     }
+    if pages.len() > MAX_PAGES {
+        sink.truncated("pages");
+    }
 
     let mut pictures = false;
+    let mut unread = Unread::default();
     for (k, ptr) in pages.iter().take(MAX_PAGES).enumerate() {
         if sink.is_full() {
             break;
@@ -657,6 +581,7 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         // The block header of a compressed stream belongs to the first chunk.
         let page = read_page(&content.data, version);
         pictures |= page.shapes.values().any(|s| s.ty == CHUNK_FOREIGN);
+        unread.add(page.unread);
         let Some(sec) = sink.open_section(SectionKind::Page, &name, false) else { break };
         let mut seen = BTreeSet::new();
         let ok = if page.roots.is_empty() {
@@ -670,65 +595,25 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
                 emit(&page, &rest, sec, sink, 0, &mut seen, false)
             }
         };
-        for &(from, to) in &page.connects {
-            if page.shapes.contains_key(&from) && page.shapes.contains_key(&to) {
-                let from_name =
-                    page.shapes.get(&from).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
-                let to_name =
-                    page.shapes.get(&to).and_then(|s| s.text.lines().next()).unwrap_or("Фигура");
-                let text = format!("Связь: {from_name} → {to_name}");
-                let p = Paragraph {
-                    level: 0,
-                    runs: vec![Run { text, style: 0, href: String::new() }],
-                    ..Paragraph::default()
-                };
-                let _ = sink.para(sec, p);
-            }
-        }
         sink.drop_if_empty(sec);
         if !ok {
             break;
         }
     }
-    // Masters / Stencils (Issue #48)
-    let masters_ptrs: Vec<_> = top
-        .iter()
-        .filter(|p| (p.ty == POINTER_MASTERS || p.ty == 0x16) && p.has_pointers())
-        .collect();
-    let mut master_names = Vec::new();
-    for mp in masters_ptrs {
-        if let Some(c) = v.open(*mp) {
-            for child in v.children(c.body()).into_iter().take(MAX_MASTERS_READ) {
-                if let Some(content) = v.open(child) {
-                    let m_page = read_page(&content.data, version);
-                    for shape in m_page.shapes.values() {
-                        let name = shape.text.lines().next().unwrap_or("").trim();
-                        if !name.is_empty()
-                            && !master_names.contains(&name.to_string())
-                            && master_names.len() < 128
-                        {
-                            master_names.push(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if !master_names.is_empty()
-        && let Some(sec) = sink.open_section(SectionKind::Body, "Мастера и трафареты", false)
-    {
-        let text = format!("Мастера: {}", master_names.join(", "));
-        let p = Paragraph {
-            level: 0,
-            runs: vec![Run { text, style: 0, href: String::new() }],
-            ..Paragraph::default()
-        };
-        let _ = sink.para(sec, p);
-    }
-
     if pictures {
         sink.note(NoticeKind::Unsupported, "pictures and embedded objects");
     }
+    // Counted, never guessed at: the layouts of these chunks are not verified.
+    if unread.connections > 0 {
+        sink.note(NoticeKind::Unsupported, "visio connections between shapes are not read");
+    }
+    if unread.shape_data > 0 {
+        sink.note(NoticeKind::Unsupported, "visio shape data are not read");
+    }
+    if unread.hyperlinks > 0 {
+        sink.note(NoticeKind::Unsupported, "visio hyperlinks are not read");
+    }
+    sink.note(NoticeKind::Unsupported, "visio masters (stencils) are not read");
     sink.note(NoticeKind::Unsupported, "drawing geometry");
     sink.note(NoticeKind::BestEffort, "binary Visio");
     Ok(())

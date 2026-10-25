@@ -13,13 +13,69 @@
 //! * Nesting depth, attribute count, name length and event count are bounded.
 //! * End tags must match, exactly one root element, nothing but whitespace around it.
 //!
-//! What it does not do: namespace resolution (names are compared by local part, as the scanner
-//! does), validation of the character set of names beyond a basic sanity check, or duplicate
-//! attribute detection (the scanner already rejects those documents).
+//! Namespaces: names are compared by local part, but an element whose prefix resolves to a
+//! namespace outside the office families ([`known_ns`]) is *foreign*: its [`Tag::local`] is empty,
+//! so a `<x:t>` bound to some private URI is never taken for `<w:t>`. Relationship ids are read
+//! from the attribute whose prefix is bound to the relationships namespace ([`Tag::attr_rel`]),
+//! never from a look-alike such as `w:id`. Foreign elements are counted ([`take_foreign`]) so the
+//! sink can say that they were ignored.
+//!
+//! What it does not do: validation of the character set of names beyond a basic sanity check, or
+//! duplicate attribute detection (the scanner already rejects those documents).
 
 use std::borrow::Cow;
+use std::cell::Cell;
 
 pub(crate) use arca_container::xml::{XmlError, XmlLimits};
+
+/// Namespace declarations in scope at once (a real document declares a few dozen).
+const MAX_NS_DECLS: usize = 256;
+
+thread_local! {
+    /// Foreign-namespace elements met since the last [`take_foreign`].
+    static FOREIGN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Returns and clears the number of foreign-namespace elements the tokenizers have met on this
+/// thread. The sink calls it when a preview is finished.
+pub(crate) fn take_foreign() -> u64 {
+    FOREIGN.with(Cell::take)
+}
+
+/// `true` for the namespaces of the office formats this crate reads (OOXML in both its
+/// transitional and strict form, vendor extensions, ODF, Dublin Core, XML itself).
+fn known_ns(uri: &str) -> bool {
+    const STEMS: [&str; 11] = [
+        "http://schemas.openxmlformats.org/",
+        "http://purl.oclc.org/ooxml/",
+        "http://schemas.microsoft.com/office/",
+        "urn:schemas-microsoft-com:",
+        "urn:oasis:names:tc:opendocument:xmlns:",
+        "urn:org:documentfoundation:names:",
+        "http://www.w3.org/",
+        "http://purl.org/",
+        "http://openoffice.org/",
+        "http://docs.oasis-open.org/",
+        "http://www.openoffice.org/",
+    ];
+    STEMS.iter().any(|s| uri.starts_with(s))
+}
+
+/// The two relationship namespaces (transitional and strict).
+fn is_rel_ns(uri: &str) -> bool {
+    uri == "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        || uri == "http://purl.oclc.org/ooxml/officeDocument/relationships"
+}
+
+/// One `xmlns` declaration in scope.
+#[derive(Debug, Clone, Copy)]
+struct Decl<'a> {
+    /// `""` for the default namespace.
+    prefix: &'a str,
+    uri: &'a str,
+    /// Nesting depth of the element that declared it (the root is 1).
+    depth: usize,
+}
 
 /// A start or empty-element tag.
 #[derive(Debug, Clone, Copy)]
@@ -28,12 +84,33 @@ pub(crate) struct Tag<'a> {
     pub(crate) name: &'a str,
     /// The raw attribute area (between the name and `>` / `/>`), already validated.
     attrs: &'a str,
+    /// The element's namespace is none of the office namespaces.
+    foreign: bool,
+    /// The prefix bound to the relationships namespace here, if the document binds one.
+    rel_prefix: Option<&'a str>,
 }
 
 impl<'a> Tag<'a> {
-    /// Local part of the name (text after the last `:`).
+    /// Local part of the name (text after the last `:`); empty for a foreign-namespace element,
+    /// which therefore matches nothing an extractor looks for.
     pub(crate) fn local(&self) -> &'a str {
-        local_part(self.name)
+        if self.foreign { "" } else { local_part(self.name) }
+    }
+
+    /// Value of the relationship-id attribute `local` (`r:id`, `r:embed`, `r:link`): the attribute
+    /// whose prefix is bound to the relationships namespace. An attribute with the same local name
+    /// under another prefix (`w:id`) is not mistaken for it.
+    pub(crate) fn attr_rel(&self, local: &str) -> Option<Cow<'a, str>> {
+        let want = self.rel_prefix.unwrap_or("r");
+        self.attrs()
+            .find(|(n, _)| n.split_once(':').is_some_and(|(p, l)| p == want && l == local))
+            .and_then(|(_, v)| unescape(v).ok())
+    }
+
+    /// Value of the attribute `name` written *without* a prefix (`Id`, `Target` of a
+    /// relationship), so that `x:Target` cannot stand in for it.
+    pub(crate) fn attr_plain(&self, name: &str) -> Option<Cow<'a, str>> {
+        self.attrs().find(|(n, _)| *n == name).and_then(|(_, v)| unescape(v).ok())
     }
 
     /// Value of the first attribute whose local name is `local`, entity-decoded.
@@ -108,12 +185,21 @@ pub(crate) enum Ev<'a> {
 pub(crate) struct Reader<'a> {
     src: &'a str,
     pos: usize,
-    stack: Vec<&'a str>,
-    pending_end: Option<&'a str>,
+    /// Open elements: the name as written and whether the element is foreign.
+    stack: Vec<(&'a str, bool)>,
+    pending_end: Option<(&'a str, bool)>,
     limits: XmlLimits,
     events: u64,
     seen_root: bool,
     root_closed: bool,
+    decls: Vec<Decl<'a>>,
+    /// Declarations changed since `rel_prefix` and `verdicts` were computed.
+    scope_dirty: bool,
+    rel_prefix: Option<&'a str>,
+    /// Prefix → "foreign" verdicts valid for the current declarations.
+    verdicts: Vec<(&'a str, bool)>,
+    /// The element last returned as [`Ev::End`] was foreign.
+    end_foreign: bool,
 }
 
 #[inline]
@@ -137,6 +223,16 @@ fn is_name_start(b: u8) -> bool {
 #[inline]
 fn is_name_char(b: u8) -> bool {
     is_name_start(b) || b.is_ascii_digit() || b == b'-' || b == b'.'
+}
+
+/// The prefix a namespace declaration binds (`xmlns` → `""`, `xmlns:w` → `"w"`), or `None` if the
+/// attribute is not a declaration.
+fn ns_decl_prefix(attr_name: &str) -> Option<&str> {
+    let rest = attr_name.strip_prefix("xmlns")?;
+    if rest.is_empty() {
+        return Some("");
+    }
+    rest.strip_prefix(':')
 }
 
 /// Text after the last `:`.
@@ -182,7 +278,58 @@ impl<'a> Reader<'a> {
             events: 0,
             seen_root: false,
             root_closed: false,
+            decls: Vec::new(),
+            scope_dirty: false,
+            rel_prefix: None,
+            verdicts: Vec::new(),
+            end_foreign: false,
         })
+    }
+
+    /// Local name for the [`Ev::End`] just returned (empty for a foreign element, like
+    /// [`Tag::local`] of its start tag).
+    pub(crate) fn end_local(&self, name: &'a str) -> &'a str {
+        if self.end_foreign { "" } else { local_part(name) }
+    }
+
+    fn refresh_scope(&mut self) {
+        if !self.scope_dirty {
+            return;
+        }
+        self.scope_dirty = false;
+        self.verdicts.clear();
+        self.rel_prefix = self
+            .decls
+            .iter()
+            .rev()
+            .find(|d| !d.prefix.is_empty() && is_rel_ns(d.uri))
+            .map(|d| d.prefix);
+    }
+
+    /// Whether names with this prefix (`""` = default namespace) are foreign in the current scope.
+    fn prefix_is_foreign(&mut self, prefix: &'a str) -> bool {
+        if let Some((_, f)) = self.verdicts.iter().find(|(p, _)| *p == prefix) {
+            return *f;
+        }
+        let verdict = self
+            .decls
+            .iter()
+            .rev()
+            .find(|d| d.prefix == prefix)
+            .is_some_and(|d| d.uri.is_empty() || !known_ns(d.uri));
+        if self.verdicts.len() < 64 {
+            self.verdicts.push((prefix, verdict));
+        }
+        verdict
+    }
+
+    /// Drops the declarations of elements that have closed.
+    fn leave_scope(&mut self) {
+        let depth = self.stack.len();
+        while self.decls.last().is_some_and(|d| d.depth > depth) {
+            self.decls.pop();
+            self.scope_dirty = true;
+        }
     }
 
     /// Number of currently open elements.
@@ -203,8 +350,9 @@ impl<'a> Reader<'a> {
     /// # Errors
     /// Any policy violation or well-formedness error.
     pub(crate) fn next(&mut self) -> Result<Option<Ev<'a>>, XmlError> {
-        if let Some(name) = self.pending_end.take() {
+        if let Some((name, foreign)) = self.pending_end.take() {
             self.count_event()?;
+            self.end_foreign = foreign;
             return Ok(Some(Ev::End(name)));
         }
         let bytes = self.src.as_bytes();
@@ -261,10 +409,13 @@ impl<'a> Reader<'a> {
             .get(self.pos + 2..close)
             .ok_or_else(|| malformed("bad end tag span"))?
             .trim_end_matches(is_xml_ws);
-        let open = self.stack.pop().ok_or_else(|| malformed("end tag without a start tag"))?;
+        let (open, foreign) =
+            self.stack.pop().ok_or_else(|| malformed("end tag without a start tag"))?;
         if open != name {
             return Err(malformed("end tag does not match its start tag"));
         }
+        self.leave_scope();
+        self.end_foreign = foreign;
         self.pos = close + 1;
         if self.stack.is_empty() {
             self.root_closed = true;
@@ -321,6 +472,8 @@ impl<'a> Reader<'a> {
         // Attribute area: validated here, parsed lazily by `Tag::attrs`.
         let attr_start = i;
         let mut count = 0usize;
+        let depth = self.stack.len() + 1;
+        let declared = self.decls.len();
         let (attr_end, empty) = loop {
             i = skip_ws(bytes, i);
             match bytes.get(i).copied() {
@@ -340,6 +493,7 @@ impl<'a> Reader<'a> {
                     if i - n0 > self.limits.max_name_len {
                         return Err(XmlError::NameTooLong);
                     }
+                    let attr_name = self.src.get(n0..i).unwrap_or_default();
                     i = skip_ws(bytes, i);
                     if bytes.get(i) != Some(&b'=') {
                         return Err(malformed("attribute without a value"));
@@ -354,6 +508,14 @@ impl<'a> Reader<'a> {
                     if bytes.get(i + 1..close).is_some_and(|v| v.contains(&b'<')) {
                         return Err(malformed("'<' in an attribute value"));
                     }
+                    if let Some(prefix) = ns_decl_prefix(attr_name) {
+                        if self.decls.len() >= MAX_NS_DECLS {
+                            return Err(malformed("too many namespace declarations"));
+                        }
+                        let uri = self.src.get(i + 1..close).unwrap_or_default();
+                        self.decls.push(Decl { prefix, uri, depth });
+                        self.scope_dirty = true;
+                    }
                     i = close + 1;
                     count += 1;
                     if count > self.limits.max_attributes {
@@ -366,7 +528,13 @@ impl<'a> Reader<'a> {
             }
         };
         let attrs = self.src.get(attr_start..attr_end).ok_or_else(|| malformed("bad attr span"))?;
-        let tag = Tag { name, attrs };
+        self.refresh_scope();
+        let prefix = name.split_once(':').map_or("", |(p, _)| p);
+        let foreign = self.prefix_is_foreign(prefix);
+        if foreign {
+            FOREIGN.with(|f| f.set(f.get().saturating_add(1)));
+        }
+        let tag = Tag { name, attrs, foreign, rel_prefix: self.rel_prefix };
         self.pos = if empty { attr_end + 2 } else { attr_end + 1 };
 
         if self.stack.is_empty() {
@@ -383,10 +551,15 @@ impl<'a> Reader<'a> {
             if self.stack.is_empty() {
                 self.root_closed = true;
             }
-            self.pending_end = Some(name);
+            self.pending_end = Some((name, foreign));
+            if self.decls.len() > declared {
+                // The declarations of an empty element reach nobody else.
+                self.decls.truncate(declared);
+                self.scope_dirty = true;
+            }
             Ok(Ev::Empty(tag))
         } else {
-            self.stack.push(name);
+            self.stack.push((name, foreign));
             Ok(Ev::Start(tag))
         }
     }
@@ -434,23 +607,23 @@ pub(crate) fn drive(
     let mut rd = Reader::new(src, limits)?;
     let mut skip_to: Option<(usize, &str)> = None;
     while let Some(ev) = rd.next()? {
-        if let Some((depth, name)) = skip_to {
+        if let Some((depth, local)) = skip_to {
             if matches!(ev, Ev::End(_)) && rd.depth() < depth {
                 skip_to = None;
-                handler.end(local_part(name));
+                handler.end(local);
             }
             continue;
         }
         match ev {
             Ev::Start(t) => {
                 if handler.start(&t, false) == Flow::SkipChildren {
-                    skip_to = Some((rd.depth(), t.name));
+                    skip_to = Some((rd.depth(), t.local()));
                 }
             }
             Ev::Empty(t) => {
                 let _ = handler.start(&t, true);
             }
-            Ev::End(name) => handler.end(local_part(name)),
+            Ev::End(name) => handler.end(rd.end_local(name)),
             Ev::Text(raw) => handler.text(raw, false)?,
             Ev::CData(raw) => handler.text(raw, true)?,
         }
@@ -690,7 +863,7 @@ mod tests {
     #[test]
     fn agrees_with_the_secure_reader() {
         let docs = [
-            r#"<a xmlns:x="u"><x:b k="v">hello &lt;world&gt;</x:b><c/><d><e>1</e><e>2</e></d></a>"#,
+            r#"<a xmlns:x="http://www.w3.org/x"><x:b k="v">hello &lt;world&gt;</x:b><c/><d><e>1</e><e>2</e></d></a>"#,
             "<root>\n  <i>a</i>\n  <i>b &#x26; c</i>\n</root>",
             r#"<p><r><t>one</t></r><r><t xml:space="preserve"> two </t></r></p>"#,
             "<a><![CDATA[<raw>]]><!-- skip --><?pi data?>tail</a>",

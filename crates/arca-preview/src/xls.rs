@@ -44,6 +44,7 @@ const SST: u16 = 0x00FC;
 const XF: u16 = 0x00E0;
 const FORMAT: u16 = 0x041E;
 const ROW: u16 = 0x0208;
+const COLINFO: u16 = 0x007D;
 const LABELSST: u16 = 0x00FD;
 const LABEL: u16 = 0x0204;
 const RSTRING: u16 = 0x00D6;
@@ -53,6 +54,10 @@ const MULRK: u16 = 0x00BD;
 const BOOLERR: u16 = 0x0205;
 const FORMULA: u16 = 0x0006;
 const STRING: u16 = 0x0207;
+/// Records that may sit between a FORMULA and its STRING result.
+const SHRFMLA: u16 = 0x04BC;
+const ARRAY: u16 = 0x0221;
+const TABLE: u16 = 0x0236;
 const NOTE: u16 = 0x001C;
 const OBJ: u16 = 0x005D;
 const TXO: u16 = 0x01B6;
@@ -464,10 +469,20 @@ struct SheetData {
     charts: bool,
     /// Hyperlinks that lead out of the workbook.
     links: Vec<CellLink>,
+    /// Column ranges (zero-based, inclusive) the sheet hides.
+    hidden_cols: Vec<(u32, u32)>,
+    /// Bytes of cell text taken so far, and the most the sheet may take.
+    bytes: usize,
+    max_bytes: usize,
 }
 
-fn parse_sheet(book: &mut Book, data: &[u8], offset: usize, max_cells: usize) -> SheetData {
-    let mut out = SheetData::default();
+fn parse_sheet(
+    book: &mut Book,
+    data: &[u8],
+    offset: usize,
+    (max_cells, max_bytes): (usize, usize),
+) -> SheetData {
+    let mut out = SheetData { max_bytes, ..SheetData::default() };
     let mut rd = Reader::at(data, offset);
     let Some(first) = rd.next_rec() else { return out };
     if first.id != BOF {
@@ -493,10 +508,20 @@ fn parse_sheet(book: &mut Book, data: &[u8], offset: usize, max_cells: usize) ->
             _ if depth > 1 => continue,
             _ => {}
         }
-        if rec.id != STRING {
+        if !matches!(rec.id, STRING | SHRFMLA | ARRAY | TABLE) {
+            // The text of a string result follows its formula, after the shared-formula, array
+            // or table record the formula heads (if any).
             pending = None;
         }
         match rec.id {
+            COLINFO => {
+                if u16_le(rec.data, 8).unwrap_or(0) & 1 != 0
+                    && out.hidden_cols.len() < 4_096
+                    && let (Some(first), Some(last)) = (u16_le(rec.data, 0), u16_le(rec.data, 2))
+                {
+                    out.hidden_cols.push((u32::from(first), u32::from(last)));
+                }
+            }
             ROW => {
                 let row = u32::from(u16_le(rec.data, 0).unwrap_or(0));
                 if u16_le(rec.data, 12).unwrap_or(0) & 0x20 != 0 {
@@ -509,7 +534,9 @@ fn parse_sheet(book: &mut Book, data: &[u8], offset: usize, max_cells: usize) ->
                 else {
                     continue;
                 };
-                if let Some(s) = book.sst.get(usz(i)) {
+                if let Some(s) = book.sst.get(usz(i))
+                    && room_for(&mut out, max_cells, s.len())
+                {
                     push_cell(&mut out, max_cells, row, col, CellKind::Text, s.clone());
                 }
             }
@@ -838,6 +865,17 @@ fn parse_hlink(d: &[u8]) -> Option<CellLink> {
     Some(CellLink { row1: row1 + 1, row2: row2 + 1, col1, col2, href: clip_href(&href, 2_048) })
 }
 
+/// `true` if one more cell of `len` bytes of text fits the sheet's cell and byte limits; if not,
+/// the sheet is marked truncated. Checked *before* a shared string is cloned for a cell: a few
+/// long strings referenced by a million cells must not be multiplied in memory.
+fn room_for(out: &mut SheetData, max_cells: usize, len: usize) -> bool {
+    if out.cells.len() >= max_cells || out.bytes.saturating_add(len) > out.max_bytes {
+        out.truncated = true;
+        return false;
+    }
+    true
+}
+
 fn push_cell(
     out: &mut SheetData,
     max_cells: usize,
@@ -846,10 +884,10 @@ fn push_cell(
     kind: CellKind,
     text: String,
 ) {
-    if out.cells.len() >= max_cells {
-        out.truncated = true;
+    if !room_for(out, max_cells, text.len()) {
         return;
     }
+    out.bytes = out.bytes.saturating_add(text.len());
     out.cells.push(CellOut { row: u32::from(row), col: u32::from(col), kind, text });
 }
 
@@ -906,13 +944,17 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         };
         let Some(sec) = sink.open_section(SectionKind::Sheet, &name, sheet.hidden) else { break };
         let max_cells = sink.policy.max_grid_cells.min(sink.items_left());
-        let mut sd = parse_sheet(&mut book, &data, sheet.offset, max_cells);
+        let mut sd = parse_sheet(&mut book, &data, sheet.offset, (max_cells, sink.chars_left()));
         formulas = formulas.saturating_add(sd.formulas);
         charts |= sd.charts;
 
         // Stable sort: for a repeated cell the last record wins.
         sd.cells.sort_by_key(|c| (c.row, c.col));
-        let mut grid = GridBuilder::new(sink.policy, sink.items_left());
+        let mut grid =
+            GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
+        for &(first, last) in &sd.hidden_cols {
+            grid.hide_columns(first, last);
+        }
         sd.hidden_rows.sort_unstable();
         let mut current: Option<u32> = None;
         let mut iter = sd.cells.iter().peekable();
@@ -931,8 +973,19 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
                 break;
             }
         }
+        let hidden_cols = grid.hidden_columns();
+        if hidden_cols > 0 {
+            let kind = if grid.omits_hidden() {
+                NoticeKind::HiddenOmitted
+            } else {
+                NoticeKind::HiddenShown
+            };
+            sink.count(kind, "columns", hidden_cols);
+        }
         let mut grid = grid.finish();
-        grid.attach_links(&sd.links);
+        if !grid.attach_links(&sd.links) {
+            sink.truncated("hyperlinks");
+        }
         grid.truncated |= sd.truncated;
         if grid.truncated {
             sink.truncated("grid");
@@ -1357,6 +1410,107 @@ mod tests {
         assert_eq!(cell(g, 1, 2), Some(("TRUE".into(), CellKind::Bool)));
         assert_eq!(cell(g, 1, 3), Some(("#N/A".into(), CellKind::Error)));
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::FormulasNotEvaluated));
+    }
+
+    #[test]
+    fn a_string_result_after_a_shared_formula_record_is_not_lost() {
+        let formula = |row: u16, col: u16| {
+            let mut d = [row.to_le_bytes(), col.to_le_bytes(), 0u16.to_le_bytes()].concat();
+            d.extend([0, 0, 0, 0, 0, 0, 0xFF, 0xFF]);
+            d.extend([0u8; 6]);
+            d.extend(0u16.to_le_bytes());
+            rec(FORMULA, &d)
+        };
+        let wb = workbook(
+            &[xf(0)],
+            &[sheet(
+                "F",
+                vec![
+                    formula(0, 0),
+                    rec(SHRFMLA, &[0, 0, 1, 0, 0, 0, 0, 0, 0, 0]),
+                    rec(STRING, &xl("after shrfmla", false)),
+                    formula(1, 0),
+                    rec(ARRAY, &[0u8; 14]),
+                    rec(STRING, &xl("after array", false)),
+                    formula(2, 0),
+                    rec(TABLE, &[0u8; 16]),
+                    rec(STRING, &xl("after table", false)),
+                ],
+            )],
+        );
+        let p = ok(&file(wb));
+        let g = grid(&p, 0);
+        assert_eq!(cell(g, 1, 0), Some(("after shrfmla".into(), CellKind::Text)));
+        assert_eq!(cell(g, 2, 0), Some(("after array".into(), CellKind::Text)));
+        assert_eq!(cell(g, 3, 0), Some(("after table".into(), CellKind::Text)));
+    }
+
+    #[test]
+    fn hidden_columns_are_counted_and_left_out_when_not_asked_for() {
+        let colinfo = |first: u16, last: u16, flags: u16| {
+            let mut d = Vec::new();
+            d.extend(first.to_le_bytes());
+            d.extend(last.to_le_bytes());
+            d.extend(2_000u16.to_le_bytes());
+            d.extend(0u16.to_le_bytes());
+            d.extend(flags.to_le_bytes());
+            d.extend(0u16.to_le_bytes());
+            rec(COLINFO, &d)
+        };
+        let data = file(workbook(
+            &[xf(0)],
+            &[sheet(
+                "C",
+                vec![
+                    colinfo(1, 1, 1),
+                    colinfo(3, 3, 0),
+                    number(0, 0, 0, 10.0),
+                    number(0, 1, 0, 20.0),
+                    number(0, 2, 0, 30.0),
+                    number(0, 3, 0, 40.0),
+                ],
+            )],
+        ));
+        let cols = |p: &Preview| -> Vec<u32> {
+            g(p).rows.iter().flat_map(|r| r.cells.iter().map(|c| c.col)).collect()
+        };
+        fn g(p: &Preview) -> &Grid {
+            grid(p, 0)
+        }
+        let p = ok(&data);
+        assert_eq!(cols(&p), [0, 1, 2, 3]);
+        assert!(
+            p.notices.iter().any(|n| n.kind == NoticeKind::HiddenShown
+                && n.detail == "columns"
+                && n.count == 1)
+        );
+        let policy =
+            crate::PreviewPolicy { reveal_hidden: false, ..crate::PreviewPolicy::default() };
+        let p = crate::preview(&data, &policy).expect("preview");
+        assert_eq!(cols(&p), [0, 2, 3]);
+        assert!(
+            p.notices.iter().any(|n| n.kind == NoticeKind::HiddenOmitted
+                && n.detail == "columns"
+                && n.count == 1)
+        );
+    }
+
+    #[test]
+    fn a_workbook_whose_cells_outgrow_the_text_budget_is_cut_and_says_so() {
+        let strings: Vec<Vec<u8>> = (0..400u16)
+            .map(|i| {
+                let mut d = Vec::new();
+                d.extend(i.to_le_bytes());
+                d.extend(0u16.to_le_bytes());
+                d.extend(xl(&"x".repeat(100), false));
+                rec(LABEL, &d)
+            })
+            .collect();
+        let data = file(workbook(&[xf(0)], &[sheet("T", strings)]));
+        let policy = crate::PreviewPolicy { max_chars: 2_000, ..crate::PreviewPolicy::default() };
+        let p = crate::preview(&data, &policy).expect("preview");
+        assert!(p.stats.truncated);
+        assert!(p.stats.chars <= 2_000);
     }
 
     #[test]

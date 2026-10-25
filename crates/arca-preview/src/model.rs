@@ -36,8 +36,12 @@ pub mod style {
     pub const DELETED: u16 = 1 << 8;
     /// Tracked insertion.
     pub const INSERTED: u16 = 1 << 9;
+    /// The text was made by the viewer from the document's data (a reconstructed SQL query, for
+    /// example); it is not text the document contains and must be drawn so that it cannot be
+    /// mistaken for it.
+    pub const SYNTHETIC: u16 = 1 << 10;
     /// All defined bits.
-    pub const ALL: u16 = (1 << 10) - 1;
+    pub const ALL: u16 = (1 << 11) - 1;
 }
 
 /// A span of text with uniform formatting.

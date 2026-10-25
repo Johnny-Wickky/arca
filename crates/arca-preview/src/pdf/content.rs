@@ -24,6 +24,8 @@ const MAX_CONTENT: usize = 96 << 20;
 const MAX_FORM_DEPTH: usize = 8;
 /// Form XObjects executed per page.
 const MAX_FORMS_PER_PAGE: usize = 4_000;
+/// Forms run in one document.
+const MAX_FORMS_PER_DOCUMENT: usize = 100_000;
 /// Pictures recorded per page.
 const MAX_IMAGES_PER_PAGE: usize = 5_000;
 /// Operands kept for one operator.
@@ -131,6 +133,9 @@ pub(super) struct PageOut {
     pub(super) items: Vec<Item>,
     /// Codes without a Unicode mapping (shown as U+FFFD).
     pub(super) unmapped: usize,
+    /// Codes whose text mapping disagrees with the font's encoding: what the page shows may not
+    /// be what the text says.
+    pub(super) mismatched: usize,
     /// Pieces of text flagged hidden.
     pub(super) hidden: usize,
     /// The page was cut short by an operator, form or line limit.
@@ -147,12 +152,21 @@ pub(super) struct Shared {
     pub(super) fonts: HashMap<u32, Rc<Font>>,
     pub(super) ocg_off: HashSet<u32>,
     pub(super) ops_left: u64,
+    /// Form XObjects that may still be run in the whole document: the per-page limit alone lets
+    /// a thousand pages each run thousands of them.
+    pub(super) forms_left: usize,
     pub(super) fallback: Rc<Font>,
 }
 
 impl Shared {
     pub(super) fn new(ocg_off: HashSet<u32>, ops: u64) -> Self {
-        Self { fonts: HashMap::new(), ocg_off, ops_left: ops, fallback: Rc::new(Font::fallback()) }
+        Self {
+            fonts: HashMap::new(),
+            ocg_off,
+            ops_left: ops,
+            forms_left: MAX_FORMS_PER_DOCUMENT,
+            fallback: Rc::new(Font::fallback()),
+        }
     }
 }
 
@@ -817,6 +831,10 @@ impl Interp<'_, '_> {
             + int_to_f64(i64::try_from(shown.spaces).unwrap_or(0)) * self.gs.tw)
             * self.gs.th;
         self.out.unmapped = self.out.unmapped.saturating_add(shown.unmapped);
+        self.out.mismatched = self.out.mismatched.saturating_add(shown.mismatched);
+        if shown.clipped {
+            self.out.truncated = true;
+        }
         let m = self.tm.then(self.gs.ctm);
         let (x, y) = m.apply(0.0, self.gs.rise);
         let scale_x = m.a.hypot(m.b);
@@ -1069,7 +1087,10 @@ impl Interp<'_, '_> {
                 self.push_image(info);
             }
             "Form" => {
-                if self.form_depth >= MAX_FORM_DEPTH || self.forms_left == 0 {
+                if self.form_depth >= MAX_FORM_DEPTH
+                    || self.forms_left == 0
+                    || self.shared.forms_left == 0
+                {
                     self.out.truncated = true;
                     return;
                 }
@@ -1079,6 +1100,7 @@ impl Interp<'_, '_> {
                     return;
                 }
                 self.forms_left -= 1;
+                self.shared.forms_left -= 1;
                 let Ok(decoded) = self.pdf.stream_data(&stream, MAX_CONTENT) else {
                     self.out.damaged = true;
                     return;
@@ -1465,6 +1487,43 @@ mod tests {
         let o = run_with(b);
         assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
         assert!(o.truncated);
+    }
+
+    #[test]
+    fn the_form_budget_belongs_to_the_document_not_to_each_page() {
+        let mut b = PdfBuilder::with_content("/Fm1 Do /Fm1 Do /Fm1 Do");
+        b.add_raw(
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << /Fm1 6 0 R >> >> >>",
+        );
+        b.add_stream(6, "/Type /XObject /Subtype /Form /BBox [0 0 1 1]", b"q Q");
+        let data = b.build();
+        let mut pdf = PdfFile::open(&data, &PreviewPolicy::default()).expect("open");
+        let page = pdf.object(3);
+        let dict = page.as_dict().cloned().expect("page");
+        let contents = match pdf.get(&dict, "Contents") {
+            Obj::Stream(s) => vec![s],
+            _ => Vec::new(),
+        };
+        let res = match pdf.get(&dict, "Resources") {
+            Obj::Dict(d) => d,
+            _ => Rc::new(Dict::new()),
+        };
+        let input = PageInput {
+            resources: res,
+            contents,
+            visible: [0.0, 0.0, 612.0, 792.0],
+            record: false,
+        };
+        let mut shared = Shared::new(HashSet::new(), 1_000_000);
+        shared.forms_left = 4;
+        // Two pages of three forms each: the second one is cut short by what the first one used.
+        let first = run_page(&mut pdf, &mut shared, &input);
+        assert!(!first.truncated);
+        assert_eq!(shared.forms_left, 1);
+        let second = run_page(&mut pdf, &mut shared, &input);
+        assert!(second.truncated);
+        assert_eq!(shared.forms_left, 0);
     }
 
     #[test]

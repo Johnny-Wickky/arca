@@ -186,3 +186,38 @@ fn the_preview_gives_pictures_their_object_numbers() {
         .collect();
     assert_eq!(ids, [7]);
 }
+
+#[test]
+fn a_soft_mask_is_sampled_not_expanded() {
+    let gray = "/Type /XObject /Subtype /Image /ColorSpace /DeviceGray /BitsPerComponent 8";
+    let masked = |mask: &str, mask_data: &[u8], w: u32, h: u32, data: &[u8]| {
+        let mut b = PdfBuilder::with_content("/Im1 Do");
+        b.add_raw(3, PAGE);
+        b.add_flate_stream(8, &format!("{gray} {mask}"), mask_data);
+        b.add_flate_stream(7, &format!("{gray} /Width {w} /Height {h} /SMask 8 0 R"), data);
+        b.build()
+    };
+    // One alpha value for every pixel of a larger picture.
+    let img = samples(&masked("/Width 1 /Height 1", &[64], 8, 8, &[200; 64]));
+    assert!((0..8).all(|i| px(&img, i, i)[3] == 64));
+    // A 2 × 2 mask over 4 × 4: each mask pixel covers a 2 × 2 square.
+    let img = samples(&masked("/Width 2 /Height 2", &[0, 90, 180, 255], 4, 4, &[7; 16]));
+    assert_eq!(
+        [
+            px(&img, 0, 0)[3],
+            px(&img, 1, 1)[3],
+            px(&img, 2, 0)[3],
+            px(&img, 0, 2)[3],
+            px(&img, 3, 3)[3]
+        ],
+        [0, 0, 90, 180, 255]
+    );
+    // A picture of 30000 × 30000 pixels with a 1 × 1 mask is refused by its own size, before
+    // anything is made for the mask (a byte per pixel would be 900 MB).
+    let huge = masked("/Width 1 /Height 1", &[1], 30_000, 30_000, &[0; 16]);
+    match picture(&huge, 7, &PreviewPolicy::default()) {
+        Err(PictureError::Malformed(why)) => assert!(why.contains("pixels"), "{why}"),
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("a 900 megapixel picture was accepted"),
+    }
+}

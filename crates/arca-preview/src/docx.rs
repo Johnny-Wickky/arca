@@ -678,10 +678,17 @@ impl<'a, 'p> Walker<'a, 'p> {
     }
 }
 
+/// `s` without the field keyword `keyword`, which Word matches case-insensitively
+/// (`Hyperlink`, `HyperLink` and `hyperlink` all make a link).
+pub(crate) fn strip_keyword_ci<'a>(s: &'a str, keyword: &str) -> Option<&'a str> {
+    let head = s.get(..keyword.len())?;
+    head.eq_ignore_ascii_case(keyword).then(|| s.get(keyword.len()..)).flatten()
+}
+
 /// Extracts the target of `HYPERLINK "url"` field instructions.
 pub(crate) fn hyperlink_of(instr: &str) -> Option<String> {
     let t = instr.trim_start();
-    let rest = t.strip_prefix("HYPERLINK").or_else(|| t.strip_prefix("hyperlink"))?;
+    let rest = strip_keyword_ci(t, "HYPERLINK")?;
     let rest = rest.trim_start();
     if let Some(q) = rest.strip_prefix('"') {
         return q.split('"').next().map(str::to_owned);
@@ -806,7 +813,7 @@ impl Handler for Walker<'_, '_> {
             "ins" | "moveTo" => self.ins += 1,
             "del" | "moveFrom" => self.del += 1,
             "hyperlink" => {
-                let href = if let Some(id) = tag.attr("id") {
+                let href = if let Some(id) = tag.attr_rel("id") {
                     self.rel(&id).map(|r| r.target.clone()).unwrap_or_default()
                 } else if let Some(a) = tag.attr("anchor") {
                     format!("#{a}")
@@ -901,8 +908,8 @@ impl Handler for Walker<'_, '_> {
                 self.alt = d.into_owned();
             }
             "blip" | "imagedata" if self.drawing > 0 => {
-                let embed = tag.attr("embed").or_else(|| tag.attr("id"));
-                let link = tag.attr("link");
+                let embed = tag.attr_rel("embed").or_else(|| tag.attr_rel("id"));
+                let link = tag.attr_rel("link");
                 let (bytes, ext, external, pic_id) = if let Some(id) =
                     embed.as_deref().or(link.as_deref())
                     && let Some(r) = self.rel(id)
@@ -931,7 +938,7 @@ impl Handler for Walker<'_, '_> {
                     alt: format!("OLE: {prog}"),
                     media: "ole".to_owned(),
                     bytes: 0,
-                    external: tag.attr("Type").is_some_and(|t| t == "Link"),
+                    external: tag.attr_plain("Type").is_some_and(|t| t == "Link"),
                     ..ImageInfo::default()
                 };
                 if self.para.is_none() {

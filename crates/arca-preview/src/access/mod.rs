@@ -6,8 +6,9 @@
 //!
 //! * the data of a table is read page by page; indexes, relationships and validation rules are
 //!   not used;
-//! * queries, forms, reports, macros and modules are **listed, never shown or run** — a query is
-//!   an SQL text that could reach other files, a macro or module is code;
+//! * queries are shown as the rows Access stores for them and, for a plain `SELECT`, as an
+//!   approximate SQL text marked [`crate::model::style::SYNTHETIC`]; no query is ever run. Forms,
+//!   reports, macros and modules are **listed, never shown or run** (a macro or module is code);
 //! * linked tables are listed; the database they point to is not opened;
 //! * memo text and hyperlinks are shown (the address is never followed); OLE objects, binary
 //!   values and attachments are replaced by their size;
@@ -92,7 +93,8 @@ pub(crate) fn extract(
             continue;
         };
         let Some(sec) = sink.open_section(SectionKind::Sheet, &o.name, hidden) else { break };
-        let mut grid = GridBuilder::new(sink.policy, sink.items_left());
+        let mut grid =
+            GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
         let mut row_no = 1u32;
         if grid.row(row_no, false) {
             for (i, c) in table.columns.iter().enumerate() {
@@ -204,24 +206,52 @@ pub(crate) fn extract(
         }
     }
 
+    let (mut reconstructed, mut as_stored) = (false, false);
     for o in shown.iter().filter(|o| o.kind == kind::QUERY) {
         if sink.is_full() {
             break;
         }
+        let Some(mut rows) = queries_map.remove(&o.id) else {
+            // Nothing is made up for a query whose definition is not in the file.
+            sink.skipped(&format!("query {}: no definition rows", o.name));
+            continue;
+        };
         let hidden = o.flags & HIDDEN_FLAG != 0;
         let Some(sec) =
             sink.open_section(SectionKind::Sheet, &format!("Query: {}", o.name), hidden)
         else {
             break;
         };
-        let sql_text = if let Some(mut rows) = queries_map.remove(&o.id) {
-            format_query(&mut rows)
+        rows.sort_by_key(|r| (r.attribute, r.order));
+        let qtype = query_type(o.flags);
+        // The viewer's own words are marked as such (`SYNTHETIC`); the rows below are the file's.
+        let mut text = format!("-- {}", qtype.label());
+        if qtype == QueryType::Select
+            && let Some(sql) = select_sql(&rows)
+        {
+            text.push('\n');
+            text.push_str(&sql);
+            reconstructed = true;
         } else {
-            String::from("-- (query definition not found in MSysQueries)")
-        };
+            as_stored = true;
+        }
         let mut p = Paragraph::default();
-        p.runs.push(Run { text: sql_text, style: style::MONO, href: String::new() });
+        p.runs.push(Run { text, style: style::MONO | style::SYNTHETIC, href: String::new() });
         sink.push(sec, Block::Para(p));
+        let rows_grid = stored_rows(sink, &rows);
+        sink.push(sec, Block::Grid(rows_grid));
+    }
+    if reconstructed {
+        sink.note(
+            NoticeKind::BestEffort,
+            "access: SELECT text is reconstructed from MSysQueries and not verified against Access",
+        );
+    }
+    if as_stored {
+        sink.note(
+            NoticeKind::Unsupported,
+            "access: queries other than plain SELECT are shown as their stored rows, not as SQL",
+        );
     }
 
     if deleted_total > 0 {
@@ -245,120 +275,185 @@ struct QueryRow {
     flag: i64,
 }
 
-fn format_query(rows: &mut [QueryRow]) -> String {
-    rows.sort_by_key(|r| (r.attribute, r.order));
-    let mut select_parts = Vec::new();
-    let mut from_parts = Vec::new();
-    let mut where_parts = Vec::new();
-    let mut group_parts = Vec::new();
-    let mut having_parts = Vec::new();
-    let mut order_parts = Vec::new();
+/// What a row of `MSysQueries` describes, by its `Attribute` (the layout Jackcess documents in
+/// `QueryImpl`; no query in the test databases confirms it, so every use of it is labelled).
+mod attr {
+    pub(super) const TYPE: i64 = 1;
+    pub(super) const PARAMETERS: i64 = 2;
+    pub(super) const FLAGS: i64 = 3;
+    pub(super) const TABLE: i64 = 5;
+    pub(super) const COLUMN: i64 = 6;
+    pub(super) const WHERE: i64 = 8;
+    pub(super) const GROUP_BY: i64 = 9;
+    pub(super) const HAVING: i64 = 10;
+    pub(super) const ORDER_BY: i64 = 11;
+}
 
-    for r in rows.iter() {
-        match r.attribute {
-            // 1: SELECT
-            1 => {
-                let part = if !r.expression.is_empty() {
-                    if !r.name1.is_empty() && r.name1 != r.expression {
-                        format!("{} AS [{}]", r.expression, r.name1)
-                    } else {
-                        r.expression.clone()
-                    }
-                } else if !r.name1.is_empty() {
-                    format!("[{}]", r.name1)
-                } else {
-                    String::new()
-                };
-                if !part.is_empty() {
-                    select_parts.push(part);
-                }
-            }
-            // 3: FROM / tables
-            3 => {
-                let part = if !r.name1.is_empty() {
-                    if !r.name2.is_empty() {
-                        format!("[{}].[{}]", r.name2, r.name1)
-                    } else {
-                        format!("[{}]", r.name1)
-                    }
-                } else if !r.expression.is_empty() {
-                    r.expression.clone()
-                } else {
-                    String::new()
-                };
-                if !part.is_empty() {
-                    from_parts.push(part);
-                }
-            }
-            // 5: WHERE
-            5 => {
-                if !r.expression.is_empty() {
-                    where_parts.push(r.expression.clone());
-                }
-            }
-            // 6: GROUP BY
-            6 => {
-                if !r.expression.is_empty() {
-                    group_parts.push(r.expression.clone());
-                }
-            }
-            // 7: HAVING
-            7 => {
-                if !r.expression.is_empty() {
-                    having_parts.push(r.expression.clone());
-                }
-            }
-            // 8: ORDER BY
-            8 => {
-                let part = if !r.expression.is_empty() {
-                    if r.flag & 1 != 0 {
-                        format!("{} DESC", r.expression)
-                    } else {
-                        r.expression.clone()
-                    }
-                } else {
-                    String::new()
-                };
-                if !part.is_empty() {
-                    order_parts.push(part);
-                }
-            }
-            _ => {
-                if !r.expression.is_empty() && select_parts.is_empty() && from_parts.is_empty() {
-                    return r.expression.clone();
-                }
-            }
+/// The kind of a query: the DAO `QueryDef.Type` that Access keeps in the flags of the query's
+/// catalog entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryType {
+    Select,
+    Crosstab,
+    Delete,
+    Update,
+    Append,
+    MakeTable,
+    DataDefinition,
+    PassThrough,
+    Union,
+    Other(u32),
+}
+
+fn query_type(flags: u32) -> QueryType {
+    match flags & 0xF0 {
+        0x00 => QueryType::Select,
+        0x10 => QueryType::Crosstab,
+        0x20 => QueryType::Delete,
+        0x30 => QueryType::Update,
+        0x40 => QueryType::Append,
+        0x50 => QueryType::MakeTable,
+        0x60 => QueryType::DataDefinition,
+        0x70 => QueryType::PassThrough,
+        0x80 => QueryType::Union,
+        other => QueryType::Other(other),
+    }
+}
+
+impl QueryType {
+    /// The SQL name of the kind (technical vocabulary, not a sentence).
+    fn label(self) -> String {
+        match self {
+            Self::Select => "SELECT".to_owned(),
+            Self::Crosstab => "TRANSFORM".to_owned(),
+            Self::Delete => "DELETE".to_owned(),
+            Self::Update => "UPDATE".to_owned(),
+            Self::Append => "INSERT INTO".to_owned(),
+            Self::MakeTable => "SELECT INTO".to_owned(),
+            Self::DataDefinition => "DDL".to_owned(),
+            Self::PassThrough => "PASS-THROUGH".to_owned(),
+            Self::Union => "UNION".to_owned(),
+            Self::Other(n) => format!("TYPE {n:#X}"),
         }
     }
+}
 
-    if select_parts.is_empty() && from_parts.is_empty() {
-        return String::from("-- (empty or binary query definition)");
+/// `[name]`, or `[name] AS [alias]`.
+fn named(name: &str, alias: &str) -> String {
+    if alias.is_empty() || alias == name {
+        format!("[{name}]")
+    } else {
+        format!("[{name}] AS [{alias}]")
     }
+}
 
-    let mut sql = String::from("SELECT ");
-    sql.push_str(&select_parts.join(", "));
-    if !from_parts.is_empty() {
-        sql.push_str("\nFROM ");
-        sql.push_str(&from_parts.join(", "));
+/// The SQL of a plain `SELECT`, rebuilt from its rows (already sorted by attribute and order).
+///
+/// Only what is unambiguous is rebuilt: columns, tables, `WHERE`, `GROUP BY`, `HAVING` and
+/// `ORDER BY` in the default direction. A query with joins, a remote database, an unknown
+/// attribute, an `ORDER BY` row that carries flags, or no columns or tables gets `None`: its
+/// rows are shown as stored instead.
+fn select_sql(rows: &[QueryRow]) -> Option<String> {
+    let (mut columns, mut tables) = (Vec::new(), Vec::new());
+    let (mut wh, mut group, mut having, mut order) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for r in rows {
+        match r.attribute {
+            attr::TYPE | attr::PARAMETERS | attr::FLAGS => {}
+            attr::COLUMN => {
+                if !r.expression.is_empty() {
+                    columns.push(if r.name1.is_empty() || r.name1 == r.expression {
+                        r.expression.clone()
+                    } else {
+                        format!("{} AS [{}]", r.expression, r.name1)
+                    });
+                } else if !r.name1.is_empty() {
+                    columns.push(format!("[{}]", r.name1));
+                }
+            }
+            attr::TABLE => {
+                if !r.name1.is_empty() {
+                    tables.push(named(&r.name1, &r.name2));
+                } else if !r.expression.is_empty() {
+                    tables.push(r.expression.clone());
+                }
+            }
+            attr::WHERE => wh.push(r.expression.clone()),
+            attr::GROUP_BY => group.push(r.expression.clone()),
+            attr::HAVING => having.push(r.expression.clone()),
+            attr::ORDER_BY => {
+                if r.flag != 0 {
+                    return None;
+                }
+                order.push(r.expression.clone());
+            }
+            _ => return None,
+        }
     }
-    if !where_parts.is_empty() {
-        sql.push_str("\nWHERE ");
-        sql.push_str(&where_parts.join(" AND "));
+    if columns.is_empty() || tables.is_empty() {
+        return None;
     }
-    if !group_parts.is_empty() {
-        sql.push_str("\nGROUP BY ");
-        sql.push_str(&group_parts.join(", "));
-    }
-    if !having_parts.is_empty() {
-        sql.push_str("\nHAVING ");
-        sql.push_str(&having_parts.join(" AND "));
-    }
-    if !order_parts.is_empty() {
-        sql.push_str("\nORDER BY ");
-        sql.push_str(&order_parts.join(", "));
+    let mut sql = format!("SELECT {}\nFROM {}", columns.join(", "), tables.join(", "));
+    for (keyword, parts, glue) in [
+        ("WHERE", &wh, " AND "),
+        ("GROUP BY", &group, ", "),
+        ("HAVING", &having, " AND "),
+        ("ORDER BY", &order, ", "),
+    ] {
+        let parts: Vec<&str> = parts.iter().map(String::as_str).filter(|p| !p.is_empty()).collect();
+        if !parts.is_empty() {
+            sql.push_str(&format!("\n{keyword} {}", parts.join(glue)));
+        }
     }
     sql.push(';');
-    sql
+    Some(sql)
+}
+
+/// The stored rows of a query as a grid: what the file says, whatever the viewer makes of it.
+fn stored_rows(sink: &Sink<'_>, rows: &[QueryRow]) -> crate::model::Grid {
+    let mut grid =
+        GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
+    let mut line = 1u32;
+    let mut put = |grid: &mut GridBuilder, cells: [String; 6], kinds: [CellKind; 6]| {
+        if !grid.row(line, false) {
+            return false;
+        }
+        line = line.saturating_add(1);
+        for (i, (text, kind)) in cells.into_iter().zip(kinds).enumerate() {
+            if !grid.cell(u32::try_from(i).unwrap_or(0), kind, text) {
+                return false;
+            }
+        }
+        true
+    };
+    // The column names of `MSysQueries` itself.
+    let head = ["Attribute", "Flag", "Order", "Name1", "Name2", "Expression"].map(str::to_owned);
+    let mut ok = put(&mut grid, head, [CellKind::Text; 6]);
+    for r in rows {
+        if !ok {
+            break;
+        }
+        ok = put(
+            &mut grid,
+            [
+                r.attribute.to_string(),
+                r.flag.to_string(),
+                r.order.to_string(),
+                r.name1.clone(),
+                r.name2.clone(),
+                r.expression.clone(),
+            ],
+            [
+                CellKind::Number,
+                CellKind::Number,
+                CellKind::Number,
+                CellKind::Text,
+                CellKind::Text,
+                CellKind::Text,
+            ],
+        );
+    }
+    grid.finish()
 }
 
 const fn order(kind: i64) -> u8 {
@@ -394,7 +489,8 @@ const fn kind_name(kind: i64) -> &'static str {
 /// Lists the objects of the database.
 fn overview(sink: &mut Sink<'_>, objects: &[&Object], tables: &[(&Object, Option<Table>)]) {
     let Some(sec) = sink.open_section(SectionKind::Body, "Database", false) else { return };
-    let mut grid = GridBuilder::new(sink.policy, sink.items_left());
+    let mut grid =
+        GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
     let mut row = 1u32;
     let mut full = !grid.row(row, false);
     for (col, head) in ["Object", "Name", "Rows"].into_iter().enumerate() {
@@ -434,7 +530,7 @@ fn overview(sink: &mut Sink<'_>, objects: &[&Object], tables: &[(&Object, Option
     sink.push(sec, Block::Grid(grid));
     sink.note(
         NoticeKind::Unsupported,
-        "forms, reports, macros and modules are listed, not shown or run; queries are displayed as safe read-only SQL text",
+        "forms, reports, macros and modules are listed, not shown or run; queries are shown as stored rows and, for plain SELECT, as reconstructed text that is never run",
     );
     if code {
         sink.note(NoticeKind::Unsupported, "macros and modules are code and are never run");

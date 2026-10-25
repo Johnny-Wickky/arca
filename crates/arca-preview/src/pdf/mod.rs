@@ -84,7 +84,7 @@ pub(crate) fn extract(data: &[u8], sink: &mut Sink<'_>) -> Result<(), PreviewErr
     }
     let ocg_off = ocg_off_set(&mut pdf, &catalog);
     let mut shared = Shared::new(ocg_off, MAX_OPERATORS);
-    let (mut unmapped, mut damaged, mut cut) = (0usize, false, false);
+    let (mut unmapped, mut damaged, mut cut, mut mismatched) = (0usize, false, false, 0usize);
     for page in &pages {
         if sink.is_full() {
             break;
@@ -92,6 +92,7 @@ pub(crate) fn extract(data: &[u8], sink: &mut Sink<'_>) -> Result<(), PreviewErr
         let input = page_input(&mut pdf, page);
         let out = run_page(&mut pdf, &mut shared, &input);
         unmapped = unmapped.saturating_add(out.unmapped);
+        mismatched = mismatched.saturating_add(out.mismatched);
         damaged |= out.damaged;
         cut |= out.truncated;
         let Some(sec) = sink.open_section(SectionKind::Page, "", false) else { break };
@@ -103,6 +104,11 @@ pub(crate) fn extract(data: &[u8], sink: &mut Sink<'_>) -> Result<(), PreviewErr
     }
     if unmapped > 0 {
         sink.note(NoticeKind::Unsupported, "pdf fonts without a text mapping");
+    }
+    if mismatched > 0 {
+        // The text is what the font's `ToUnicode` map says; the glyph the reader sees on the
+        // page is chosen by the font's encoding, and for these codes the two disagree.
+        sink.note(NoticeKind::BestEffort, "pdf text mapping differs from the font encoding");
     }
     if damaged {
         sink.skipped("damaged PDF stream");
@@ -167,8 +173,35 @@ pub(crate) fn render(
             u32::try_from(pages.len()).unwrap_or(u32::MAX),
         );
     model.truncated |= out.truncated;
-    model.approximate |= out.damaged || out.unmapped > 0;
+    model.approximate |= out.damaged || out.unmapped > 0 || out.mismatched > 0;
+    // The page model bypasses the sink, so the text it carries is cleaned here: the reader draws
+    // it with a system font, and a bidi override or a tag character in it would work there as in
+    // any other text. What is removed makes the page approximate.
+    model.approximate |= clean_page_text(&mut model.prims);
     Ok(model)
+}
+
+/// Removes control, bidirectional and invisible characters from the text and picture labels of a
+/// page. Returns `true` if anything was removed or replaced.
+fn clean_page_text(prims: &mut [crate::page::Prim]) -> bool {
+    let mut counts = crate::sink::CleanCounts::default();
+    let mut changed = false;
+    let mut tidy = |s: &mut String| {
+        let cleaned = crate::sink::clean_text(s, &mut counts);
+        let flat = cleaned.replace(['\n', '\t'], " ");
+        if flat != *s {
+            changed = true;
+            *s = flat;
+        }
+    };
+    for p in prims {
+        match p {
+            crate::page::Prim::Text { text, .. } => tidy(text),
+            crate::page::Prim::Image { label, .. } => tidy(label),
+            _ => {}
+        }
+    }
+    changed
 }
 
 // ---- page tree ---------------------------------------------------------------------------

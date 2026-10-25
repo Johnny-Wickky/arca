@@ -292,3 +292,100 @@ fn a_small_budget_truncates_the_grid_and_says_so() {
     assert!(p.stats.truncated);
     assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Truncated));
 }
+
+// ---- queries: what is rebuilt, and what is only shown as stored -----------------------------
+
+mod queries {
+    use super::super::{QueryRow, QueryType, query_type, select_sql, stored_rows};
+    use crate::PreviewPolicy;
+    use crate::sink::Sink;
+
+    fn row(attribute: i64, expression: &str, name1: &str, name2: &str) -> QueryRow {
+        QueryRow {
+            attribute,
+            expression: expression.into(),
+            name1: name1.into(),
+            name2: name2.into(),
+            order: 0,
+            flag: 0,
+        }
+    }
+
+    #[test]
+    fn the_kind_of_a_query_comes_from_the_dao_type_in_its_flags() {
+        for (flags, kind) in [
+            (0u32, QueryType::Select),
+            (16, QueryType::Crosstab),
+            (32, QueryType::Delete),
+            (48, QueryType::Update),
+            (64, QueryType::Append),
+            (80, QueryType::MakeTable),
+            (96, QueryType::DataDefinition),
+            (112, QueryType::PassThrough),
+            (128, QueryType::Union),
+            (144, QueryType::Other(144)),
+        ] {
+            assert_eq!(query_type(flags), kind, "{flags}");
+        }
+        // The bits that mark system and hidden objects are not part of the kind.
+        assert_eq!(query_type(0x8000_0002 | 0x08), QueryType::Select);
+        assert_eq!(query_type(0x08 | 48), QueryType::Update);
+        assert_eq!(QueryType::Update.label(), "UPDATE");
+        assert_eq!(QueryType::Other(0x90).label(), "TYPE 0x90");
+    }
+
+    #[test]
+    fn a_plain_select_is_rebuilt_from_its_rows() {
+        let mut order = row(11, "[Name]", "", "");
+        order.order = 1;
+        let rows = vec![
+            row(1, "", "", ""),
+            row(6, "[Customers].[Name]", "Name", ""),
+            row(6, "[Customers].[City]", "[Customers].[City]", ""),
+            row(5, "", "Customers", "C"),
+            row(8, "[City]='Paris'", "", ""),
+            order,
+        ];
+        assert_eq!(
+            select_sql(&rows).as_deref(),
+            Some(
+                "SELECT [Customers].[Name] AS [Name], [Customers].[City]\nFROM [Customers] AS [C]\nWHERE [City]='Paris'\nORDER BY [Name];"
+            )
+        );
+    }
+
+    #[test]
+    fn nothing_is_made_up_for_what_the_layout_does_not_cover() {
+        let base = || vec![row(6, "[A]", "", ""), row(5, "", "T", "")];
+        assert!(select_sql(&base()).is_some());
+        // A join, a remote database, an attribute nobody documents.
+        for attribute in [7, 4, 12, 0, 99] {
+            let mut rows = base();
+            rows.push(row(attribute, "DROP TABLE x", "x", "y"));
+            assert_eq!(select_sql(&rows), None, "attribute {attribute}");
+        }
+        // A sort row with flags: the direction would be a guess.
+        let mut descending = row(11, "[A]", "", "");
+        descending.flag = 1;
+        let mut rows = base();
+        rows.push(descending);
+        assert_eq!(select_sql(&rows), None);
+        // No columns, or no tables.
+        assert_eq!(select_sql(&[row(5, "", "T", "")]), None);
+        assert_eq!(select_sql(&[row(6, "[A]", "", "")]), None);
+        assert_eq!(select_sql(&[]), None);
+    }
+
+    #[test]
+    fn the_stored_rows_are_shown_as_they_are() {
+        let policy = PreviewPolicy::default();
+        let sink = Sink::new(&policy);
+        let g = stored_rows(&sink, &[row(8, "x = 1", "n1", "n2")]);
+        let lines: Vec<String> = g
+            .rows
+            .iter()
+            .map(|r| r.cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join("|"))
+            .collect();
+        assert_eq!(lines, ["Attribute|Flag|Order|Name1|Name2|Expression", "8|0|0|n1|n2|x = 1"]);
+    }
+}

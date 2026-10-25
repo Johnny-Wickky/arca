@@ -80,6 +80,12 @@ const DROP_KEYS: &[&str] = &[
     "Last",
 ];
 
+/// Keys of a resource dictionary whose entries are named by the content stream: the names are
+/// the author's (`/A`, `/Parent`, `/Names` are fine names for a font), not dictionary keys of
+/// the document structure, so [`DROP_KEYS`] does not apply to them.
+const RESOURCE_MAPS: &[&str] =
+    &["Font", "XObject", "ExtGState", "ColorSpace", "Pattern", "Shading", "Properties"];
+
 /// Keys of a stream dictionary that point at an external file or are rewritten.
 const STREAM_DROP_KEYS: &[&str] = &["F", "FFilter", "FDecodeParms", "DL", "Length"];
 
@@ -126,6 +132,10 @@ struct Cleaner<'f, 'a> {
     objs: Vec<Option<Vec<u8>>>,
     /// Streams that must be Form XObjects (appearance streams drawn into a page).
     forms: HashSet<u32>,
+    /// Old numbers of objects that are resource dictionaries, and of those that are name maps
+    /// (`/Font << ... >>` and the like) inside one: written without dropping keys by name.
+    resource_dicts: HashSet<u32>,
+    name_maps: HashSet<u32>,
     bytes: usize,
     max_bytes: usize,
     overflow: bool,
@@ -180,6 +190,12 @@ impl Cleaner<'_, '_> {
             let mut out = Vec::new();
             match &obj {
                 Obj::Stream(s) => self.write_stream(old, s, &mut out),
+                Obj::Dict(d) if self.resource_dicts.contains(&old) => {
+                    self.write_resources_dict(d, &mut out, 0);
+                }
+                Obj::Dict(d) if self.name_maps.contains(&old) => {
+                    self.write_name_map(d, &mut out, 0);
+                }
                 other => self.write(other, &mut out, 0),
             }
             self.fill(new, out);
@@ -222,6 +238,68 @@ impl Cleaner<'_, '_> {
         }
     }
 
+    /// Writes the value of `key`: a resource dictionary gets the care [`Self::write_resources`]
+    /// takes, anything else is written as it is.
+    fn write_value(&mut self, key: &str, v: &Obj, out: &mut Vec<u8>, depth: usize) {
+        if key == "Resources" {
+            self.write_resources(v, out, depth);
+        } else {
+            self.write(v, out, depth);
+        }
+    }
+
+    /// Writes a `/Resources` value. Its name maps are not subject to the key deny-list.
+    fn write_resources(&mut self, v: &Obj, out: &mut Vec<u8>, depth: usize) {
+        match v {
+            Obj::Dict(d) => self.write_resources_dict(d, out, depth),
+            Obj::Ref(n, _) => {
+                self.resource_dicts.insert(*n);
+                self.write(v, out, depth);
+            }
+            other => self.write(other, out, depth),
+        }
+    }
+
+    fn write_resources_dict(&mut self, d: &Dict, out: &mut Vec<u8>, depth: usize) {
+        if depth > MAX_DEPTH {
+            out.extend_from_slice(b"null");
+            return;
+        }
+        out.extend_from_slice(b"<<");
+        for (k, v) in d {
+            out.push(b' ');
+            name(k, out);
+            out.push(b' ');
+            match v {
+                Obj::Dict(m) if RESOURCE_MAPS.contains(&&**k) => {
+                    self.write_name_map(m, out, depth + 1);
+                }
+                Obj::Ref(n, _) if RESOURCE_MAPS.contains(&&**k) => {
+                    self.name_maps.insert(*n);
+                    self.write(v, out, depth + 1);
+                }
+                other => self.write(other, out, depth + 1),
+            }
+        }
+        out.extend_from_slice(b" >>");
+    }
+
+    /// A dictionary whose keys are names chosen by the document: every entry is kept.
+    fn write_name_map(&mut self, d: &Dict, out: &mut Vec<u8>, depth: usize) {
+        if depth > MAX_DEPTH {
+            out.extend_from_slice(b"null");
+            return;
+        }
+        out.extend_from_slice(b"<<");
+        for (k, v) in d {
+            out.push(b' ');
+            name(k, out);
+            out.push(b' ');
+            self.write(v, out, depth + 1);
+        }
+        out.extend_from_slice(b" >>");
+    }
+
     fn write_dict(&mut self, d: &Dict, out: &mut Vec<u8>, depth: usize, extra_drop: &[&str]) {
         if is_action(d) {
             out.extend_from_slice(b"null");
@@ -235,7 +313,7 @@ impl Cleaner<'_, '_> {
             out.push(b' ');
             name(k, out);
             out.push(b' ');
-            self.write(v, out, depth + 1);
+            self.write_value(k, v, out, depth + 1);
         }
         out.extend_from_slice(b" >>");
     }
@@ -255,7 +333,7 @@ impl Cleaner<'_, '_> {
             out.push(b' ');
             name(k, out);
             out.push(b' ');
-            self.write(v, out, 1);
+            self.write_value(k, v, out, 1);
         }
         if self.forms.contains(&old) {
             if !s.dict.contains_key("Type") {
@@ -281,7 +359,16 @@ pub(super) fn real(v: f64) -> String {
     if !v.is_finite() {
         return "0".to_owned();
     }
-    let s = format!("{:.6}", v.clamp(-1.0e12, 1.0e12));
+    // Six decimals, and more for a small number so that it keeps its leading digits (a page
+    // matrix of 0.0000004 is not zero). PDF has no exponent notation, so they are written out.
+    let v = v.clamp(-1.0e12, 1.0e12);
+    let mut decimals = 6usize;
+    let mut scaled = v.abs();
+    while scaled != 0.0 && scaled < 0.1 && decimals < 40 {
+        scaled *= 10.0;
+        decimals += 1;
+    }
+    let s = format!("{v:.decimals$}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s.is_empty() || s == "-" || s == "-0" { "0".to_owned() } else { s.to_owned() }
 }
@@ -543,7 +630,7 @@ fn copy_page(
         resources.insert(Rc::from("XObject"), Obj::Dict(Rc::new(xobjects)));
     }
     body.extend_from_slice(b" /Resources ");
-    c.write_dict(&resources, &mut body, 1, &[]);
+    c.write_resources_dict(&resources, &mut body, 1);
 
     // Contents: the original streams, then the drawn annotations.
     let mut parts: Vec<Obj> = match page.get("Contents").cloned().unwrap_or_default() {
@@ -631,6 +718,8 @@ pub(crate) fn clean(
         queue: VecDeque::new(),
         objs: Vec::new(),
         forms: HashSet::new(),
+        resource_dicts: HashSet::new(),
+        name_maps: HashSet::new(),
         bytes: 0,
         max_bytes: policy.max_input_bytes.saturating_mul(2).saturating_add(1 << 20),
         overflow: false,
@@ -1022,6 +1111,67 @@ mod tests {
                 && has(&out, "/MediaBox [0 0 100 100]")
                 && has(&out, "/Rotate 90")
         );
+    }
+
+    #[test]
+    fn resource_names_that_look_like_structure_keys_survive_the_copy() {
+        // The fonts are called /Parent and /A: both are on the deny-list for dictionaries of the
+        // document structure, neither is a structure key here.
+        let mut b = PdfBuilder::with_content(
+            "BT /Parent 12 Tf 10 50 Td (Visible one) Tj /A 12 Tf 10 30 Td (Visible two) Tj ET /Names Do",
+        );
+        b.add_raw(
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /Parent 5 0 R /A 5 0 R >> /XObject << /Names 6 0 R >> >> >>",
+        );
+        b.add_stream(6, "/Type /XObject /Subtype /Form /BBox [0 0 1 1]", b"q Q");
+        let (out, _) = clean(&b.build(), &PreviewPolicy::default(), opts()).expect("a copy");
+        assert!(
+            has(&out, "/Parent 5 0 R") || has(&out, "/Parent "),
+            "{}",
+            String::from_utf8_lossy(&out)
+        );
+        let p = preview(&out, &PreviewPolicy::default()).expect("preview");
+        let text: String = p
+            .sections
+            .iter()
+            .flat_map(|s| &s.blocks)
+            .filter_map(
+                |b| if let crate::model::Block::Para(q) = b { Some(q.text()) } else { None },
+            )
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Visible one") && text.contains("Visible two"), "{text}");
+        assert!(!text.contains('\u{FFFD}'), "{text}");
+    }
+
+    #[test]
+    fn indirect_resource_dictionaries_keep_their_names_too() {
+        let mut b = PdfBuilder::with_content("BT /First 12 Tf 10 50 Td (Indirect names) Tj ET");
+        b.add_raw(
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources 7 0 R >>",
+        );
+        b.add_raw(7, "<< /Font 8 0 R >>");
+        b.add_raw(8, "<< /First 5 0 R /Last 5 0 R >>");
+        let (out, _) = clean(&b.build(), &PreviewPolicy::default(), opts()).expect("a copy");
+        let p = preview(&out, &PreviewPolicy::default()).expect("preview");
+        let any = p.sections.iter().flat_map(|s| &s.blocks).any(
+            |b| matches!(b, crate::model::Block::Para(q) if q.text().contains("Indirect names")),
+        );
+        assert!(any, "{}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn tiny_numbers_keep_their_digits() {
+        assert_eq!(real(0.000_000_4), "0.0000004");
+        assert_eq!(real(-0.000_012_5), "-0.0000125");
+        assert_eq!(real(1.0e-12), "0.000000000001");
+        assert_eq!(real(0.5), "0.5");
+        assert_eq!(real(0.0), "0");
+        assert_eq!(real(-0.0), "0");
+        assert_eq!(real(12.0), "12");
+        assert_eq!(real(f64::NAN), "0");
     }
 
     #[test]

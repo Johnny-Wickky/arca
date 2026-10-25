@@ -66,7 +66,11 @@ fn xml_failure(part: &str, e: &XmlError) -> PreviewError {
 
 impl<'a> Package<'a> {
     /// Opens an already parsed archive as a package.
-    pub(crate) fn new(zip: ZipArchive<'a>, policy: &PreviewPolicy) -> Result<Self, PreviewError> {
+    pub(crate) fn new(
+        zip: ZipArchive<'a>,
+        policy: &PreviewPolicy,
+        original_len: usize,
+    ) -> Result<Self, PreviewError> {
         let ids = zip
             .entries()
             .iter()
@@ -78,7 +82,8 @@ impl<'a> Package<'a> {
             .collect();
         let mut pkg = Self {
             zip,
-            budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20),
+            budget: InflateBudget::new(policy.inflate_budget, policy.aggregate_ratio, 16 << 20)
+                .with_original_input(u64::try_from(original_len).unwrap_or(u64::MAX)),
             xml_limits: policy.xml,
             types: ContentTypes::default(),
             rels: BTreeMap::new(),
@@ -124,6 +129,22 @@ impl<'a> Package<'a> {
         Ok(self.read(&name)?.map(|bytes| (name, bytes)))
     }
 
+    /// Number of `.xml` members directly in `dir` (for example `xl/worksheets/`) that are not
+    /// among `listed`: parts the package holds but no list of the document names.
+    pub(crate) fn count_unlisted(&self, dir: &str, listed: &[String]) -> usize {
+        let listed: std::collections::BTreeSet<String> =
+            listed.iter().map(|n| n.trim_start_matches('/').to_ascii_lowercase()).collect();
+        let dir = dir.to_ascii_lowercase();
+        self.ids
+            .keys()
+            .filter(|k| {
+                k.strip_prefix(dir.as_str())
+                    .is_some_and(|rest| !rest.contains('/') && rest.ends_with(".xml"))
+                    && !listed.contains(k.as_str())
+            })
+            .count()
+    }
+
     /// Size of a member without reading it.
     pub(crate) fn size_of(&self, name: &str) -> Option<u64> {
         self.zip.entry(name).map(arca_container::zip::ZipEntry::uncompressed_size)
@@ -157,15 +178,15 @@ impl<'a> Package<'a> {
         loop {
             match rd.next() {
                 Ok(Some(Ev::Start(t) | Ev::Empty(t))) => {
-                    let ctype = t.attr("ContentType").unwrap_or_default().trim().to_owned();
+                    let ctype = t.attr_plain("ContentType").unwrap_or_default().trim().to_owned();
                     match t.local() {
                         "Default" => {
-                            if let Some(ext) = t.attr("Extension") {
+                            if let Some(ext) = t.attr_plain("Extension") {
                                 types.defaults.insert(ext.to_ascii_lowercase(), ctype);
                             }
                         }
                         "Override" => {
-                            if let Some(part) = t.attr("PartName") {
+                            if let Some(part) = t.attr_plain("PartName") {
                                 types.overrides.insert(
                                     part.trim_start_matches('/').to_ascii_lowercase(),
                                     ctype,
@@ -204,11 +225,11 @@ impl<'a> Package<'a> {
                         && t.local() == "Relationship"
                     {
                         out.push(Rel {
-                            id: t.attr("Id").unwrap_or_default().into_owned(),
-                            rtype: t.attr("Type").unwrap_or_default().into_owned(),
-                            target: t.attr("Target").unwrap_or_default().into_owned(),
+                            id: t.attr_plain("Id").unwrap_or_default().into_owned(),
+                            rtype: t.attr_plain("Type").unwrap_or_default().into_owned(),
+                            target: t.attr_plain("Target").unwrap_or_default().into_owned(),
                             external: t
-                                .attr("TargetMode")
+                                .attr_plain("TargetMode")
                                 .is_some_and(|m| m.eq_ignore_ascii_case("external")),
                         });
                     }
@@ -348,7 +369,7 @@ mod tests {
         let data = crate::testkit::zip(&parts);
         let policy = PreviewPolicy::default();
         let zip = ZipArchive::parse(&data, policy.zip).unwrap();
-        let mut pkg = Package::new(zip, &policy).unwrap();
+        let mut pkg = Package::new(zip, &policy, data.len()).unwrap();
         for i in [0usize, 1, 17, 1500, 2999] {
             let id = pkg.entry_id(&names[i]).unwrap();
             assert_eq!(id as usize, i + 1, "after [Content_Types].xml");

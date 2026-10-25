@@ -17,6 +17,8 @@ use super::lex::{Dict, Obj};
 const MAX_CMAP_BYTES: usize = 8 << 20;
 /// Most `/W` entries kept for a CID font.
 const MAX_WIDTH_RANGES: usize = 1 << 17;
+/// Most text decoded from one shown string; the rest is cut and reported.
+const MAX_SHOWN_TEXT: usize = 1 << 20;
 
 /// Helvetica advance widths (1/1000 em) for U+0020..=U+007E.
 const HELVETICA: [u16; 95] = [
@@ -97,6 +99,10 @@ pub(super) struct Shown {
     pub(super) spaces: usize,
     /// Codes that could not be turned into text.
     pub(super) unmapped: usize,
+    /// The text was cut at [`MAX_SHOWN_TEXT`].
+    pub(super) clipped: bool,
+    /// Codes whose `ToUnicode` text differs from what the font's own encoding says the glyph is.
+    pub(super) mismatched: usize,
 }
 
 fn strip_subset(name: &str) -> &str {
@@ -185,12 +191,19 @@ impl Font {
         match &self.kind {
             Kind::Simple { table, first_char, widths, missing_width, family, has_widths } => {
                 for &code in bytes {
+                    if out.text.len() > MAX_SHOWN_TEXT {
+                        out.clipped = true;
+                        break;
+                    }
                     out.glyphs += 1;
-                    let mapped = self
-                        .to_unicode
-                        .as_ref()
-                        .and_then(|m| m.lookup(u32::from(code)))
-                        .or_else(|| table.get(usize::from(code)).cloned().flatten());
+                    let from_map = self.to_unicode.as_ref().and_then(|m| m.lookup(u32::from(code)));
+                    let from_table = table.get(usize::from(code)).cloned().flatten();
+                    if let (Some(a), Some(b)) = (&from_map, &from_table)
+                        && differs_in_meaning(a, b)
+                    {
+                        out.mismatched += 1;
+                    }
+                    let mapped = from_map.or(from_table);
                     let width = simple_width(
                         code,
                         mapped.as_deref(),
@@ -226,6 +239,10 @@ impl Font {
                     },
                 };
                 for (code, _len) in codes {
+                    if out.text.len() > MAX_SHOWN_TEXT {
+                        out.clipped = true;
+                        break;
+                    }
                     out.glyphs += 1;
                     out.advance += cid_width(widths, code, *default_width);
                     let mapped =
@@ -246,6 +263,30 @@ impl Font {
             }
         }
         out
+    }
+}
+
+/// `true` if two texts for the same code are different letters, not merely one character and
+/// its expansion (a ligature, a presentation form, a no-break space).
+fn differs_in_meaning(a: &str, b: &str) -> bool {
+    if a == b {
+        return false;
+    }
+    let single = |s: &str| {
+        let mut it = s.chars();
+        match (it.next(), it.next()) {
+            (Some(c), None) => Some(c),
+            _ => None,
+        }
+    };
+    match (single(a), single(b)) {
+        (Some(x), Some(y)) => {
+            // Compatibility pairs the encodings legitimately disagree on.
+            let blank = |c: char| c.is_whitespace() || c == '\u{ad}' || c == '-';
+            !(blank(x) && blank(y)) && !x.is_control() && !y.is_control()
+        }
+        // One side is several letters: a ligature or an expansion; not judged.
+        _ => false,
     }
 }
 

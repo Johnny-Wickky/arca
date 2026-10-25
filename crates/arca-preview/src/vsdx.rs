@@ -6,6 +6,10 @@
 //! connections between shapes ("Start → Check") and a marker for every picture or embedded
 //! object. Nothing is executed or fetched: macros, add-ons, linked files and external data
 //! connections are not looked at, and links are only shown.
+//!
+//! Lines the viewer makes up (a connection, the name of a shape that has no text) carry
+//! [`style::SYNTHETIC`], so that a shape whose own text reads "A → B" cannot pass for a
+//! connection. What is cut by a limit (shape data, texts, connections, pages) is reported.
 
 use std::collections::BTreeMap;
 
@@ -21,6 +25,8 @@ const MAX_SHAPES: usize = 100_000;
 const MAX_DEPTH: usize = 64;
 /// Most shape-data rows kept per shape.
 const MAX_DATA: usize = 64;
+/// Most pages shown.
+const MAX_PAGES: usize = 4_096;
 /// Longest shape name kept.
 const MAX_NAME: usize = 256;
 
@@ -65,7 +71,7 @@ impl Handler for PagesHandler {
                 if let Some(p) = self.pages.last_mut()
                     && p.rid.is_empty()
                 {
-                    p.rid = tag.attr("id").unwrap_or_default().into_owned();
+                    p.rid = tag.attr_rel("id").unwrap_or_default().into_owned();
                 }
             }
             _ => {}
@@ -84,7 +90,8 @@ impl Handler for PagesHandler {
     }
 
     fn done(&self) -> bool {
-        self.pages.len() >= 4_096
+        // One page more than is shown, to know that there were more.
+        self.pages.len() > MAX_PAGES
     }
 }
 
@@ -134,6 +141,9 @@ struct PageHandler {
     connects: Vec<Connect>,
     shapes: usize,
     truncated: bool,
+    /// Something was cut by a limit other than the number of shapes: data rows, cells of a row,
+    /// the length of a label, a value or a text, or the number of connections.
+    cut: bool,
     in_text: bool,
     /// Name of the section being read, only for the ones that matter.
     section: String,
@@ -184,6 +194,8 @@ impl Handler for PageHandler {
                 if let Some(row) = self.row.as_mut() {
                     if row.cells.len() < 32 {
                         row.cells.push((n.into_owned(), v.into_owned()));
+                    } else {
+                        self.cut = true;
                     }
                 } else if self.section.is_empty()
                     && let Some(s) = self.stack.last_mut()
@@ -201,7 +213,8 @@ impl Handler for PageHandler {
                     s.image = Some(if kind.is_empty() { "image".into() } else { kind });
                 }
             }
-            "Connect" if self.connects.len() < 200_000 => {
+            "Connect" if self.connects.len() >= 200_000 => self.cut = true,
+            "Connect" => {
                 let from = tag.attr("FromSheet").and_then(|v| v.trim().parse().ok());
                 let to = tag.attr("ToSheet").and_then(|v| v.trim().parse().ok());
                 let cell = tag.attr("FromCell").unwrap_or_default();
@@ -240,11 +253,20 @@ impl Handler for PageHandler {
                         }
                     };
                     let value = row.get("Value");
-                    if !(label.is_empty() && value.is_empty()) && s.data.len() < MAX_DATA {
-                        s.data.push((
-                            label.chars().take(MAX_NAME).collect(),
-                            value.chars().take(MAX_NAME).collect(),
-                        ));
+                    if !(label.is_empty() && value.is_empty()) {
+                        if s.data.len() < MAX_DATA {
+                            if label.chars().nth(MAX_NAME).is_some()
+                                || value.chars().nth(MAX_NAME).is_some()
+                            {
+                                self.cut = true;
+                            }
+                            s.data.push((
+                                label.chars().take(MAX_NAME).collect(),
+                                value.chars().take(MAX_NAME).collect(),
+                            ));
+                        } else {
+                            self.cut = true;
+                        }
                     }
                 } else if self.section == "Hyperlink" && s.link.is_empty() {
                     // A link with only a sub-address is a jump inside the drawing.
@@ -282,6 +304,7 @@ impl Handler for PageHandler {
         }
         let Some(s) = self.stack.last_mut() else { return Ok(()) };
         if s.text.len() >= self.max_text {
+            self.cut = true;
             return Ok(());
         }
         if cdata {
@@ -350,7 +373,11 @@ fn emit(shapes: &[Shape], sec: SectionId, sink: &mut Sink<'_>, depth: usize) -> 
             // A shape without text that still carries data or a link: name it.
             let p = Paragraph {
                 level,
-                runs: vec![Run { text: label_of(s), style: style::ITALIC, href: s.link.clone() }],
+                runs: vec![Run {
+                    text: label_of(s),
+                    style: style::ITALIC | style::SYNTHETIC,
+                    href: s.link.clone(),
+                }],
                 ..Paragraph::default()
             };
             if !sink.para(sec, p) {
@@ -419,7 +446,14 @@ fn emit_connections(
                 return;
             }
         }
-        let p = Paragraph::plain(&format!("{} → {}", name(*begin), name(*end)));
+        let p = Paragraph {
+            runs: vec![Run {
+                text: format!("{} → {}", name(*begin), name(*end)),
+                style: style::SYNTHETIC,
+                href: String::new(),
+            }],
+            ..Paragraph::default()
+        };
         if !sink.para(sec, p) {
             return;
         }
@@ -442,6 +476,10 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         return Err(PreviewError::Malformed("the page list is not readable".into()));
     }
 
+    if pages.pages.len() > MAX_PAGES {
+        pages.pages.truncate(MAX_PAGES);
+        sink.truncated("pages");
+    }
     for page in &pages.pages {
         if sink.is_full() {
             break;
@@ -475,6 +513,9 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
         if h.truncated {
             sink.truncated("shapes");
+        }
+        if h.cut {
+            sink.truncated("shape data, texts and connections");
         }
         let title =
             if page.background { format!("{} (background)", page.name) } else { page.name.clone() };
@@ -585,6 +626,82 @@ mod tests {
                 .any(|b| matches!(b, Block::Image(i) if i.media == "bitmap"))
         );
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Unsupported));
+    }
+
+    #[test]
+    fn lines_the_viewer_makes_up_cannot_be_mistaken_for_the_drawings_text() {
+        // A shape whose text reads like a connection, a real connector, and a shape that has
+        // no text but data (it is named by the viewer).
+        let page = format!(
+            r#"<PageContents {NS}><Shapes>
+              <Shape ID="1" Name="One" Type="Shape"><Cell N="PinX" V="1"/><Cell N="PinY" V="9"/><Text>One</Text></Shape>
+              <Shape ID="2" Name="Two" Type="Shape"><Cell N="PinX" V="1"/><Cell N="PinY" V="8"/><Text>Two</Text></Shape>
+              <Shape ID="3" Name="Liar" Type="Shape"><Cell N="PinX" V="1"/><Cell N="PinY" V="7"/><Text>One → Two</Text></Shape>
+              <Shape ID="4" Name="Wire" Type="Shape"><Cell N="PinX" V="1"/><Cell N="PinY" V="6"/></Shape>
+              <Shape ID="5" Name="Named only" Type="Shape"><Cell N="PinX" V="1"/><Cell N="PinY" V="5"/><Section N="Property"><Row N="p"><Cell N="Value" V="v"/></Row></Section></Shape>
+              </Shapes>
+              <Connects><Connect FromSheet="4" FromCell="BeginX" ToSheet="1"/><Connect FromSheet="4" FromCell="EndX" ToSheet="2"/></Connects></PageContents>"#
+        );
+        let p = ok(&drawing(&[("P", "")], &[&page]));
+        let lines: Vec<(String, u16)> = paragraphs(&p.sections[0])
+            .iter()
+            .map(|q| (q.text(), q.runs.first().map_or(0, |r| r.style)))
+            .collect();
+        let style_of =
+            |t: &str, nth: usize| lines.iter().filter(|(x, _)| x == t).nth(nth).map(|(_, s)| *s);
+        // The same words twice: the shape's own text is plain, the made-up connection is not.
+        assert_eq!(style_of("One → Two", 0), Some(0));
+        assert_eq!(style_of("One → Two", 1).map(|s| s & style::SYNTHETIC), Some(style::SYNTHETIC));
+        // The viewer's name for a shape without text is marked too.
+        assert_eq!(style_of("Named only", 0).map(|s| s & style::SYNTHETIC), Some(style::SYNTHETIC));
+        assert_eq!(style_of("One", 0), Some(0));
+    }
+
+    #[test]
+    fn what_a_limit_cuts_is_reported() {
+        let rows: String = (0..70)
+            .map(|i| {
+                format!(
+                    r#"<Row N="r{i}"><Cell N="Label" V="L{i}"/><Cell N="Value" V="V{i}"/></Row>"#
+                )
+            })
+            .collect();
+        let page = format!(
+            r#"<PageContents {NS}><Shapes><Shape ID="1" Name="Many" Type="Shape"><Text>t</Text><Section N="Property">{rows}</Section></Shape></Shapes></PageContents>"#
+        );
+        let p = ok(&drawing(&[("P", "")], &[&page]));
+        assert!(p.stats.truncated);
+        assert!(
+            p.notices
+                .iter()
+                .any(|n| n.kind == NoticeKind::Truncated && n.detail.contains("shape data"))
+        );
+        // A label longer than the limit is cut, and said.
+        let long = "x".repeat(300);
+        let page = format!(
+            r#"<PageContents {NS}><Shapes><Shape ID="1" Name="One" Type="Shape"><Text>t</Text><Section N="Property"><Row N="a"><Cell N="Label" V="{long}"/><Cell N="Value" V="v"/></Row></Section></Shape></Shapes></PageContents>"#
+        );
+        let p = ok(&drawing(&[("P", "")], &[&page]));
+        assert!(p.stats.truncated);
+        // And a drawing under the limits says nothing of the kind.
+        let page = format!(
+            r#"<PageContents {NS}><Shapes><Shape ID="1" Name="One" Type="Shape"><Text>t</Text></Shape></Shapes></PageContents>"#
+        );
+        assert!(!ok(&drawing(&[("P", "")], &[&page])).stats.truncated);
+    }
+
+    #[test]
+    fn pages_beyond_the_limit_are_reported() {
+        let pages: Vec<(String, &str)> =
+            (0..MAX_PAGES + 3).map(|i| (format!("P{i}"), "")).collect();
+        let refs: Vec<(&str, &str)> = pages.iter().map(|(n, e)| (n.as_str(), *e)).collect();
+        let page = format!(
+            r#"<PageContents {NS}><Shapes><Shape ID="1" Name="s"><Text>t</Text></Shape></Shapes></PageContents>"#
+        );
+        let xml: Vec<&str> = refs.iter().map(|_| page.as_str()).collect();
+        let p = ok(&drawing(&refs, &xml));
+        assert!(p.sections.len() <= MAX_PAGES);
+        assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Truncated && n.detail == "pages"));
     }
 
     #[test]

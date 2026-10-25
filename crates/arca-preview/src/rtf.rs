@@ -1063,7 +1063,7 @@ fn hex(b: u8) -> Option<u8> {
 /// The target of a `HYPERLINK "url"` field instruction.
 fn parse_hyperlink(inst: &str) -> Option<String> {
     let t = inst.trim();
-    let rest = t.strip_prefix("HYPERLINK").or_else(|| t.strip_prefix("hyperlink"))?;
+    let rest = crate::docx::strip_keyword_ci(t, "HYPERLINK")?;
     let rest = rest.trim_start();
     let mut target = None;
     let mut it = rest.split('"');

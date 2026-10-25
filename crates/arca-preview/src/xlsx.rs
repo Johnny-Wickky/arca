@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::PreviewError;
 use crate::formula::{self, Book, ErrCode, Val};
-use crate::model::{CellKind, ParaStyle, Paragraph, Run, SectionKind, style};
+use crate::model::{CellKind, NoticeKind, ParaStyle, Paragraph, Run, SectionKind, style};
 use crate::numfmt::{self, Format};
 use crate::opc::Package;
 use crate::sink::{CellLink, GridBuilder, Sink, clip_href};
@@ -53,7 +53,7 @@ impl Handler for WorkbookHandler {
                     hidden: tag
                         .attr("state")
                         .is_some_and(|s| matches!(&*s, "hidden" | "veryHidden")),
-                    rid: tag.attr("id").unwrap_or_default().into_owned(),
+                    rid: tag.attr_rel("id").unwrap_or_default().into_owned(),
                 });
             }
             _ => {}
@@ -262,6 +262,9 @@ struct SheetHandler<'a> {
     raw_complete: bool,
     raw_cap: usize,
     shared: HashMap<String, (u32, u32, String)>,
+    /// Shared formulas that could not be kept (too long or too many): the cells that share them
+    /// show no formula text.
+    formulas_unshared: u64,
     /// Style of the cells whose formula has to be calculated.
     uncached: BTreeMap<(u32, u32), usize>,
 }
@@ -272,6 +275,9 @@ const MAX_CALC_CELLS: usize = 150_000;
 const MAX_CALC_FORMULAS: usize = 10_000;
 /// Longest text kept for the calculator.
 const MAX_CALC_TEXT: usize = 4096;
+/// Longest shared formula kept to be moved to the cells that share it, and how many are kept.
+const MAX_SHARED_FORMULA: usize = 4096;
+const MAX_SHARED_MASTERS: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum FormulaKind {
@@ -292,7 +298,13 @@ impl SheetHandler<'_> {
             let own = own.to_owned();
             return match self.f_type {
                 FormulaKind::Shared => {
-                    self.shared.insert(self.f_si.clone(), (self.row, self.col, own.clone()));
+                    // A master too long to be shifted is not kept: every cell that shares it
+                    // would pay for lexing it again.
+                    if own.len() <= MAX_SHARED_FORMULA && self.shared.len() < MAX_SHARED_MASTERS {
+                        self.shared.insert(self.f_si.clone(), (self.row, self.col, own.clone()));
+                    } else {
+                        self.formulas_unshared = self.formulas_unshared.saturating_add(1);
+                    }
                     (own.clone(), Some(own))
                 }
                 FormulaKind::Other => (own, Some(String::new())),
@@ -454,6 +466,15 @@ impl Handler for SheetHandler<'_> {
                     self.stop = true;
                 }
             }
+            "col" if !self.in_cell => {
+                // `<col min max hidden>`: one-based, inclusive.
+                if tag.attr("hidden").is_some_and(|v| matches!(&*v, "1" | "true")) {
+                    let num = |n: &str| tag.attr(n).and_then(|v| v.parse::<u32>().ok());
+                    if let (Some(min), Some(max)) = (num("min"), num("max")) {
+                        self.grid.hide_columns(min.saturating_sub(1), max.saturating_sub(1));
+                    }
+                }
+            }
             "c" => {
                 self.in_cell = true;
                 if let Some((col, row)) = tag.attr("r").as_deref().and_then(parse_ref) {
@@ -489,7 +510,7 @@ impl Handler for SheetHandler<'_> {
             "hyperlink" if self.links.len() < 20_000 => {
                 self.links.push(RawLink {
                     cells: tag.attr("ref").unwrap_or_default().into_owned(),
-                    rid: tag.attr("id").unwrap_or_default().into_owned(),
+                    rid: tag.attr_rel("id").unwrap_or_default().into_owned(),
                     location: tag.attr("location").unwrap_or_default().into_owned(),
                 });
             }
@@ -580,6 +601,7 @@ fn calculate(
                 raw_complete: true,
                 raw_cap: MAX_CALC_CELLS.saturating_sub(cells),
                 shared: HashMap::new(),
+                formulas_unshared: 0,
                 uncached: BTreeMap::new(),
             };
             let ended = xml::drive(&text, pkg.limits(), &mut h);
@@ -815,6 +837,8 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
     let mut parts: Vec<(String, String)> = Vec::new();
     let mut waiting: Vec<Waiting> = Vec::new();
     let mut pending_items = 0usize;
+    // Every sheet part the workbook names, shown or not.
+    let mut named: Vec<String> = Vec::new();
 
     for sheet in &wb.sheets {
         if sink.is_full() {
@@ -828,6 +852,7 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             sink.skipped(&sheet.name);
             continue;
         }
+        named.push(part.clone());
         let Some(sec) = sink.open_section(SectionKind::Sheet, &sheet.name, sheet.hidden) else {
             break;
         };
@@ -837,7 +862,8 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             continue;
         };
         let mut h = SheetHandler {
-            grid: GridBuilder::new(sink.policy, sink.items_left().saturating_sub(pending_items)),
+            grid: GridBuilder::new(sink.policy, sink.items_left().saturating_sub(pending_items))
+                .with_char_budget(sink.chars_left()),
             links: Vec::new(),
             sst: &sst,
             formats: &mut formats,
@@ -867,14 +893,32 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             raw_complete: true,
             raw_cap: 0,
             shared: HashMap::new(),
+            formulas_unshared: 0,
             uncached: BTreeMap::new(),
         };
         let res = xml::drive(&text, pkg.limits(), &mut h);
         formulas = formulas.saturating_add(h.formulas);
+        if h.formulas_unshared > 0 {
+            sink.note(
+                NoticeKind::Unsupported,
+                "shared formulas too long to be shown for every cell",
+            );
+        }
         let raw_links = std::mem::take(&mut h.links);
         let uncached = std::mem::take(&mut h.uncached);
+        let hidden_cols = h.grid.hidden_columns();
+        if hidden_cols > 0 {
+            let kind = if h.grid.omits_hidden() {
+                NoticeKind::HiddenOmitted
+            } else {
+                NoticeKind::HiddenShown
+            };
+            sink.count(kind, "columns", hidden_cols);
+        }
         let mut grid = h.grid.finish();
-        grid.attach_links(&sheet_links(pkg, &part, &raw_links, sink.policy.max_href_bytes)?);
+        if !grid.attach_links(&sheet_links(pkg, &part, &raw_links, sink.policy.max_href_bytes)?) {
+            sink.truncated("hyperlinks");
+        }
         if res.is_err() {
             sink.skipped(&part);
         }
@@ -911,6 +955,16 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
         if !pkg.rel_targets(&part, "drawing")?.is_empty() {
             drawings = true;
+        }
+    }
+
+    if !sink.is_full() {
+        let extra = pkg.count_unlisted("xl/worksheets/", &named);
+        if extra > 0 {
+            sink.note_detail(
+                NoticeKind::Skipped,
+                format!("{extra} worksheet part(s) that the workbook does not list"),
+            );
         }
     }
 
@@ -960,13 +1014,13 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
     }
     if calculated > 0 {
-        sink.count(crate::model::NoticeKind::FormulasCalculated, "", calculated);
+        sink.count(NoticeKind::FormulasCalculated, "", calculated);
     }
     if formulas > calculated {
-        sink.count(crate::model::NoticeKind::FormulasNotEvaluated, "", formulas - calculated);
+        sink.count(NoticeKind::FormulasNotEvaluated, "", formulas - calculated);
     }
     if drawings {
-        sink.note(crate::model::NoticeKind::Unsupported, "drawings and charts");
+        sink.note(NoticeKind::Unsupported, "drawings and charts");
     }
     Ok(())
 }
