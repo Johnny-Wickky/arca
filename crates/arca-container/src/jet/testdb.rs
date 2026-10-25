@@ -119,7 +119,7 @@ impl ColSpec {
 
 /// A value to store.
 #[derive(Clone)]
-pub(crate) enum Cell {
+pub(crate) enum Cv {
     Null,
     Int(i64),
     Bool(bool),
@@ -224,7 +224,7 @@ impl TestDb {
         name: &str,
         flags: i64,
         cols: &[ColSpec],
-        rows: &[Vec<Cell>],
+        rows: &[Vec<Cv>],
         indexes: &[IndexSpec],
     ) -> usize {
         let page = self.write_table(None, cols, rows, indexes);
@@ -244,7 +244,7 @@ impl TestDb {
         &mut self,
         fixed_page: Option<usize>,
         cols: &[ColSpec],
-        rows: &[Vec<Cell>],
+        rows: &[Vec<Cv>],
         indexes: &[IndexSpec],
     ) -> usize {
         let tdef = fixed_page.unwrap_or_else(|| self.alloc());
@@ -387,7 +387,7 @@ impl TestDb {
     fn row_bytes(
         &self,
         cols: &[ColSpec],
-        cells: &[Cell],
+        cells: &[Cv],
         fixed_len: usize,
         fixed_at: &[usize],
     ) -> Vec<u8> {
@@ -397,32 +397,32 @@ impl TestDb {
         let mut mask = vec![0u8; mask_len];
         let mut var: Vec<Option<Vec<u8>>> = Vec::new();
         for (i, c) in cols.iter().enumerate() {
-            let cell = cells.get(i).cloned().unwrap_or(Cell::Null);
-            if c.ty == t::BOOL {
-                if matches!(cell, Cell::Bool(true) | Cell::Int(1..)) {
+            let cell = cells.get(i).cloned().unwrap_or(Cv::Null);
+            if c.ty == t::BOOL && c.ext & 0xC0 == 0 {
+                if matches!(cell, Cv::Bool(true) | Cv::Int(1..)) {
                     mask[i / 8] |= 1 << (i % 8);
                 }
                 continue;
             }
             let bytes: Option<Vec<u8>> = match (&cell, c.fixed_size()) {
-                (Cell::Null, _) => None,
-                (Cell::Int(v), Some(sz)) => Some(v.to_le_bytes()[..sz.min(8)].to_vec()),
-                (Cell::Int(v), None) => Some(v.to_le_bytes().to_vec()),
-                (Cell::Bool(b), _) => Some(vec![u8::from(*b)]),
-                (Cell::Text(s), _) => Some(utf16(s)),
-                (Cell::Compressed(b), _) => {
+                (Cv::Null, _) => None,
+                (Cv::Int(v), Some(sz)) => Some(v.to_le_bytes()[..sz.min(8)].to_vec()),
+                (Cv::Int(v), None) => Some(v.to_le_bytes().to_vec()),
+                (Cv::Bool(b), _) => Some(vec![u8::from(*b)]),
+                (Cv::Text(s), _) => Some(utf16(s)),
+                (Cv::Compressed(b), _) => {
                     let mut v = vec![0xFF, 0xFE];
                     v.extend(b);
                     Some(v)
                 }
-                (Cell::Raw(b), _) => Some(b.clone()),
-                (Cell::Memo(s), _) => {
+                (Cv::Raw(b), _) => Some(b.clone()),
+                (Cv::Memo(s), _) => {
                     let text = utf16(s);
                     let mut v = long_header(text.len());
                     v.extend(text);
                     Some(v)
                 }
-                (Cell::Long(b), _) => {
+                (Cv::Long(b), _) => {
                     let mut v = long_header(b.len());
                     v.extend(b);
                     Some(v)
@@ -475,27 +475,27 @@ impl TestDb {
             ColSpec::new("Connect", t::TEXT),
             ColSpec::new("Database", t::TEXT),
         ];
-        let mut rows: Vec<Vec<Cell>> = Vec::new();
+        let mut rows: Vec<Vec<Cv>> = Vec::new();
         // The catalog lists itself.
         rows.push(vec![
-            Cell::Int(2),
-            Cell::Int(0),
-            Cell::Text("MSysObjects".into()),
-            Cell::Int(1),
-            Cell::Int(i64::from(0x8000_0000u32 as i32)),
-            Cell::Null,
-            Cell::Null,
-            Cell::Null,
+            Cv::Int(2),
+            Cv::Int(0),
+            Cv::Text("MSysObjects".into()),
+            Cv::Int(1),
+            Cv::Int(i64::from(0x8000_0000u32 as i32)),
+            Cv::Null,
+            Cv::Null,
+            Cv::Null,
         ]);
         for o in &self.objects {
-            let text = |s: &str| if s.is_empty() { Cell::Null } else { Cell::Text(s.to_owned()) };
+            let text = |s: &str| if s.is_empty() { Cv::Null } else { Cv::Text(s.to_owned()) };
             rows.push(vec![
-                Cell::Int(o.id),
-                Cell::Int(0),
-                Cell::Text(o.name.clone()),
-                Cell::Int(o.kind),
-                Cell::Int(o.flags),
-                o.props.clone().map_or(Cell::Null, Cell::Long),
+                Cv::Int(o.id),
+                Cv::Int(0),
+                Cv::Text(o.name.clone()),
+                Cv::Int(o.kind),
+                Cv::Int(o.flags),
+                o.props.clone().map_or(Cv::Null, Cv::Long),
                 text(&o.connect),
                 text(&o.database),
             ]);
@@ -517,10 +517,10 @@ impl TestDb {
 
 /// The cells of a row from a short description: `i(5)`, `s("x")` and so on are spelled by the
 /// tests with the enum directly; this helper makes a text cell.
-pub(crate) fn text(s: &str) -> Cell {
-    Cell::Text(s.to_owned())
+pub(crate) fn text(s: &str) -> Cv {
+    Cv::Text(s.to_owned())
 }
 
-pub(crate) fn int(v: i64) -> Cell {
-    Cell::Int(v)
+pub(crate) fn int(v: i64) -> Cv {
+    Cv::Int(v)
 }
