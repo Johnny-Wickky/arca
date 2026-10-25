@@ -101,6 +101,21 @@ if find crates -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -n
     violation "C/C++ sources in crates/"
 fi
 
+# 7. The build tooling (crates/arca-devtools) is a workspace member and nothing else: no crate
+#    and no fuzz target depends on it, so it cannot be linked into the app or a Wasm guest.
+if grep -rn 'arca-devtools' --include='Cargo.toml' crates fuzz | grep -v '^crates/arca-devtools/Cargo.toml:'; then
+    violation "something depends on arca-devtools (lines above); it must stay a standalone tool"
+fi
+
+# 8. The build and verification chain is Rust and POSIX shell only: no Python. (The fixture
+#    generators under tools/fixtures are one-off, documented dev aids that are not part of any
+#    build; their output is committed.)
+if grep -rInE --exclude-dir=fixtures --exclude=check-unsafe.sh '(^|[^[:alnum:]_])python[0-9.]*([^[:alnum:]_]|$)|\.py([^[:alnum:]_]|$)' \
+        tools .github android/host-test android/core-test; then
+    violation "Python in the build chain (lines above)"
+fi
+find tools android -name '*.py' -not -path 'tools/fixtures/*' | grep . && violation "Python scripts outside tools/fixtures"
+
 if [[ $fail == 0 ]]; then
     echo "check-unsafe: policy holds"
 fi

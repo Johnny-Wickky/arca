@@ -3,7 +3,7 @@
      Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
 
      Русский перевод. Имена и плейсхолдеры должны совпадать с values/strings.xml
-     (tools/android/check_resources.py проверяет это). Количества записаны как «Подпись: N»,
+     (arca-devtools check-resources проверяет это). Количества записаны как «Подпись: N»,
      чтобы не склонять слова по числу. -->
 <resources>
     <!-- Общее -->

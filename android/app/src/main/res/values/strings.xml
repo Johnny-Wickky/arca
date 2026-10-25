@@ -3,7 +3,7 @@
      Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
 
      English is the source language; values-ru/ must have exactly the same names and the same
-     placeholders (tools/android/check_resources.py enforces both). Counts are written as
+     placeholders (arca-devtools check-resources enforces both). Counts are written as
      "Label: N" so that no sentence needs a plural form. -->
 <resources>
     <string name="app_name" translatable="false">Arca</string>

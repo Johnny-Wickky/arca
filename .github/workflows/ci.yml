@@ -86,6 +86,41 @@ jobs:
       - name: build twice and compare SHA-256
         run: bash tools/check-reproducible.sh
 
+  # Reproducibility evidence for the Wasm guest (issues #43 and #53): the module the sandbox
+  # pins by SHA-256 is built from the same source in two different Linux distributions, each
+  # with its own rustup, the toolchain pinned by rust-toolchain.toml, `--locked`, a different
+  # build directory, path remapping and a fixed SOURCE_DATE_EPOCH. The job fails unless both
+  # hashes are equal and prints the hash. (The APK as a whole is not claimed to be bit-for-bit
+  # reproducible; this job covers the guest only.) The container images are the distributions'
+  # moving tags on purpose: the point is that a different base system gives the same bytes.
+  reproducible-guest:
+    name: reproducible Wasm guest (ubuntu:22.04 and debian:bookworm, same SHA-256)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: build the guest in two clean containers
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for image in ubuntu:22.04 debian:bookworm; do
+            label="${image//[:\/]/-}"
+            docker run --rm -v "$PWD:/src:ro" -v "$PWD/out:/out" "$image" \
+              bash /src/tools/repro-guest-container.sh "$label" /out
+          done
+      - name: compare the SHA-256 of the two builds
+        run: |
+          set -euo pipefail
+          cat out/*.sha256
+          distinct="$(cut -d' ' -f1 out/*.sha256 | sort -u)"
+          if [ "$(printf '%s\n' "$distinct" | wc -l)" != 1 ] || [ "$(ls out/*.sha256 | wc -l)" != 2 ]; then
+            echo "::error::arca_guest_xray.wasm differs between the containers (or a build is missing)"
+            exit 1
+          fi
+          echo "arca_guest_xray.wasm SHA-256 (identical in both): $distinct"
+          { echo "### arca_guest_xray.wasm"; echo; echo '`'"$distinct"'` (ubuntu:22.04 = debian:bookworm)'; } >> "$GITHUB_STEP_SUMMARY"
+
   supply-chain:
     name: cargo-deny (licenses, advisories, bans, sources)
     runs-on: ubuntu-24.04

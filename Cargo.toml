@@ -17,10 +17,11 @@ members = [
     "crates/arca-jni",
     "crates/arca-image",
     "crates/arca-ffi",
+    "crates/arca-devtools",
 ]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.4"
 edition = "2024"
 rust-version = "1.97"
 # Placeholder identity; kept in sync with AUTHORS and arca-attribution (see AUTHORS).

@@ -141,7 +141,7 @@ Rust-часть не требует ничего, кроме линкера: C �
 последовательность на чистой машине при проверке 0.2.2 не прогонялись.
 
 ```sh
-sudo apt install build-essential python3 zip unzip curl git openjdk-17-jdk-headless
+sudo apt install build-essential zip unzip curl git openjdk-17-jdk-headless
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh      # затем перезапустить оболочку
 cd ~/arca && rustup toolchain install                              # 1.97.0, wasm32 и цели Android — из rust-toolchain.toml
 
@@ -169,7 +169,17 @@ ANDROID_HOME=... ARCA_NATIVE_DIR=$PWD/native ARCA_THROWAWAY_KEY=1 bash tools/and
 
 Сборка использует закреплённые версии: Rust 1.97.0 (`rust-toolchain.toml`), `Cargo.lock` с
 `--locked`, `build-tools;36.0.0`, образ `ubuntu-24.04`, действия по SHA. Пути вырезаются из
-бинарных файлов (`--remap-path-prefix`). Побитовая воспроизводимость APK **не заявляется и не
-проверена**; Wasm-гость и хостовая `libarca_jni.so` собираются одинаково из разных каталогов
-(`tools/check-reproducible.sh`, задание CI `reproducible`). Хэш Wasm-гостя (он печатается в журнале сборки, в «Диагностике» приложения и в
-заметках релиза) — то, что можно сравнивать между сборками одного коммита.
+бинарных файлов (`--remap-path-prefix`). Побитовая воспроизводимость APK **не заявляется**.
+Что измерено на дереве 0.2.4 (WSL, два каталога с разными именами, `tools/android/build-local.sh`
+в каждом): три `libarca_jni.so` и все записи APK, кроме `META-INF/`, совпали байт в байт; сам
+файл APK различается подписью (одноразовый ключ). Что проверяется в CI: Wasm-гость и хостовая
+`libarca_jni.so` собираются одинаково из разных каталогов (`tools/check-reproducible.sh`, задание
+`reproducible`), а гость — ещё и в двух разных дистрибутивах (задание `reproducible-guest`:
+`ubuntu:22.04` и `debian:bookworm`, свой rustup, `--locked`, `--remap-path-prefix`,
+`SOURCE_DATE_EPOCH`, разные каталоги сборки; различие SHA-256 проваливает задание). Тот же хэш
+(`6fb4064a…`) получился при локальной проверке в Docker в обоих образах и в WSL. Оговорка: без
+`--remap-path-prefix` в модуль попадают пути исходников зависимостей из `CARGO_HOME`, и хэш гостя
+зависит от них (`tools/build-guest.sh` флагов не добавляет: тот же коммит даёт `664aa861…`); поэтому
+хэши сравнивают между сборками с одинаковыми флагами. Хэш Wasm-гостя (он печатается в журнале
+сборки, в «Диагностике» приложения и в заметках релиза) — то, что можно сравнивать между сборками
+одного коммита.
