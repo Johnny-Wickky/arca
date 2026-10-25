@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 # shellcheck disable=SC2086
 cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest --locked ${ARCA_CARGO_FLAGS:-}
-wasm=target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm
+wasm="${CARGO_TARGET_DIR:-target}"/wasm32-unknown-unknown/guest/arca_guest_xray.wasm
 python3 - "$wasm" <<'PY'
 import sys
 data = open(sys.argv[1], "rb").read()
