@@ -1,3 +1,12 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::string_slice,
+    reason = "test code with small constants and ASCII text"
+)]
+
 use super::*;
 
 const HOUR: i64 = 3_600_000;
