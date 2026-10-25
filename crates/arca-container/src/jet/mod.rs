@@ -21,6 +21,8 @@ mod complex;
 mod props;
 #[cfg(test)]
 mod testdb;
+#[cfg(test)]
+mod values_tests;
 
 pub use complex::{ComplexData, ComplexItem, ComplexKind};
 pub use props::{PropValue, Property};
