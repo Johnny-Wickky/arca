@@ -452,7 +452,6 @@
     <string name="stats_local_note">These numbers are counted and kept only on this device. They are never sent anywhere, and no file names or contents are stored.</string>
     <string name="stats_off_note">Statistics are turned off, so nothing is counted. You can turn them on in Settings.</string>
     <string name="stats_item_description">%1$s: %2$s</string>
-    <string name="stats_card_description">Statistics, %1$s</string>
     <string name="settings_stats_title">Statistics</string>
     <string name="settings_stats">Keep statistics</string>
     <string name="settings_stats_desc">Counts per day what Arca did for you: documents opened, dangerous software and trackers neutralised, files rejected, sterile copies. The numbers stay on this device and are never sent anywhere. Turning this off deletes them and nothing more is counted.</string>
