@@ -51,7 +51,9 @@ mod plain;
 mod ppt;
 mod pptx;
 mod rtf;
+pub mod sheet_draw;
 pub mod sink;
+mod slide_draw;
 mod vsd;
 mod vsdx;
 mod xls;
@@ -227,6 +229,7 @@ pub fn render_page(
     }
     match arca_xray::format::sniff(data) {
         arca_xray::format::Magic::Pdf => pdf::render(data, index, policy),
+        arca_xray::format::Magic::Zip => slide_draw::render_slide(data, index, policy),
         _ => Err(PreviewError::Unsupported(detect::format_of(data, policy))),
     }
 }
