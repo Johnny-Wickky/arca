@@ -301,11 +301,6 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// A reason that does not make the picture less exact (something left out is said, too).
-    fn left_out(&mut self, why: &'static str) {
-        self.note(why);
-    }
-
     fn visible(&self, s: &Sheet) -> bool {
         if s.layers.is_empty() || self.page.layers.is_empty() {
             return true;
@@ -322,7 +317,7 @@ impl<'a> Painter<'a> {
     }
 
     /// Draws one shape and what it holds.
-    fn shape(&mut self, s: &Sheet, parent: Mat, ctx: Option<u32>, depth: usize, angle: f64) {
+    fn shape(&mut self, s: &'a Sheet, parent: Mat, ctx: Option<u32>, depth: usize, angle: f64) {
         if depth >= MAX_DEPTH {
             self.full = true;
             return;
@@ -755,9 +750,6 @@ impl<'a> Painter<'a> {
                 off += run.width;
             }
         }
-        if look.sheet.is_1d() && false {
-            self.left_out("");
-        }
     }
 
     fn paragraphs(&mut self, look: &Look<'a>, pieces: &[super::model::Piece]) -> Vec<Para> {
@@ -1099,10 +1091,10 @@ fn page_geometry(page: &PageDef) -> (f64, f64, f64) {
 }
 
 /// Draws page `page` of `doc` (with the background page under it, if any).
-pub(crate) fn draw_page(
-    doc: &Doc,
-    page: &PageDef,
-    back: Option<&PageDef>,
+pub(crate) fn draw_page<'a>(
+    doc: &'a Doc,
+    page: &'a PageDef,
+    back: Option<&'a PageDef>,
     index: u32,
     pages: u32,
     reveal_hidden: bool,

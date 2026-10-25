@@ -512,7 +512,7 @@ fn random_rows_never_panic_and_stay_bounded() {
         let n = rng.below(24);
         let mut rows = Vec::new();
         for _ in 0..n {
-            let mut pick = |rng: &mut Rng| {
+            let pick = |rng: &mut Rng| {
                 if rng.below(4) == 0 {
                     None
                 } else {
