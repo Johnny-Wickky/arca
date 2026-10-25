@@ -448,7 +448,6 @@
     <string name="stats_local_note">Эти цифры считаются и хранятся только на этом устройстве. Они никуда не отправляются, имена и содержимое файлов не сохраняются.</string>
     <string name="stats_off_note">Статистика выключена, поэтому ничего не считается. Включить её можно в настройках.</string>
     <string name="stats_item_description">%1$s: %2$s</string>
-    <string name="stats_card_description">Статистика, %1$s</string>
     <string name="settings_stats_title">Статистика</string>
     <string name="settings_stats">Вести статистику</string>
     <string name="settings_stats_desc">По дням считает, что Arca сделала для вас: открытые документы, обезвреженное опасное ПО и трекеры, отклонённые файлы, стерильные копии. Цифры остаются на этом устройстве и никуда не отправляются. Если выключить, они удаляются и больше не считаются.</string>

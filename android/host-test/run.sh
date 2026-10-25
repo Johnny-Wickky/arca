@@ -29,10 +29,10 @@ trap 'rm -rf "$work"' EXIT
 javac -Xlint:all -Werror -d "$work" \
     android/app/src/main/java/org/arca/viewer/Native.java \
     android/app/src/main/java/org/arca/viewer/core/*.java \
-    android/host-test/NativeTest.java android/host-test/ContractTest.java
+    android/host-test/NativeTest.java android/host-test/ContractTest.java android/host-test/StatsNativeTest.java
 
 fail=0
-for test in NativeTest ContractTest; do
+for test in NativeTest ContractTest StatsNativeTest; do
     echo "== $test"
     log="$work/$test.log"
     set +e
