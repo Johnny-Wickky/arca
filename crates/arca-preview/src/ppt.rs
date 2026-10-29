@@ -2403,6 +2403,27 @@ mod tests {
     }
 
     #[test]
+    fn a_binary_deck_is_drawn_slide_by_slide() {
+        let (stream, cu) = sample();
+        let data = file(stream, Some(cu));
+        let policy = PreviewPolicy::default();
+        let first = crate::render_page(&data, 0, &policy).expect("slide 1");
+        assert_eq!((first.width, first.height, first.pages), (720.0, 540.0, 2));
+        let text: String = first
+            .prims
+            .iter()
+            .filter_map(|p| match p {
+                crate::page::Prim::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(text.contains("Fuzz title"), "{text}");
+        assert!(crate::render_page(&data, 1, &policy).is_ok(), "the hidden slide is drawn too");
+        assert!(crate::render_page(&data, 2, &policy).is_err(), "there is no third slide");
+    }
+
+    #[test]
     fn mutated_decks_never_panic() {
         let (stream, cu) = sample();
         let mut rng = Lcg::new(99);

@@ -173,7 +173,7 @@ SHA-256 (FIPS 180-4, проверка по векторам NIST) и CRC-32 (IEE
 | экспорт | сигнатура | смысл |
 |---|---|---|
 | `memory` | память | единственная память гостя |
-| `arca_abi_version` | `() -> i32` | должна вернуть `5` (`ABI_VERSION`) |
+| `arca_abi_version` | `() -> i32` | должна вернуть `6` (`ABI_VERSION`) |
 | `arca_input_reserve` | `(len) -> ptr` | гость выделяет буфер под вход |
 | `arca_run` | `(len) -> status` | обработка |
 | `arca_output_ptr` / `arca_output_len` | `() -> i32` | где лежит результат |

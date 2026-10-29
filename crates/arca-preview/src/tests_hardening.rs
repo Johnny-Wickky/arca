@@ -250,7 +250,12 @@ mod sink_tests {
             sec,
             Paragraph {
                 marker: "1.\n".into(),
-                runs: vec![Run { text: "t\nu".into(), style: 0, href: "http://a/\nb\tc".into() }],
+                runs: vec![Run {
+                    text: "t\nu".into(),
+                    style: 0,
+                    href: "http://a/\nb\tc".into(),
+                    ..Run::default()
+                }],
                 ..Paragraph::default()
             },
         );
@@ -275,6 +280,7 @@ mod sink_tests {
                     text: "x".into(),
                     style: 0,
                     href: "https://good.example/".to_owned() + &"a".repeat(100) + "/evil",
+                    ..Run::default()
                 }],
                 ..Paragraph::default()
             },

@@ -11,7 +11,8 @@
 
 use std::collections::BTreeMap;
 
-const THEME: &str = include_str!("../../../android/app/src/main/java/org/arca/viewer/ui/Theme.java");
+const THEME: &str =
+    include_str!("../../../android/app/src/main/java/org/arca/viewer/ui/Theme.java");
 const LIGHT: &str = include_str!("../../../android/app/src/main/res/values/colors.xml");
 const NIGHT: &str = include_str!("../../../android/app/src/main/res/values-night/colors.xml");
 
@@ -46,12 +47,7 @@ fn resource_colors(xml: &str) -> BTreeMap<String, (u8, Rgb)> {
 fn palette_keys() -> Vec<String> {
     let start = THEME.find("KEYS = {").expect("KEYS table");
     let end = THEME[start..].find("};").expect("end of KEYS") + start;
-    THEME[start..end]
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_owned)
-        .collect()
+    THEME[start..end].split('"').skip(1).step_by(2).map(str::to_owned).collect()
 }
 
 /// The rows of `PALETTES` after the `null` of the classic palette, with the name from the comment.
@@ -72,7 +68,9 @@ fn palette_rows() -> Vec<(String, Vec<(u8, Rgb)>)> {
             current = Some(Vec::new());
         }
         if let Some(row) = current.as_mut() {
-            for token in t.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| w.starts_with("0x")) {
+            for token in
+                t.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| w.starts_with("0x"))
+            {
                 row.push(parse_hex(token).expect("palette colour"));
             }
             if t.ends_with("},") {
@@ -230,7 +228,8 @@ fn text_on_a_glass_panel_keeps_its_contrast_over_the_worst_backdrop() {
     let mut failures = Vec::new();
     for (i, (name, c)) in palettes().into_iter().enumerate() {
         let is_dark = dark[i + 1];
-        let (alpha, sheen) = if is_dark { (body_dark, sheen_dark) } else { (body_light, sheen_light) };
+        let (alpha, sheen) =
+            if is_dark { (body_dark, sheen_dark) } else { (body_light, sheen_light) };
         // The window shows a wash of the brand colour (up to 0x66) behind the panels.
         let backdrop = over((0x66, c["arca_primary"]), c["arca_bg"]);
         for under in [c["arca_bg"], backdrop] {

@@ -57,6 +57,7 @@ mod slide_draw;
 mod visio_draw;
 mod vsd;
 mod vsdx;
+mod word_draw;
 mod xls;
 mod xlsx;
 mod xml;
@@ -215,8 +216,9 @@ pub fn sanitize_pdf(
 
 /// Draws page `index` (from 0) of a document: what is on it, as a list of things to draw.
 ///
-/// PDF pages, presentation slides (PPTX family, ODP), workbook pages (XLSX family, ODS, XLS) and
-/// Visio pages (VSDX family, VSD) are drawn. The format is determined from content only.
+/// PDF pages, presentation slides (PPTX family, ODP, PPT), workbook pages (XLSX family, ODS, XLS),
+/// Visio pages (VSDX family, VSD) and the pages of text documents (DOCX family, ODT, RTF, DOC) are
+/// drawn. The format is determined from content only.
 ///
 /// # Errors
 /// See [`PreviewError`]; [`PreviewError::Unsupported`] for formats that have no page drawing,
@@ -244,11 +246,22 @@ pub fn render_page(
             Err(PreviewError::Unsupported(
                 FileFormat::Vsdx | FileFormat::Vsdm | FileFormat::VisioTemplateOrStencil,
             )) => visio_draw::render_visio_page(data, index, policy),
+            // Word documents are laid out from their reading view.
+            Err(PreviewError::Unsupported(
+                FileFormat::Docx
+                | FileFormat::Docm
+                | FileFormat::Dotx
+                | FileFormat::Dotm
+                | FileFormat::Odt,
+            )) => word_draw::render_text_page(data, index, policy),
             other => other,
         },
+        arca_xray::format::Magic::Rtf => word_draw::render_text_page(data, index, policy),
         arca_xray::format::Magic::Ole2 => match detect::format_of(data, policy) {
             FileFormat::Vsd => visio_draw::render_visio_page(data, index, policy),
             FileFormat::Xls => sheet_draw::render_workbook_page(data, index, policy),
+            FileFormat::Doc => word_draw::render_text_page(data, index, policy),
+            FileFormat::Ppt => word_draw::render_slide_page(data, index, policy),
             other => Err(PreviewError::Unsupported(other)),
         },
         _ => Err(PreviewError::Unsupported(detect::format_of(data, policy))),

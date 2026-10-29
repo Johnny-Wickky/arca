@@ -599,7 +599,10 @@ fn relationships_written_with_a_dot_slash_do_not_keep_metadata_parts_alive() {
     .set("customXml/_rels/item1.xml.rels", rels(&[("rId1", "hyperlink", "https://beacon.example/item", true)]));
     let ct = content_types(&[
         ("/word/document.xml", CT_DOCX),
-        ("/docProps/custom.xml", "application/vnd.openxmlformats-officedocument.custom-properties+xml"),
+        (
+            "/docProps/custom.xml",
+            "application/vnd.openxmlformats-officedocument.custom-properties+xml",
+        ),
         ("/customXml/item1.xml", "application/xml"),
     ]);
     o.set("[Content_Types].xml", ct);
@@ -607,10 +610,17 @@ fn relationships_written_with_a_dot_slash_do_not_keep_metadata_parts_alive() {
 
     let out = sanitize(&input, &ScanPolicy::default(), &SanitizeOptions::default()).unwrap();
     assert_eq!(out.verification.verdict, Verdict::Clean, "{:#?}", out.verification.findings);
-    for gone in ["docProps/custom.xml", "docProps/_rels/custom.xml.rels", "customXml/item1.xml", "customXml/_rels/item1.xml.rels"] {
+    for gone in [
+        "docProps/custom.xml",
+        "docProps/_rels/custom.xml.rels",
+        "customXml/item1.xml",
+        "customXml/_rels/item1.xml.rels",
+    ] {
         assert!(part(&out.bytes, gone).is_none(), "{gone} survived: {:?}", part_names(&out.bytes));
     }
-    for gone in ["SECRET-CLIENT", "SECRET-CUSTOM-XML", "beacon.example", "customXml", "custom-properties"] {
+    for gone in
+        ["SECRET-CLIENT", "SECRET-CUSTOM-XML", "beacon.example", "customXml", "custom-properties"]
+    {
         assert!(!mentions(&out.bytes, gone), "{gone} survived somewhere in the copy");
     }
 }

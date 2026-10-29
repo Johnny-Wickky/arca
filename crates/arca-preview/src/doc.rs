@@ -614,6 +614,7 @@ impl TableAcc {
                     text: " │ ".to_owned(),
                     style: 0,
                     href: String::new(),
+                    ..crate::model::Run::default()
                 });
             }
             for (k, p) in cell.into_iter().enumerate() {
@@ -622,6 +623,7 @@ impl TableAcc {
                         text: " ".to_owned(),
                         style: 0,
                         href: String::new(),
+                        ..crate::model::Run::default()
                     });
                 }
                 if !p.marker.is_empty() {
@@ -629,6 +631,7 @@ impl TableAcc {
                         text: format!("{} ", p.marker),
                         style: 0,
                         href: String::new(),
+                        ..crate::model::Run::default()
                     });
                 }
                 para.runs.extend(p.runs);
@@ -1466,6 +1469,7 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
                         text: format!("{author}: "),
                         style: style::BOLD,
                         href: String::new(),
+                        ..crate::model::Run::default()
                     },
                 );
             }
@@ -1475,6 +1479,7 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
                 text: "▣".to_owned(),
                 style: style::ITALIC,
                 href: String::new(),
+                ..crate::model::Run::default()
             });
         }
         if para.runs.is_empty() && para.marker.is_empty() { None } else { Some(para) }

@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::PreviewError;
 use crate::model::{
-    Align, Block, Cell, IMAGE_NONE, ImageInfo, ParaStyle, Row, SectionKind, Table, style,
+    Align, Block, Cell, IMAGE_NONE, ImageInfo, ParaFmt, ParaStyle, Row, RunFmt, SectionKind, Table,
+    style,
 };
 use crate::opc::Package;
 use crate::sink::{ParaBuilder, SectionId, Sink};
@@ -30,6 +31,145 @@ const SKIPPED: [&str; 12] = [
 // styles.xml
 // ---------------------------------------------------------------------------
 
+/// Colours and size of text as a style or a run gives them; the size is in half-points here and
+/// becomes a percentage of the body text only when a run is emitted.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Look {
+    fg: u32,
+    bg: u32,
+    sz: u16,
+}
+
+impl Look {
+    fn or(self, base: Self) -> Self {
+        Self {
+            fg: if self.fg != 0 { self.fg } else { base.fg },
+            bg: if self.bg != 0 { self.bg } else { base.bg },
+            sz: if self.sz != 0 { self.sz } else { base.sz },
+        }
+    }
+}
+
+/// `RRGGBB` as `0xFFRRGGBB`; `auto` and anything else give `0` (the viewer's own colour).
+fn rgb(value: &str) -> u32 {
+    let v = value.trim();
+    if v.len() == 6 && v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        u32::from_str_radix(v, 16).map_or(0, |c| 0xFF00_0000 | c)
+    } else {
+        0
+    }
+}
+
+/// The colour of a `w:highlight` name; white and `none` are no highlight.
+fn highlight(name: &str) -> u32 {
+    let c = match name {
+        "yellow" => 0xFFFF00,
+        "green" => 0x00FF00,
+        "cyan" => 0x00FFFF,
+        "magenta" => 0xFF00FF,
+        "blue" => 0x0000FF,
+        "red" => 0xFF0000,
+        "darkBlue" => 0x000080,
+        "darkCyan" => 0x008080,
+        "darkGreen" => 0x008000,
+        "darkMagenta" => 0x800080,
+        "darkRed" => 0x800000,
+        "darkYellow" => 0x808000,
+        "darkGray" => 0x808080,
+        "lightGray" => 0xC0C0C0,
+        "black" => 0x000000,
+        _ => return 0,
+    };
+    0xFF00_0000 | c
+}
+
+/// A run property that carries a colour or a size (shared by styles and runs).
+fn run_look(tag: &Tag<'_>) -> Look {
+    match tag.local() {
+        "color" => Look { fg: tag.attr("val").map_or(0, |v| rgb(&v)), ..Look::default() },
+        "highlight" => Look { bg: tag.attr("val").map_or(0, |v| highlight(&v)), ..Look::default() },
+        "shd" => {
+            let fill = tag.attr("fill").map_or(0, |v| rgb(&v));
+            Look { bg: fill, ..Look::default() }
+        }
+        "sz" => Look {
+            sz: tag.attr("val").and_then(|v| v.parse::<u16>().ok()).unwrap_or(0),
+            ..Look::default()
+        },
+        _ => Look::default(),
+    }
+}
+
+/// Twips to points, as the `u16` the model keeps.
+fn twips_pt(v: i64) -> u16 {
+    u16::try_from((v / 20).clamp(0, 2000)).unwrap_or(0)
+}
+
+/// Collects `w:pBdr` children while a paragraph property block is read.
+#[derive(Debug, Default, Clone, Copy)]
+struct Borders {
+    left: u32,
+    sides: u8,
+}
+
+fn border_color(tag: &Tag<'_>) -> u32 {
+    match tag.attr("val").as_deref() {
+        None | Some("nil" | "none") => 0,
+        Some(_) => match tag.attr("color").map_or(0, |c| rgb(&c)) {
+            0 => 0xFF80_8080,
+            c => c,
+        },
+    }
+}
+
+/// A paragraph property element: indents, line spacing, borders.
+fn para_prop(tag: &Tag<'_>, fmt: &mut ParaFmt, borders: &mut Borders, in_borders: bool) {
+    let num = |name: &str| tag.attr(name).and_then(|v| v.parse::<i64>().ok());
+    if in_borders {
+        let c = border_color(tag);
+        match tag.local() {
+            "left" | "start" => {
+                borders.left = c;
+                borders.sides |= u8::from(c != 0);
+            }
+            "top" | "bottom" | "right" | "end" => borders.sides += u8::from(c != 0) << 1,
+            _ => {}
+        }
+        return;
+    }
+    match tag.local() {
+        "ind" => {
+            if let Some(v) = num("left").or_else(|| num("start")) {
+                fmt.indent_left = twips_pt(v);
+            }
+            if let Some(v) = num("firstLine") {
+                fmt.indent_first = i64::from(twips_pt(v));
+            } else if let Some(v) = num("hanging") {
+                fmt.indent_first = -i64::from(twips_pt(v));
+            }
+        }
+        "spacing" => {
+            let rule = tag.attr("lineRule");
+            if let Some(line) = num("line")
+                && rule.as_deref().is_none_or(|r| r == "auto")
+                && line > 0
+            {
+                fmt.line_spacing = u16::try_from((line * 100 / 240).clamp(50, 500)).unwrap_or(0);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The border of a paragraph from what `w:pBdr` held: a bar down the left edge, or a frame when
+/// at least the left side and another one are drawn.
+fn finish_borders(b: Borders, fmt: &mut ParaFmt) {
+    if b.left != 0 {
+        fmt.border = b.left;
+        fmt.boxed = b.sides >= 3;
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct StyleDef {
     name: String,
@@ -37,12 +177,16 @@ struct StyleDef {
     outline: Option<u8>,
     run: u16,
     num: Option<(u32, u32)>,
+    look: Look,
+    para: ParaFmt,
 }
 
 /// Paragraph styles by id.
 #[derive(Debug, Default)]
 pub(crate) struct Styles {
     defs: BTreeMap<String, StyleDef>,
+    /// Size of the body text in half-points (`docDefaults`, then the `Normal` style).
+    base_sz: u16,
 }
 
 /// Resolved properties of a style chain.
@@ -51,6 +195,8 @@ struct Resolved {
     para: ParaStyle,
     run: u16,
     num: Option<(u32, u32)>,
+    look: Look,
+    fmt: ParaFmt,
 }
 
 fn para_style_by_name(name: &str) -> Option<ParaStyle> {
@@ -92,6 +238,9 @@ impl Styles {
                 }
             }
             out.run |= def.run;
+            // The style itself wins over the one it is based on, property by property.
+            out.look = out.look.or(def.look);
+            out.fmt = out.fmt.or(def.para);
             if out.num.is_none() {
                 out.num = def.num;
             }
@@ -110,7 +259,32 @@ impl Styles {
                 out.para = p;
             }
         }
+        // The viewer sets headings and titles in sizes of its own.
+        if !matches!(out.para, ParaStyle::Body | ParaStyle::Quote | ParaStyle::Code) {
+            out.look.sz = 0;
+        }
         out
+    }
+
+    /// The size of the body text in half-points.
+    fn body_size(&self) -> u16 {
+        if self.base_sz >= 8 { self.base_sz } else { 22 }
+    }
+
+    /// The model's colours and relative size for `look`.
+    fn run_fmt(&self, look: Look) -> RunFmt {
+        let scale = if look.sz == 0 {
+            0
+        } else {
+            let pct = u32::from(look.sz) * 100 / u32::from(self.body_size());
+            // Within a few percent of the body text it is the body text.
+            if (96..=104).contains(&pct) {
+                0
+            } else {
+                u16::try_from(pct.clamp(40, 400)).unwrap_or(0)
+            }
+        };
+        RunFmt { fg: look.fg, bg: look.bg, scale }
     }
 }
 
@@ -129,6 +303,9 @@ struct StylesHandler<'a> {
     in_num: bool,
     num_id: u32,
     ilvl: u32,
+    in_defaults: bool,
+    in_borders: bool,
+    borders: Borders,
 }
 
 fn mono_font(name: &str) -> bool {
@@ -180,8 +357,23 @@ impl Handler for StylesHandler<'_> {
                     d.based_on = tag.attr("val").unwrap_or_default().into_owned();
                 }
             }
-            "pPr" => self.in_ppr = true,
+            "docDefaults" => self.in_defaults = true,
+            "pPr" => {
+                self.in_ppr = true;
+                self.borders = Borders::default();
+            }
             "rPr" => self.in_rpr = true,
+            "pBdr" if self.in_ppr => self.in_borders = !_empty,
+            _ if self.in_ppr && self.in_borders => {
+                if let Some((_, d)) = self.cur.as_mut() {
+                    para_prop(tag, &mut d.para, &mut self.borders, true);
+                }
+            }
+            "ind" | "spacing" if self.in_ppr => {
+                if let Some((_, d)) = self.cur.as_mut() {
+                    para_prop(tag, &mut d.para, &mut self.borders, false);
+                }
+            }
             "numPr" if self.in_ppr => {
                 self.in_num = true;
                 self.num_id = 0;
@@ -200,8 +392,12 @@ impl Handler for StylesHandler<'_> {
             }
             _ if self.in_rpr => {
                 let bits = run_prop(tag);
+                let look = run_look(tag);
                 if let Some((_, d)) = self.cur.as_mut() {
                     d.run |= bits;
+                    d.look = d.look.or(look);
+                } else if self.in_defaults && look.sz != 0 {
+                    self.styles.base_sz = look.sz;
                 }
             }
             _ => {}
@@ -211,14 +407,24 @@ impl Handler for StylesHandler<'_> {
 
     fn end(&mut self, local: &str) {
         match local {
+            "docDefaults" => self.in_defaults = false,
+            "pBdr" => self.in_borders = false,
             "style" => {
                 if let Some((id, def)) = self.cur.take()
                     && !id.is_empty()
                 {
+                    if id == "Normal" && def.look.sz != 0 {
+                        self.styles.base_sz = def.look.sz;
+                    }
                     self.styles.defs.insert(id, def);
                 }
             }
-            "pPr" => self.in_ppr = false,
+            "pPr" => {
+                self.in_ppr = false;
+                if let Some((_, d)) = self.cur.as_mut() {
+                    finish_borders(self.borders, &mut d.para);
+                }
+            }
             "rPr" => self.in_rpr = false,
             "numPr" => {
                 if self.in_num
@@ -465,6 +671,8 @@ struct ParaState {
     align: Align,
     images: Vec<ImageInfo>,
     page_break: bool,
+    fmt: ParaFmt,
+    borders: Borders,
 }
 
 #[derive(Debug, Default)]
@@ -513,6 +721,9 @@ struct Walker<'a, 'p> {
     in_deltext: bool,
     run_style: u16,
     run_base: u16,
+    run_look: Look,
+    base_look: Look,
+    in_borders: bool,
     ins: u32,
     del: u32,
     hrefs: Vec<String>,
@@ -556,6 +767,9 @@ impl<'a, 'p> Walker<'a, 'p> {
             in_deltext: false,
             run_style: 0,
             run_base: 0,
+            run_look: Look::default(),
+            base_look: Look::default(),
+            in_borders: false,
             ins: 0,
             del: 0,
             hrefs: Vec::new(),
@@ -596,8 +810,9 @@ impl<'a, 'p> Walker<'a, 'p> {
             st |= style::INSERTED;
         }
         let href = self.current_href().to_owned();
+        let fmt = self.styles.run_fmt(self.run_look.or(self.base_look));
         if let Some(p) = self.para.as_mut() {
-            p.b.text(text, st, &href);
+            p.b.text_fmt(text, st, &href, fmt);
         }
     }
 
@@ -617,6 +832,9 @@ impl<'a, 'p> Walker<'a, 'p> {
             Mode::Body => resolved.para,
         });
         para.align = ps.align;
+        let mut own = ps.fmt;
+        finish_borders(ps.borders, &mut own);
+        para = para.with_fmt(own.or(resolved.fmt));
         // Lists.
         let num = ps.num.or(resolved.num);
         if let Some((num_id, ilvl)) = num
@@ -635,6 +853,7 @@ impl<'a, 'p> Walker<'a, 'p> {
                         text: format!("{author}: "),
                         style: style::BOLD,
                         href: String::new(),
+                        ..crate::model::Run::default()
                     },
                 );
             }
@@ -647,6 +866,7 @@ impl<'a, 'p> Walker<'a, 'p> {
                     text: format!("▣ {}", img.alt),
                     style: style::ITALIC,
                     href: String::new(),
+                    ..crate::model::Run::default()
                 });
             }
             if !(blank && para.runs.is_empty()) {
@@ -739,7 +959,20 @@ impl Handler for Walker<'_, '_> {
             "pStyle" if self.in_ppr => {
                 if let Some(p) = self.para.as_mut() {
                     p.style_id = tag.attr("val").unwrap_or_default().into_owned();
-                    self.run_base = self.styles.resolve(&p.style_id).run;
+                    let resolved = self.styles.resolve(&p.style_id);
+                    self.run_base = resolved.run;
+                    self.base_look = resolved.look;
+                }
+            }
+            "pBdr" if self.in_ppr => self.in_borders = !empty,
+            _ if self.in_ppr && self.in_borders => {
+                if let Some(p) = self.para.as_mut() {
+                    para_prop(tag, &mut p.fmt, &mut p.borders, true);
+                }
+            }
+            "ind" | "spacing" if self.in_ppr => {
+                if let Some(p) = self.para.as_mut() {
+                    para_prop(tag, &mut p.fmt, &mut p.borders, false);
                 }
             }
             "outlineLvl" if self.in_ppr => {
@@ -773,13 +1006,17 @@ impl Handler for Walker<'_, '_> {
             }
             "r" => {
                 self.run_style = 0;
+                self.run_look = Look::default();
             }
             "rStyle" if self.in_rpr && !self.in_ppr => {
                 let id = tag.attr("val").unwrap_or_default();
-                self.run_style |= self.styles.resolve(&id).run;
+                let resolved = self.styles.resolve(&id);
+                self.run_style |= resolved.run;
+                self.run_look = self.run_look.or(resolved.look);
             }
             _ if self.in_rpr && !self.in_ppr => {
                 self.run_style |= run_prop(tag);
+                self.run_look = run_look(tag).or(self.run_look);
             }
             "t" => self.in_text = !empty,
             "delText" => {
@@ -959,12 +1196,19 @@ impl Handler for Walker<'_, '_> {
                 self.finish_para();
                 self.in_ppr = false;
                 self.in_rpr = false;
+                self.in_borders = false;
                 self.run_base = 0;
                 self.run_style = 0;
+                self.run_look = Look::default();
+                self.base_look = Look::default();
             }
             "pPr" => self.in_ppr = false,
+            "pBdr" => self.in_borders = false,
             "rPr" => self.in_rpr = false,
-            "r" => self.run_style = 0,
+            "r" => {
+                self.run_style = 0;
+                self.run_look = Look::default();
+            }
             "t" => self.in_text = false,
             "delText" => {
                 self.in_text = false;
@@ -1108,6 +1352,9 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             in_num: false,
             num_id: 0,
             ilvl: 0,
+            in_defaults: false,
+            in_borders: false,
+            borders: Borders::default(),
         };
         if xml::drive(&text, pkg.limits(), &mut h).is_err() {
             sink.skipped(&p);
@@ -1321,6 +1568,77 @@ mod docx_tests {
         );
         // The style's own bold applies to its runs.
         assert_eq!(paras.get(2).and_then(|p| p.runs.first()).map(|r| r.style), Some(style::BOLD));
+    }
+
+    #[test]
+    fn colours_sizes_indents_spacing_and_borders_follow_the_style_chain() {
+        let styles = format!(
+            r#"<w:styles {}>
+            <w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
+            <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+            <w:style w:type="paragraph" w:styleId="Note"><w:name w:val="Note"/><w:basedOn w:val="Normal"/>
+              <w:pPr><w:pBdr><w:left w:val="single" w:sz="12" w:color="3366CC"/></w:pBdr>
+              <w:spacing w:line="360" w:lineRule="auto"/><w:ind w:left="720" w:hanging="360"/></w:pPr>
+              <w:rPr><w:color w:val="CC0000"/><w:sz w:val="28"/></w:rPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Warn"><w:name w:val="Warn"/><w:basedOn w:val="Note"/>
+              <w:rPr><w:color w:val="00AA00"/></w:rPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>
+              <w:rPr><w:color w:val="1F3864"/><w:sz w:val="40"/></w:rPr></w:style>
+            <w:style w:type="character" w:styleId="Loud"><w:name w:val="Loud"/><w:rPr><w:highlight w:val="yellow"/></w:rPr></w:style>
+            </w:styles>"#,
+            crate::testkit::W_NS
+        );
+        let r = rels(&[("rId1", "styles", "styles.xml")]);
+        let p = ok(&docx_with(
+            r#"<w:p><w:pPr><w:pStyle w:val="Warn"/></w:pPr><w:r><w:t>derived</w:t></w:r></w:p>
+               <w:p><w:pPr><w:pStyle w:val="Note"/><w:pBdr><w:top w:val="single" w:color="auto"/><w:left w:val="single" w:color="auto"/><w:bottom w:val="single" w:color="auto"/><w:right w:val="single" w:color="auto"/></w:pBdr><w:ind w:left="1440" w:firstLine="360"/></w:pPr>
+                 <w:r><w:rPr><w:color w:val="auto"/></w:rPr><w:t>boxed</w:t></w:r>
+                 <w:r><w:rPr><w:rStyle w:val="Loud"/><w:color w:val="0000FF"/><w:sz w:val="11"/></w:rPr><w:t>small blue on yellow</w:t></w:r>
+                 <w:r><w:rPr><w:shd w:val="clear" w:fill="DDEEFF"/></w:rPr><w:t>shaded</w:t></w:r></w:p>
+               <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Head</w:t></w:r></w:p>
+               <w:p><w:r><w:t>plain</w:t></w:r></w:p>"#,
+            &[("word/styles.xml", styles.as_str()), ("word/_rels/document.xml.rels", r.as_str())],
+        ));
+        let paras = paragraphs(body(&p));
+        let derived = paras[0];
+        // From "Warn": its own colour, the size and the paragraph settings from "Note".
+        assert_eq!(derived.runs[0].fg, 0xFF00_AA00);
+        assert_eq!(derived.runs[0].scale, 127, "28 half-points against a body of 22");
+        assert_eq!((derived.indent_left, derived.indent_first), (36, -18));
+        assert_eq!(derived.line_spacing, 150);
+        assert_eq!(
+            (derived.border, derived.boxed),
+            (0xFF33_66CC, false),
+            "a bar down the left edge"
+        );
+
+        let boxed = paras[1];
+        assert_eq!((boxed.indent_left, boxed.indent_first), (72, 18), "direct formatting wins");
+        assert!(boxed.boxed && boxed.border != 0, "four sides make a frame");
+        let by = |t: &str| boxed.runs.iter().find(|r| r.text == t).expect("run");
+        assert_eq!(by("boxed").fg, 0xFFCC_0000, "w:color auto keeps the style's colour");
+        let blue = by("small blue on yellow");
+        assert_eq!((blue.fg, blue.bg), (0xFF00_00FF, 0xFFFF_FF00));
+        assert_eq!(blue.scale, 50, "11 half-points against 22");
+        assert_eq!(by("shaded").bg, 0xFFDD_EEFF);
+
+        // Headings keep the viewer's sizes; their colour is kept.
+        let head = paras[2];
+        assert_eq!(head.style, ParaStyle::Heading1);
+        assert_eq!((head.runs[0].fg, head.runs[0].scale), (0xFF1F_3864, 0));
+
+        let plain = paras[3];
+        assert_eq!(plain.runs[0].fmt(), RunFmt::default());
+        assert_eq!((plain.indent_left, plain.line_spacing, plain.border), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_colour_that_is_not_six_hex_digits_is_ignored() {
+        let p = ok(&docx(
+            r#"<w:p><w:r><w:rPr><w:color w:val="zzzzzz"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:color w:val="FF00FF00"/></w:rPr><w:t>b</w:t></w:r><w:r><w:rPr><w:sz w:val="0"/></w:rPr><w:t>c</w:t></w:r></w:p>"#,
+        ));
+        let paras = paragraphs(body(&p));
+        assert!(paras[0].runs.iter().all(|r| r.fmt() == RunFmt::default()));
     }
 
     #[test]

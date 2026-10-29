@@ -1033,9 +1033,10 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
                     text: format!("{author}: "),
                     style: style::BOLD,
                     href: String::new(),
+                    ..Default::default()
                 });
             }
-            runs.push(Run { text, style: 0, href: String::new() });
+            runs.push(Run { text, style: 0, href: String::new(), ..Run::default() });
             let p = Paragraph {
                 style: ParaStyle::Comment,
                 marker: format!("{sheet}!{cell}"),

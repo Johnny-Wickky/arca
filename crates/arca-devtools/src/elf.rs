@@ -215,7 +215,8 @@ pub fn hardening(data: &[u8]) -> Result<Hardening, String> {
         Some(s) if s.flags & PF_X != 0 => return Err("the stack is executable".into()),
         Some(_) => {}
     }
-    if let Some(s) = segs.iter().find(|s| s.kind == PT_LOAD && s.flags & PF_W != 0 && s.flags & PF_X != 0)
+    if let Some(s) =
+        segs.iter().find(|s| s.kind == PT_LOAD && s.flags & PF_W != 0 && s.flags & PF_X != 0)
     {
         return Err(format!("a PT_LOAD at {:#x} is writable and executable", s.offset));
     }
@@ -430,9 +431,17 @@ mod tests {
         let now = (DT_BIND_NOW, 0);
         assert!(hardening(&hardened(6, false, 5, &[now])).unwrap_err().contains("RELRO"));
         assert!(hardening(&hardened(7, true, 5, &[now])).unwrap_err().contains("executable"));
-        assert!(hardening(&hardened(6, true, 7, &[now])).unwrap_err().contains("writable and executable"));
+        assert!(
+            hardening(&hardened(6, true, 7, &[now]))
+                .unwrap_err()
+                .contains("writable and executable")
+        );
         assert!(hardening(&hardened(6, true, 5, &[(1, 5)])).unwrap_err().contains("lazily"));
-        assert!(hardening(&hardened(6, true, 5, &[now, (DT_TEXTREL, 0)])).unwrap_err().contains("TEXTREL"));
+        assert!(
+            hardening(&hardened(6, true, 5, &[now, (DT_TEXTREL, 0)]))
+                .unwrap_err()
+                .contains("TEXTREL")
+        );
         // Lazy binding is not rescued by unrelated flag bits.
         assert!(hardening(&hardened(6, true, 5, &[(DT_FLAGS, 4)])).unwrap_err().contains("lazily"));
     }
