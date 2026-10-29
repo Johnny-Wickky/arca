@@ -145,3 +145,123 @@ fn the_page_view_is_reached_through_render_page_for_word_and_rich_text() {
     let t = texts(&page);
     assert!(t.contains("red words") && t.contains("plain words"), "{t}");
 }
+
+fn sect(extra: &str) -> String {
+    format!(
+        r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840" w:orient="landscape"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>{extra}</w:sectPr>"#
+    )
+}
+
+fn text_at(page: &PageModel) -> Vec<(String, f32, f32, f32)> {
+    page.prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { text, x, y, width, .. } => Some((text.clone(), *x, *y, *width)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_sheet_margins_header_footer_and_page_number_follow_the_document() {
+    let header = format!(
+        r#"<w:hdr {}><w:p><w:r><w:t>Running head</w:t></w:r></w:p></w:hdr>"#,
+        crate::testkit::W_NS
+    );
+    let footer = format!(
+        r#"<w:ftr {}><w:p><w:r><w:t>Running foot</w:t></w:r></w:p></w:ftr>"#,
+        crate::testkit::W_NS
+    );
+    let r = rels(&[("rH", "header", "header1.xml"), ("rF", "footer", "footer1.xml")]);
+    let body = format!(
+        r#"<w:p><w:r><w:t>Body text</w:t></w:r></w:p>{}"#,
+        sect(r#"<w:headerReference w:type="default" r:id="rH"/><w:footerReference w:type="default" r:id="rF"/>"#)
+    );
+    let data = docx_with(
+        &body,
+        &[
+            ("word/header1.xml", header.as_str()),
+            ("word/footer1.xml", footer.as_str()),
+            ("word/_rels/document.xml.rels", r.as_str()),
+        ],
+    );
+    let page = render_text_page(&data, 0, &PreviewPolicy::default()).unwrap();
+    assert_eq!((page.width, page.height), (792.0, 612.0), "Letter, landscape");
+    let all = text_at(&page);
+    let find = |t: &str| all.iter().find(|(s, ..)| s.contains(t)).cloned().expect(t);
+    let (_, bx, by, _) = find("Body text");
+    assert!((bx - 72.0).abs() < 0.5, "left margin of one inch, got {bx}");
+    let (_, _, hy, _) = find("Running head");
+    let (_, _, fy, _) = find("Running foot");
+    let (_, nx, ny, nw) = find("1");
+    assert!(hy < 72.0 && hy < by, "the header sits in the top margin ({hy})");
+    assert!(fy > 612.0 - 72.0, "the footer sits in the bottom margin ({fy})");
+    assert!((nx + nw - (792.0 - 72.0)).abs() < 1.0 && (ny - fy).abs() < 1.0, "number at the right of the footer line");
+}
+
+#[test]
+fn a_page_without_footer_gets_its_number_centred_and_each_page_its_own() {
+    let body: String = (0..120)
+        .map(|i| format!("<w:p><w:r><w:t>Line number {i} of a long document.</w:t></w:r></w:p>"))
+        .collect();
+    let data = docx(&body);
+    let p0 = render_text_page(&data, 0, &PreviewPolicy::default()).unwrap();
+    let p1 = render_text_page(&data, 1, &PreviewPolicy::default()).unwrap();
+    let number = |p: &PageModel| {
+        text_at(p).into_iter().filter(|(_, _, y, _)| *y > 842.0 - 56.0).map(|(t, x, ..)| (t, x)).collect::<Vec<_>>()
+    };
+    let n0 = number(&p0);
+    let n1 = number(&p1);
+    assert_eq!(n0.len(), 1);
+    assert_eq!((n0[0].0.as_str(), n1[0].0.as_str()), ("1", "2"));
+    assert!((n0[0].1 - 297.5).abs() < 8.0, "centred, got {}", n0[0].1);
+}
+
+#[test]
+fn text_runs_down_the_first_column_and_on_into_the_second() {
+    let body: String = (0..60)
+        .map(|i| format!("<w:p><w:r><w:t>Row {i} in the columns.</w:t></w:r></w:p>"))
+        .collect();
+    let two = format!("{body}{}", sect(r#"<w:cols w:num="2" w:space="720"/>"#).replace(r#" w:orient="landscape""#, ""));
+    let one = format!("{body}{}", sect("").replace(r#" w:orient="landscape""#, ""));
+    let policy = PreviewPolicy::default();
+    let p_two = render_text_page(&docx(&two), 0, &policy).unwrap();
+    let p_one = render_text_page(&docx(&one), 0, &policy).unwrap();
+    assert!(p_two.pages < p_one.pages, "two columns hold more per page: {} vs {}", p_two.pages, p_one.pages);
+    let xs: Vec<f32> = text_at(&p_two).into_iter().filter(|(t, ..)| t.starts_with("Row")).map(|(_, x, ..)| x).collect();
+    let right = xs.iter().copied().fold(0.0f32, f32::max);
+    let left = xs.iter().copied().fold(f32::MAX, f32::min);
+    // 612 pt sheet, 72 pt margins, 36 pt gap: columns of 216 pt.
+    assert!((left - 72.0).abs() < 0.5 && (right - (72.0 + 216.0 + 36.0)).abs() < 0.5, "{left} {right}");
+}
+
+#[test]
+fn tab_stops_align_text_and_fill_with_leader_dots() {
+    let body = r#"<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8000"/></w:tabs></w:pPr><w:r><w:t>Chapter one</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>7</w:t></w:r></w:p>
+        <w:p><w:r><w:t>a</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>b</w:t></w:r></w:p>"#;
+    let page = doc(body);
+    let all = text_at(&page);
+    let dots = all.iter().find(|(t, ..)| t.starts_with("..")).expect("a leader");
+    let seven = all.iter().find(|(t, ..)| t == "7").expect("the number");
+    // The right stop is 400 pt from the left edge of the text (56 pt): the 7 ends there.
+    assert!((seven.1 + seven.3 - (MARGIN + 400.0)).abs() < 1.0, "ends at {}", seven.1 + seven.3);
+    assert!(dots.1 > MARGIN + 60.0 && dots.1 + dots.3 <= seven.1 + 0.5);
+    // Without stops a tab goes to the next half inch.
+    let b = all.iter().find(|(t, ..)| t == "b").expect("b");
+    assert!((b.1 - (MARGIN + 36.0)).abs() < 0.5, "b at {}", b.1);
+}
+
+#[test]
+fn a_picture_is_drawn_at_the_size_the_document_gives_it() {
+    let r = rels(&[("rId1", "image", "media/a.png")]);
+    let body = r#"<w:p><w:r><w:drawing><wp:inline><wp:extent cx="2540000" cy="1270000"/><wp:docPr id="1" name="Pic"/><a:graphic><a:graphicData><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:blipFill><a:blip r:embed="rId1"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#;
+    let data = docx_with(body, &[("word/media/a.png", "abc"), ("word/_rels/document.xml.rels", r.as_str())]);
+    let page = render_text_page(&data, 0, &PreviewPolicy::default()).unwrap();
+    let img = page.prims.iter().find_map(|p| match p {
+        Prim::Image { m, id, .. } => Some((m[0], m[3], *id)),
+        _ => None,
+    });
+    let (w, h, id) = img.expect("a picture");
+    assert!((w - 200.0).abs() < 0.5 && (h - 100.0).abs() < 0.5, "{w}x{h}");
+    assert_ne!(id, crate::model::IMAGE_NONE, "it can be asked for");
+}

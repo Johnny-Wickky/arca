@@ -133,6 +133,7 @@ struct StyleInfo {
     display_name: String,
     look: OLook,
     pfmt: crate::model::ParaFmt,
+    tabs: Vec<crate::model::TabStop>,
     /// Style bits turned on / off by this style.
     set: u16,
     clear: u16,
@@ -175,6 +176,7 @@ struct Resolved {
     look: OLook,
     size: u16,
     pfmt: crate::model::ParaFmt,
+    tabs: Vec<crate::model::TabStop>,
 }
 
 impl Styles {
@@ -199,6 +201,9 @@ impl Styles {
         for (n, info) in &chain {
             out.look = out.look.or(info.look);
             out.pfmt = out.pfmt.or(info.pfmt);
+            if out.tabs.is_empty() {
+                out.tabs.clone_from(&info.tabs);
+            }
             if out.align.is_none() {
                 out.align = info.align;
             }
@@ -263,6 +268,10 @@ struct StyleHandler {
     in_default_para: bool,
     cur: Option<(Fam, String, StyleInfo)>,
     cur_list: Option<String>,
+    /// The first page layout of the document (size, margins, columns).
+    page: crate::model::PageSetup,
+    page_seen: bool,
+    in_page_props: bool,
     /// Stop once the automatic styles of the content part are read.
     until_automatic_end: bool,
     finished: bool,
@@ -306,6 +315,49 @@ impl Handler for StyleHandler {
                         _ => None,
                     };
                 }
+            }
+            "tab-stop" => {
+                if let Some((_, _, info)) = self.cur.as_mut()
+                    && info.tabs.len() < 64
+                    && let Some(pos) = tag.attr("position").and_then(|v| length_pt(&v))
+                {
+                    let kind = match tag.attr("type").as_deref() {
+                        Some("center") => 1,
+                        Some("right") => 2,
+                        Some("char") => 3,
+                        _ => 0,
+                    };
+                    let leader = match (
+                        tag.attr("leader-text").and_then(|t| t.chars().next()),
+                        tag.attr("leader-style").as_deref(),
+                    ) {
+                        (Some('.'), _) | (None, Some("dotted")) => 1,
+                        (Some('-'), _) | (None, Some("dash" | "long-dash")) => 2,
+                        (Some(_), _) | (None, Some("solid")) => 3,
+                        _ => 0,
+                    };
+                    info.tabs.push(crate::model::TabStop { pos: pt_to_u16(pos), kind, leader });
+                }
+            }
+            "page-layout-properties" if !self.page_seen => {
+                self.page_seen = true;
+                self.in_page_props = true;
+                let pt = |name: &str| tag.attr(name).and_then(|v| length_pt(&v)).map_or(0, pt_to_u16);
+                let (mut w, mut h) = (pt("page-width"), pt("page-height"));
+                if tag.attr("print-orientation").as_deref() == Some("landscape") && w < h {
+                    std::mem::swap(&mut w, &mut h);
+                }
+                self.page.width = w;
+                self.page.height = h;
+                self.page.left = pt("margin-left");
+                self.page.right = pt("margin-right");
+                self.page.top = pt("margin-top");
+                self.page.bottom = pt("margin-bottom");
+            }
+            "columns" if self.in_page_props => {
+                let n = tag.attr("column-count").and_then(|v| v.parse::<u8>().ok()).unwrap_or(1);
+                self.page.columns = n.clamp(1, 8);
+                self.page.gap = tag.attr("column-gap").and_then(|v| length_pt(&v)).map_or(0, pt_to_u16);
             }
             "table-properties" => {
                 if let Some((_, _, info)) = self.cur.as_mut() {
@@ -364,6 +416,7 @@ impl Handler for StyleHandler {
                 }
             }
             "default-style" => self.in_default_para = false,
+            "page-layout-properties" => self.in_page_props = false,
             "list-style" => self.cur_list = None,
             "automatic-styles" if self.until_automatic_end => self.finished = true,
             _ => {}
@@ -514,6 +567,7 @@ struct ParaCtx {
     size: u16,
     body: u16,
     pfmt: crate::model::ParaFmt,
+    tabs: Vec<crate::model::TabStop>,
     hrefs: Vec<String>,
     /// A collapsed run of white space waiting for the next visible character, with the
     /// formatting in force where it was written.
@@ -610,6 +664,9 @@ struct FrameCtx {
     desc: String,
     image: Option<ImageInfo>,
     skip: bool,
+    /// Size of the frame in points (`svg:width`, `svg:height`).
+    width: u16,
+    height: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -663,6 +720,11 @@ struct Odf<'a, 'p> {
     hidden_depth: u32,
     section_hidden: Vec<bool>,
     hf_depth: u32,
+    /// 1 inside a header, 2 inside a footer; whether it is the plain one (not left or first).
+    hf_kind: u8,
+    hf_main: bool,
+    page_header: Vec<Paragraph>,
+    page_footer: Vec<Paragraph>,
     headers: Vec<Paragraph>,
     seen_headers: BTreeSet<String>,
     ruby_text: u32,
@@ -726,6 +788,10 @@ impl<'a, 'p> Odf<'a, 'p> {
             hidden_depth: 0,
             section_hidden: Vec::new(),
             hf_depth: 0,
+            hf_kind: 0,
+            hf_main: false,
+            page_header: Vec::new(),
+            page_footer: Vec::new(),
             headers: Vec::new(),
             seen_headers: BTreeSet::new(),
             ruby_text: 0,
@@ -812,6 +878,7 @@ impl<'a, 'p> Odf<'a, 'p> {
             size: r.size,
             body: self.styles.body_size(),
             pfmt: r.pfmt,
+            tabs: r.tabs.clone(),
             hrefs: Vec::new(),
             pending_space: None,
             pending: Vec::new(),
@@ -837,8 +904,16 @@ impl<'a, 'p> Odf<'a, 'p> {
         if ctx.skip {
             return;
         }
-        let ParaCtx { mut b, style: ps, align, marker, level, pending, pfmt, .. } = ctx;
+        let ParaCtx { mut b, style: ps, align, marker, level, pending, pfmt, tabs, .. } = ctx;
         let mut p = b.take(ps).with_fmt(pfmt);
+        // Tab positions of a style are measured from the paragraph's own left edge.
+        p.tabs = tabs
+            .into_iter()
+            .map(|mut t| {
+                t.pos = t.pos.saturating_add(pfmt.indent_left);
+                t
+            })
+            .collect();
         p.align = align;
         p.marker = marker;
         p.level = level;
@@ -891,6 +966,12 @@ impl<'a, 'p> Odf<'a, 'p> {
         if self.mode == Mode::Headers {
             if let Block::Para(p) = block {
                 let key = p.text();
+                if self.hf_main && !key.trim().is_empty() {
+                    let slot = if self.hf_kind == 2 { &mut self.page_footer } else { &mut self.page_header };
+                    if slot.len() < 8 {
+                        slot.push(p.clone());
+                    }
+                }
                 if !key.trim().is_empty() && self.seen_headers.insert(key) {
                     self.headers.push(p);
                 }
@@ -1296,6 +1377,8 @@ impl<'a, 'p> Odf<'a, 'p> {
     fn end_frame(&mut self) {
         let Some(f) = self.frames.pop() else { return };
         if let Some(mut img) = f.image {
+            img.width = f.width;
+            img.height = f.height;
             img.alt = [f.title, f.desc, f.name]
                 .into_iter()
                 .find(|s| !s.trim().is_empty())
@@ -1337,6 +1420,7 @@ impl ParaCtx {
             size: 0,
             body: 0,
             pfmt: crate::model::ParaFmt::default(),
+            tabs: Vec::new(),
             hrefs: Vec::new(),
             pending_space: None,
             pending: Vec::new(),
@@ -1380,7 +1464,11 @@ impl Handler for Odf<'_, '_> {
         match local {
             // Master styles carry the headers and footers.
             "header" | "footer" | "header-left" | "footer-left" | "header-first"
-            | "footer-first" => self.hf_depth += 1,
+            | "footer-first" => {
+                self.hf_depth += 1;
+                self.hf_kind = if local.starts_with("header") { 1 } else { 2 };
+                self.hf_main = local == "header" || local == "footer";
+            }
 
             // -- document bodies --
             "text" if self.mode == Mode::None => {
@@ -1513,6 +1601,8 @@ impl Handler for Odf<'_, '_> {
                     class,
                     name: tag.attr("name").unwrap_or_default().into_owned(),
                     skip,
+                    width: tag.attr("width").and_then(|v| length_pt(&v)).map_or(0, pt_to_u16),
+                    height: tag.attr("height").and_then(|v| length_pt(&v)).map_or(0, pt_to_u16),
                     ..FrameCtx::default()
                 });
             }
@@ -1718,14 +1808,23 @@ pub(crate) fn extract(
     if xml::drive(&content, pkg.limits(), &mut sh).is_err() {
         sink.skipped("content.xml (styles)");
     }
+    let mut page = std::mem::take(&mut sh.page);
     let styles = sh.styles;
 
-    let (res, found, text_document, formulas, unsupported, comments) = {
+    let (res, found, text_document, formulas, unsupported, comments, body_id) = {
         let mut h = Odf::new(sink, &styles, pkg, Mode::None);
         let res = xml::drive(&content, pkg.limits(), &mut h);
         let found = h.mode != Mode::None;
         let text_document = h.mode == Mode::Text;
-        (res, found, text_document, h.formulas, h.unsupported, std::mem::take(&mut h.comments))
+        (
+            res,
+            found,
+            text_document,
+            h.formulas,
+            h.unsupported,
+            std::mem::take(&mut h.comments),
+            h.body,
+        )
     };
     if !found {
         return Err(PreviewError::Unsupported(format));
@@ -1745,6 +1844,8 @@ pub(crate) fn extract(
             // A damaged styles part only costs the headers.
         }
         let headers = std::mem::take(&mut h.headers);
+        page.header = std::mem::take(&mut h.page_header);
+        page.footer = std::mem::take(&mut h.page_footer);
         if !headers.is_empty()
             && let Some(sec) = sink.open_section(SectionKind::Headers, "", false)
         {
@@ -1754,6 +1855,10 @@ pub(crate) fn extract(
                 }
             }
         }
+    }
+
+    if text_document && let Some(id) = body_id {
+        sink.set_page(id, page);
     }
 
     if !comments.is_empty()
@@ -2293,6 +2398,42 @@ mod tests {
         {
             assert!(all.contains(wanted), "{wanted} missing from {all:?}");
         }
+    }
+
+    #[test]
+    fn page_layout_columns_running_text_tab_stops_and_frame_size() {
+        let styles = format!(
+            r#"<office:document-styles {NS}><office:styles>
+              <style:style style:name="Toc" style:family="paragraph"><style:paragraph-properties fo:margin-left="1cm"><style:tab-stops><style:tab-stop style:position="10cm" style:type="right" style:leader-text="."/><style:tab-stop style:position="2cm"/></style:tab-stops></style:paragraph-properties></style:style>
+            </office:styles><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="29.7cm" fo:page-height="21cm" fo:margin-top="2cm" fo:margin-bottom="1cm" fo:margin-left="1.5cm" fo:margin-right="2.5cm" style:print-orientation="landscape"><style:columns fo:column-count="3" fo:column-gap="0.5cm"/></style:page-layout-properties></style:page-layout></office:automatic-styles>
+            <office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"><style:header><text:p>Running head</text:p></style:header><style:footer><text:p>Running foot</text:p></style:footer></style:master-page></office:master-styles></office:document-styles>"#
+        );
+        let body = r#"<text:p text:style-name="Toc">Chapter<text:tab/>5</text:p>
+            <text:p><draw:frame svg:width="4cm" svg:height="2cm"><draw:image xlink:href="Pictures/a.png"/></draw:frame></text:p>"#;
+        let data = package(
+            "application/vnd.oasis.opendocument.text",
+            &doc("text", "", body),
+            Some(&styles),
+            &[("Pictures/a.png", b"abc")],
+        );
+        let p = ok(&data);
+        let sec = section_of(&p, SectionKind::Body).expect("body");
+        let page = &sec.page;
+        assert_eq!((page.width, page.height), (842, 595));
+        assert_eq!((page.left, page.right, page.top, page.bottom), (43, 71, 57, 28));
+        assert_eq!((page.columns, page.gap), (3, 14));
+        assert_eq!(page.header.first().map(Paragraph::text).as_deref(), Some("Running head"));
+        assert_eq!(page.footer.first().map(Paragraph::text).as_deref(), Some("Running foot"));
+        let para = paragraphs(sec).into_iter().next().expect("paragraph").clone();
+        // Positions of a style are from the paragraph's own margin (28 pt in).
+        let want: Vec<(u16, u8, u8)> = vec![(311, 2, 1), (85, 0, 0)];
+        let got: Vec<(u16, u8, u8)> = para.tabs.iter().map(|t| (t.pos, t.kind, t.leader)).collect();
+        assert_eq!(got, want);
+        let image = sec.blocks.iter().find_map(|b| match b {
+            Block::Image(i) => Some(i.clone()),
+            _ => None,
+        });
+        assert_eq!(image.map(|i| (i.width, i.height)), Some((113, 57)));
     }
 
     #[test]
