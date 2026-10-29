@@ -53,6 +53,7 @@ import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
 import org.arca.viewer.Session;
 import org.arca.viewer.core.Bookmarks;
+import org.arca.viewer.core.Capabilities;
 import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
@@ -305,7 +306,141 @@ public final class PreviewScreen extends Screen {
         }
         main.addView(withLegend(sectionContent(s, meta, outcome)), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         body.addView(main, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        if (meta.sections.get(section).items > 0) {
+            body.addView(readingBar(meta), ui.fillWidth());
+        }
         return page(head, body);
+    }
+
+    // ---- the bottom bar of the reading view -------------------------------------------------
+
+    private android.widget.SeekBar readSlider;
+    private TextView readLabel;
+    private boolean readDragging;
+
+    /**
+     * The compact bar at the bottom of the reading view: a slider over the blocks of the section
+     * with "section X of Y" and the position in percent, the contents, search, text size, the
+     * pictures-in-the-text switch and the way to the page view. All of it also works from the keys
+     * (Ctrl+F, Ctrl +/-, PageUp / PageDown).
+     */
+    private View readingBar(final Model.PreviewMeta meta) {
+        final Model.SectionInfo sec = meta.sections.get(section);
+        final long total = Math.max(1L, sec.items);
+        final int max = (int) Math.max(0L, Math.min(total - 1, Integer.MAX_VALUE));
+        LinearLayout bar = ui.vbox();
+        bar.setBackgroundColor(ui.color(R.color.arca_surface));
+        bar.setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(6));
+
+        LinearLayout top = ui.hbox();
+        readLabel = ui.text("", Ui.SMALL);
+        readSlider = new android.widget.SeekBar(act);
+        readSlider.setMax(max);
+        readSlider.setEnabled(max > 0);
+        readSlider.setProgress(Math.min(Math.max(0, savedPosition), max));
+        readSlider.setContentDescription(ui.str(R.string.reading_slider));
+        readSlider.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(android.widget.SeekBar b, int progress, boolean fromUser) {
+                if (fromUser) {
+                    setReadingLabel(meta, progress, max);
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(android.widget.SeekBar b) {
+                readDragging = true;
+            }
+
+            @Override
+            public void onStopTrackingTouch(android.widget.SeekBar b) {
+                readDragging = false;
+                savedPosition = b.getProgress();
+                if (list != null) {
+                    list.setSelectionFromTop(savedPosition, ui.dp(24));
+                }
+            }
+        });
+        top.addView(readSlider, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        top.addView(ui.hspace(8));
+        top.addView(readLabel);
+        bar.addView(top, ui.fillWidth());
+        setReadingLabel(meta, Math.min(Math.max(0, savedPosition), max), max);
+
+        final boolean pictures = Prefs.autoImages(act);
+        LinearLayout row = ui.hbox();
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(ui.iconButton(R.drawable.ic_list, R.string.contents_open, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showContents();
+            }
+        }));
+        row.addView(ui.iconButton(R.drawable.ic_search, R.string.search_open, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                searchOpen = true;
+                focusSearch = true;
+                act.refresh();
+            }
+        }));
+        row.addView(ui.iconButton(pictures ? R.drawable.ic_eye : R.drawable.ic_eye_off,
+            pictures ? R.string.pictures_hide : R.string.pictures_show, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Prefs.setAutoImages(act, !pictures);
+                    act.refresh();
+                }
+            }));
+        row.addView(new View(act), new LinearLayout.LayoutParams(0, 1, 1f));
+        row.addView(ui.iconButton(R.drawable.ic_minus, R.string.zoom_out, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onZoom(-1);
+            }
+        }));
+        TextView zoom = ui.heading(ui.str(R.string.zoom_value, Zoom.percent(Prefs.zoom(act))), Ui.LABEL);
+        zoom.setGravity(Gravity.CENTER);
+        row.addView(zoom, new LinearLayout.LayoutParams(ui.dp(56), ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(ui.iconButton(R.drawable.ic_plus, R.string.zoom_in, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onZoom(1);
+            }
+        }));
+        row.addView(new View(act), new LinearLayout.LayoutParams(0, 1, 1f));
+        if (meta.format != null && Capabilities.canRender(meta.format)) {
+            row.addView(ui.button(R.string.pages_bar_pages, Ui.TONAL, R.drawable.ic_file, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    act.push(MainActivity.Route.PAGES);
+                }
+            }));
+        }
+        bar.addView(row, ui.fillWidth());
+        return bar;
+    }
+
+    private void setReadingLabel(Model.PreviewMeta meta, int position, int max) {
+        if (readLabel == null) {
+            return;
+        }
+        int percent = max <= 0 ? 100 : (int) Math.round(100.0 * position / max);
+        readLabel.setText(ui.str(R.string.reading_progress, section + 1, meta.sections.size(), percent));
+    }
+
+    /** Moves the slider with the list when the reader scrolls (not while the slider is being dragged). */
+    private void syncReadingBar(int firstVisible) {
+        android.widget.SeekBar slider = readSlider;
+        Model.PreviewMeta meta = metaShown;
+        if (slider == null || meta == null || readDragging || section >= meta.sections.size()) {
+            return;
+        }
+        int p = Math.max(0, Math.min(firstVisible, slider.getMax()));
+        if (slider.getProgress() != p) {
+            slider.setProgress(p);
+        }
+        setReadingLabel(meta, p, slider.getMax());
     }
 
     // ---- search -----------------------------------------------------------------------------
@@ -1006,6 +1141,7 @@ public final class PreviewScreen extends Screen {
             @Override
             public void onScroll(AbsListView view, int firstVisibleItem, int visibleItemCount, int totalItemCount) {
                 savedPosition = firstVisibleItem;
+                syncReadingBar(firstVisibleItem);
             }
         });
 

@@ -12,7 +12,15 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import org.arca.viewer.MainActivity;
+import org.arca.viewer.Native;
+import org.arca.viewer.Prefs;
+import org.arca.viewer.Session;
 import org.arca.viewer.core.PageDrawing;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Draws a {@link PageDrawing} on a white sheet scaled to the width of the view. The drawing is
@@ -33,12 +41,22 @@ final class PageView extends View {
     private float scale = 1f;
     private boolean tooLarge;
 
+    /** The most pixels of pictures one page keeps (the same 48 MiB as the cache of the reading view). */
+    private static final long PICTURE_BYTES = 48L << 20;
+    private final boolean autoPictures;
+    /** Pictures of the page that have arrived, those asked for, and those still on their way. */
+    private final Map<Integer, android.graphics.Bitmap> pictures = new HashMap<>();
+    private final Set<Integer> asked = new HashSet<>();
+    private final Map<Integer, Session.ImageCallback> waiting = new HashMap<>();
+    private long pictureBytes;
+
     PageView(Context context, PageDrawing page, int placeholder, int placeholderText) {
         super(context);
         this.page = page;
         this.placeholder = placeholder;
         this.placeholderText = placeholderText;
         this.invert = Theme.invertSheet(context);
+        this.autoPictures = Prefs.autoImages(context);
         sheet.setColor(tone(0xFFFFFFFF));
         setContentDescription(null);
         setClickable(true);
@@ -219,9 +237,27 @@ final class PageView extends View {
         paint.setTextScaleX(1f);
     }
 
-    /** A picture is drawn as a grey box with its size; tapping it decodes it in the sandbox. */
+    /**
+     * A picture is drawn as itself once the sandbox has decoded it (at once for the pictures on
+     * screen when "pictures in the text" is on, else when it is tapped), and as a grey box with its
+     * size until then.
+     */
     private void drawImage(Canvas c, PageDrawing.Prim p) {
         float[] m = p.m;
+        android.graphics.Bitmap bmp = pictures.get(p.id);
+        if (bmp == null && autoPictures && p.id >= 0 && !asked.contains(p.id) && pictureBytes < PICTURE_BYTES) {
+            ask(p.id);
+        }
+        if (bmp != null && !bmp.isRecycled()) {
+            c.save();
+            c.concat(matrix(m));
+            paint.setStyle(Paint.Style.FILL);
+            paint.setFilterBitmap(true);
+            c.drawBitmap(bmp, null, new android.graphics.RectF(0f, 0f, 1f, 1f), paint);
+            paint.setFilterBitmap(false);
+            c.restore();
+            return;
+        }
         c.save();
         c.concat(matrix(m));
         paint.setStyle(Paint.Style.FILL);
@@ -240,6 +276,36 @@ final class PageView extends View {
             c.drawText(p.label, cx, cy, paint);
             paint.setTextAlign(Paint.Align.LEFT);
         }
+    }
+
+    private void ask(final int id) {
+        asked.add(id);
+        Session.ImageCallback cb = new Session.ImageCallback() {
+            @Override
+            public void onImage(int got, Session.ImageResult r) {
+                waiting.remove(got);
+                if (r.bitmap != null) {
+                    if (pictures.put(got, r.bitmap) == null) {
+                        pictureBytes += r.bitmap.getByteCount();
+                    }
+                } else if (r.failure != null && r.failure.status == Native.CANCELLED) {
+                    asked.remove(got);
+                }
+                invalidate();
+            }
+        };
+        waiting.put(id, cb);
+        Session.get().loadImage(id, cb);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        for (Map.Entry<Integer, Session.ImageCallback> e : new HashMap<>(waiting).entrySet()) {
+            Session.get().cancelImage(e.getKey(), e.getValue());
+            asked.remove(e.getKey());
+        }
+        waiting.clear();
+        super.onDetachedFromWindow();
     }
 
     private static android.graphics.Matrix matrix(float[] m) {
