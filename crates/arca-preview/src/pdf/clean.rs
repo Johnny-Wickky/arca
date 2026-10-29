@@ -1089,6 +1089,33 @@ mod tests {
     }
 
     #[test]
+    fn actions_on_the_page_tree_nodes_above_a_page_do_not_reach_the_copy() {
+        // The additional actions hang on the intermediate /Pages node (and on the root one), not
+        // on the page: a rebuild that copied inherited entries wholesale would carry them over.
+        let mut b = PdfBuilder::new();
+        b.add_raw(1, "<< /Type /Catalog /Pages 2 0 R >>");
+        b.add_raw(
+            2,
+            "<< /Type /Pages /Kids [7 0 R] /Count 1 /AA << /O 8 0 R >> /MediaBox [0 0 300 400] >>",
+        );
+        b.add_raw(
+            7,
+            "<< /Type /Pages /Parent 2 0 R /Kids [3 0 R] /Count 1 /AA << /O << /S /JavaScript /JS (inner) >> >> /OpenAction 8 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        );
+        b.add_raw(3, "<< /Type /Page /Parent 7 0 R /Contents 4 0 R >>");
+        b.add_stream(4, "", b"BT /F1 12 Tf 10 10 Td (Visible) Tj ET");
+        b.add_raw(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+        b.add_raw(8, "<< /S /JavaScript /JS (outer) >>");
+        let (out, _) = clean(&b.build(), &PreviewPolicy::default(), opts()).expect("a copy");
+        for gone in ["/AA", "JavaScript", "/JS", "OpenAction", "inner", "outer"] {
+            assert!(!has(&out, gone), "{gone} survived in {}", String::from_utf8_lossy(&out));
+        }
+        let p = preview(&out, &PreviewPolicy::default()).expect("preview");
+        assert_eq!(p.sections.len(), 1, "the page itself stays");
+        assert!(has(&out, "/MediaBox [0 0 300 400]"), "an inherited page box is kept");
+    }
+
+    #[test]
     fn shared_objects_are_copied_once_and_the_page_boxes_are_inherited() {
         let mut b = PdfBuilder::new();
         b.add_raw(1, "<< /Type /Catalog /Pages 2 0 R >>");

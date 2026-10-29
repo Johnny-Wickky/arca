@@ -706,3 +706,155 @@ vector!(word_document_protected_by_a_password, Expect::Unverified(K::EncryptedDo
     w[0x0A..0x0C].copy_from_slice(&0x0100u16.to_le_bytes());
     cfb_with(&[("WordDocument", w)])
 });
+
+// ---- Red team: differentials between two readers of the same bytes ------------------------------
+//
+// Each vector below is a way to make two readers disagree about one file, so that the scanner
+// sees something harmless where the consumer sees something else. The answer to all of them is the
+// same: the file is rejected or reported, never `Clean`.
+
+/// The first local header of a package built by `docx()`, and its general-purpose flag at +6.
+fn first_local_flags_at(d: &[u8]) -> usize {
+    positions(d, b"PK\x03\x04")[0] + 6
+}
+
+/// The general-purpose flag of the first central directory entry, at +8.
+fn first_central_flags_at(d: &[u8]) -> usize {
+    positions(d, b"PK\x01\x02")[0] + 8
+}
+
+vector!(zip_encryption_bit_set_only_in_the_local_header, Expect::Rejected(None), {
+    let mut d = docx().build();
+    let at = first_local_flags_at(&d);
+    d[at] |= 1;
+    d
+});
+vector!(zip_encryption_bit_set_only_in_the_central_directory, Expect::Rejected(None), {
+    let mut d = docx().build();
+    let at = first_central_flags_at(&d);
+    d[at] |= 1;
+    d
+});
+vector!(zip_strong_encryption_bit_set_only_in_the_local_header, Expect::Rejected(None), {
+    let mut d = docx().build();
+    let at = first_local_flags_at(&d);
+    d[at] |= 0x40;
+    d
+});
+vector!(zip_local_header_promises_a_data_descriptor_that_is_not_there, Expect::Rejected(None), {
+    let mut d = docx().build();
+    // The local header says "my CRC and sizes follow the data" and carries zeros, as a streaming
+    // writer's would; nothing follows, so the sizes cannot be checked against the directory.
+    let at = positions(&d, b"PK")[0];
+    d[at + 6] |= 8;
+    patch(&mut d, at + 14, &[0; 12]);
+    d
+});
+
+/// A `document.xml` whose root binds `w` to nothing, and whose paragraph binds it again to the
+/// real namespace: a reader that resolves namespaces and one that matches local names disagree
+/// about which elements are WordprocessingML.
+fn dde_with_namespace_games(root_attrs: &str, para_attrs: &str) -> Vec<u8> {
+    let body = format!(
+        "<w:p {para_attrs}><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText xml:space=\"preserve\"> DDEAUTO c:\\\\windows\\\\system32\\\\cmd.exe \"/k calc.exe\" </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r><w:r><w:t>x</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>"
+    );
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {root_attrs}><w:body>{body}<w:sectPr/></w:body></w:document>"#
+    );
+    docx_with_xml("word/document.xml", &xml)
+}
+
+vector!(
+    dde_under_a_prefix_declared_with_an_empty_uri,
+    Expect::Active(K::DdeField),
+    dde_with_namespace_games(r#"xmlns:w="" xmlns:r="urn:r""#, "")
+);
+vector!(
+    dde_under_a_prefix_rebound_to_a_foreign_namespace_on_the_root,
+    Expect::Active(K::DdeField),
+    dde_with_namespace_games(r#"xmlns:w="urn:not-wordprocessingml" xmlns:r="urn:r""#, "")
+);
+vector!(
+    dde_under_a_prefix_rebound_to_the_real_namespace_in_a_nested_element,
+    Expect::Active(K::DdeField),
+    dde_with_namespace_games(
+        r#"xmlns:w="urn:not-wordprocessingml""#,
+        r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#
+    )
+);
+vector!(
+    dde_under_a_default_namespace_with_no_prefix_at_all,
+    Expect::Active(K::DdeField),
+    {
+        let xml = r#"<?xml version="1.0"?><document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><body><p><r><fldChar fldCharType="begin"/></r><r><instrText> DDEAUTO cmd "/c calc" </instrText></r><r><fldChar fldCharType="end"/></r></p></body></document>"#;
+        docx_with_xml("word/document.xml", xml)
+    }
+);
+
+// A compound file whose small stream lives in a mini stream that its root entry no longer
+// describes: the root says it holds nothing (or a loop), the stream says it holds 300 bytes.
+vector!(cfb_small_stream_with_a_root_entry_that_holds_no_mini_stream, Expect::Unverified(K::MalformedContainer), {
+    let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
+    let root = dir_entry(&d, 0);
+    // The root entry's size (a 64-bit field at +120) is the size of the mini stream.
+    patch(&mut d, root + 120, &0u64.to_le_bytes());
+    d
+});
+vector!(cfb_small_stream_with_a_root_entry_whose_mini_stream_is_one_byte, Expect::Unverified(K::MalformedContainer), {
+    let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
+    let root = dir_entry(&d, 0);
+    patch(&mut d, root + 120, &1u64.to_le_bytes());
+    d
+});
+vector!(cfb_root_entry_chain_loops_through_the_regular_fat, Expect::Unverified(K::MalformedContainer), {
+    let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
+    // The root's chain starts at its own start sector; point that sector at itself in the FAT.
+    let root = dir_entry(&d, 0);
+    let start = u32::from_le_bytes(d[root + 116..root + 120].try_into().unwrap()) as usize;
+    let fat = (u32_at(&d, 76) + 1) * 512;
+    patch(&mut d, fat + 4 * start, &(start as u32).to_le_bytes());
+    d
+});
+vector!(cfb_root_entry_claims_a_size_beyond_the_file, Expect::Unverified(K::MalformedContainer), {
+    let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
+    let root = dir_entry(&d, 0);
+    patch(&mut d, root + 120, &(1u64 << 40).to_le_bytes());
+    d
+});
+
+/// A PDF whose automatic action hangs on the page-tree node above the page, not on a page.
+fn pdf_with_action_on_the_pages_node(extra: &str) -> Vec<u8> {
+    let mut pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n".to_vec();
+    pdf.extend_from_slice(
+        format!("2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 {extra} >> endobj\n").as_bytes(),
+    );
+    pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n");
+    pdf.extend_from_slice(b"trailer << /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
+vector!(
+    pdf_additional_actions_with_javascript_on_the_pages_node,
+    Expect::Active(K::PdfAutoAction),
+    pdf_with_action_on_the_pages_node("/AA << /O << /S /JavaScript /JS (app.alert\\(1\\)) >> >>")
+);
+vector!(
+    pdf_additional_actions_on_the_pages_node_with_an_obfuscated_key,
+    Expect::Active(K::PdfAutoAction),
+    pdf_with_action_on_the_pages_node("/#41A << /O << /S /JavaScript /JS (x) >> >>")
+);
+vector!(
+    pdf_additional_actions_on_a_nested_pages_node,
+    Expect::Active(K::PdfAutoAction),
+    {
+        let mut pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n".to_vec();
+        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [4 0 R] /Count 1 >> endobj\n");
+        pdf.extend_from_slice(
+            b"4 0 obj << /Type /Pages /Parent 2 0 R /Kids [3 0 R] /Count 1 /AA << /O 5 0 R >> >> endobj\n",
+        );
+        pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 4 0 R /MediaBox [0 0 9 9] >> endobj\n");
+        pdf.extend_from_slice(b"5 0 obj << /S /JavaScript /JS (app.alert\\(1\\)) >> endobj\n");
+        pdf.extend_from_slice(b"trailer << /Root 1 0 R >>\n%%EOF\n");
+        pdf
+    }
+);
