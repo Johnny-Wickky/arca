@@ -11,6 +11,7 @@ import java.util.concurrent.Executor;
 import org.arca.viewer.core.Breakpoints;
 import org.arca.viewer.core.Bookmarks;
 import org.arca.viewer.core.Capabilities;
+import org.arca.viewer.core.Colors;
 import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
@@ -1159,6 +1160,23 @@ public final class CoreTest {
         eq(3.0f, z, "100 presses stop at the top");
     }
 
+    static void documentColours() {
+        int white = 0xFFFFFFFF;
+        int black = 0xFF000000;
+        eq(21.0, Math.round(Colors.contrast(white, black) * 10) / 10.0, "black on white");
+        check(Colors.contrast(white, white) == 1.0, "white on white");
+        eq(0, Colors.readable(0xFFFFFFFF, white), "white text on a white page is dropped");
+        eq(0, Colors.readable(0xFFFFFFFE, white), "nearly white text on a white page is dropped");
+        eq(0xFF1F3864, Colors.readable(0xFF1F3864, white), "dark blue on white is kept");
+        eq(0, Colors.readable(0xFF000000, black), "black text on the dark theme is dropped");
+        eq(0xFFFFC857, Colors.readable(0xFFFFC857, black), "amber on the dark theme is kept");
+        eq(0, Colors.readable(0, white), "no colour stays no colour");
+        eq(0xFFFFFF00, Colors.highlight(0xFFFFFF00, black, white), "yellow behind black text is kept");
+        eq(0, Colors.highlight(0xFF000000, 0xFF000000, white), "black behind black text hides it, so it is dropped");
+        eq(0, Colors.highlight(0xFFFFFFFF, white, white), "white behind white text is dropped");
+        eq(0, Colors.highlight(0, black, white), "no highlight");
+    }
+
     static void pageDrawing() {
         String json = "{\"w\":595.5,\"h\":842,\"index\":1,\"pages\":3,\"truncated\":false,\"approx\":true,\"p\":["
             + "[\"P\",4294901760,0,1.5,0,[0,10,10,1,50,10,2,1,2,3,4,5,6,3]],"
@@ -1207,8 +1225,10 @@ public final class CoreTest {
             }
         }
         check(Capabilities.canRender("Pdf") && Capabilities.canRender("Pptx") && Capabilities.canRender("Xlsx")
-                && Capabilities.canRender("Vsdx") && !Capabilities.canRender("Docx") && !Capabilities.canRender(""),
-            "PDF, slides, sheets and Visio have a page view; text documents do not");
+                && Capabilities.canRender("Vsdx") && Capabilities.canRender("Docx") && Capabilities.canRender("Odt")
+                && Capabilities.canRender("Rtf") && Capabilities.canRender("Doc") && Capabilities.canRender("Ppt")
+                && !Capabilities.canRender("Png") && !Capabilities.canRender("Csv") && !Capabilities.canRender(""),
+            "PDF, slides, sheets, Visio and text documents have a page view; pictures and plain text do not");
         check(Capabilities.isVisio("Vsd") && !Capabilities.isVisio("Pdf"), "only Visio carries the 3-D notice");
     }
 
@@ -1356,7 +1376,7 @@ public final class CoreTest {
 
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "fold", "pageDrawing", "images", "syntheticText", "noticeDetails"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "fold", "documentColours", "pageDrawing", "images", "syntheticText", "noticeDetails"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -1377,6 +1397,7 @@ public final class CoreTest {
                     case "needsPassword": needsPassword(); break;
                     case "posture": posture(); break;
                     case "fold": fold(); break;
+                    case "documentColours": documentColours(); break;
                     case "pageDrawing": pageDrawing(); break;
                     case "images": images(); break;
                     case "syntheticText": syntheticText(); break;

@@ -57,6 +57,7 @@ import org.arca.viewer.core.DocOutline;
 import org.arca.viewer.core.DocSearch;
 import org.arca.viewer.core.Fmt;
 import org.arca.viewer.core.Model;
+import org.arca.viewer.core.Colors;
 import org.arca.viewer.core.PageCache;
 import org.arca.viewer.core.Zoom;
 
@@ -1368,9 +1369,17 @@ public final class PreviewScreen extends Screen {
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size * scale);
         t.setTypeface(face, italic ? Typeface.ITALIC : Typeface.NORMAL);
         t.setTextColor(color);
-        t.setLineSpacing(0f, 1.18f);
-        t.setPadding(ui.dp(left), ui.dp(top), 0, ui.dp(bottom));
-        t.setBackground(p.style.equals("Code") ? ui.rounded(ui.color(R.color.arca_code_bg), 0, 6) : null);
+        bodyColor = color;
+        float spacing = p.lineSpacing > 0 ? p.lineSpacing / 100f : 1f;
+        t.setLineSpacing(0f, 1.18f * spacing);
+        // The document's own indent, in points; the viewer's list and quote indents stay.
+        t.setPadding(ui.dp(left + p.indentLeft * 0.5f), ui.dp(top), 0, ui.dp(bottom));
+        if (p.border != 0 && p.boxed) {
+            int rim = Colors.readable(p.border, ui.color(R.color.arca_bg));
+            t.setBackground(ui.rounded(0, rim != 0 ? rim : ui.color(R.color.arca_outline), 6));
+        } else {
+            t.setBackground(p.style.equals("Code") ? ui.rounded(ui.color(R.color.arca_code_bg), 0, 6) : null);
+        }
         switch (p.align) {
             case 1: t.setGravity(Gravity.CENTER_HORIZONTAL); break;
             case 2: t.setGravity(Gravity.END); break;
@@ -1387,10 +1396,14 @@ public final class PreviewScreen extends Screen {
         });
     }
 
+    /** The colour the paragraph being built is drawn in when the document does not say otherwise. */
+    private int bodyColor;
+
     /** Builds the styled text of a paragraph; links are underlined and open a copy dialog. */
     private CharSequence render(Model.Para p) {
         boolean synthetic = false;
         SpannableStringBuilder sb = new SpannableStringBuilder();
+        int page = ui.color(R.color.arca_bg);
         if (!p.marker.isEmpty()) {
             sb.append(Fmt.clip(Fmt.safe(p.marker), 16)).append(' ');
         }
@@ -1402,6 +1415,19 @@ public final class PreviewScreen extends Screen {
                 continue;
             }
             int st = r.style;
+            // What the document says about the colour and size of this text; the viewer's own
+            // colours (links, hidden text, changes) are applied after and win.
+            int ink = Colors.readable(r.fg, page);
+            if (ink != 0) {
+                sb.setSpan(new ForegroundColorSpan(ink), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            int shade = Colors.highlight(r.bg, ink != 0 ? ink : bodyColor, page);
+            if (shade != 0) {
+                sb.setSpan(new BackgroundColorSpan(shade), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            if (r.scale > 0) {
+                sb.setSpan(new RelativeSizeSpan(r.scale / 100f), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
             if ((st & Model.BOLD) != 0) {
                 sb.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
@@ -1464,6 +1490,20 @@ public final class PreviewScreen extends Screen {
         }
         if (synthetic) {
             showSyntheticLegend();
+        }
+        if (sb.length() > 0) {
+            if (p.border != 0 && !p.boxed) {
+                // A rule down the left edge, in a colour that shows on this page.
+                int rule = Colors.readable(p.border, page);
+                sb.setSpan(new android.text.style.QuoteSpan(rule != 0 ? rule : ui.color(R.color.arca_outline)),
+                    0, sb.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+            }
+            if (p.indentFirst != 0) {
+                // The first line starts further in (or further out: a hanging indent), in points.
+                int first = ui.dp(p.indentFirst * 0.5f);
+                sb.setSpan(new android.text.style.LeadingMarginSpan.Standard(Math.max(0, first), 0),
+                    0, sb.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+            }
         }
         return highlighted(sb);
     }
