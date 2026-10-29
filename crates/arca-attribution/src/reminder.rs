@@ -81,7 +81,9 @@ fn local_midnight(now_ms: i64, offset_ms: i64) -> i64 {
 }
 
 fn at(midnight: i64, days: i64, minute: i64) -> i64 {
-    midnight.saturating_add(days.saturating_mul(DAY_MS)).saturating_add(minute.saturating_mul(MINUTE_MS))
+    midnight
+        .saturating_add(days.saturating_mul(DAY_MS))
+        .saturating_add(minute.saturating_mul(MINUTE_MS))
 }
 
 /// The time of the next reminder: 7 to 9 local days after `now_ms`, between 12:00 and 17:59.
@@ -101,7 +103,11 @@ pub fn plan_next(now_ms: i64, offset_ms: i64, rnd: u32) -> i64 {
 /// (`offset_at_target_ms`) differs from the one it was planned with (`offset_used_ms`).
 #[must_use]
 pub fn refine_for_offset(target_ms: i64, offset_used_ms: i64, offset_at_target_ms: i64) -> i64 {
-    instant(target_ms.saturating_add(offset(offset_used_ms)).saturating_sub(offset(offset_at_target_ms)))
+    instant(
+        target_ms
+            .saturating_add(offset(offset_used_ms))
+            .saturating_sub(offset(offset_at_target_ms)),
+    )
 }
 
 /// What to do when the alarm fires.
@@ -153,10 +159,16 @@ pub fn on_fire(
     let minute = local_minute(now, offset_ms);
     let midnight = local_midnight(now, offset_ms);
     if minute < POST_FROM_MINUTE {
-        return FireDecision { action: FireAction::QuietHours, next_at_ms: at(midnight, 0, RETRY_MINUTE) };
+        return FireDecision {
+            action: FireAction::QuietHours,
+            next_at_ms: at(midnight, 0, RETRY_MINUTE),
+        };
     }
     if minute >= POST_UNTIL_MINUTE {
-        return FireDecision { action: FireAction::QuietHours, next_at_ms: at(midnight, 1, RETRY_MINUTE) };
+        return FireDecision {
+            action: FireAction::QuietHours,
+            next_at_ms: at(midnight, 1, RETRY_MINUTE),
+        };
     }
     // A last-shown time of zero or from the future (clock set backwards) does not count.
     if last_shown_ms > 0 && last_shown_ms <= now && now - last_shown_ms < MIN_SPACING_MS {

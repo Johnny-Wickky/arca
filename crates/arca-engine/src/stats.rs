@@ -333,7 +333,8 @@ impl Stats {
 
     /// Drops buckets that are [`KEEP_DAYS`] or more days older than `newest`, and the excess.
     fn prune(&mut self, newest: u32) {
-        let old = self.days.iter().take_while(|b| newest.saturating_sub(b.day) >= KEEP_DAYS).count();
+        let old =
+            self.days.iter().take_while(|b| newest.saturating_sub(b.day) >= KEEP_DAYS).count();
         let excess = self.days.len().saturating_sub(usize::try_from(KEEP_DAYS).unwrap_or(400));
         let drop = old.max(excess).min(self.days.len());
         self.days.drain(..drop);
@@ -415,7 +416,11 @@ impl Stats {
             return Err(DecodeError::BadMagic);
         }
         if bytes.get(3) != Some(&VERSION) {
-            return Err(if bytes.len() > 3 { DecodeError::UnknownVersion } else { DecodeError::Malformed });
+            return Err(if bytes.len() > 3 {
+                DecodeError::UnknownVersion
+            } else {
+                DecodeError::Malformed
+            });
         }
         let split = bytes.len().checked_sub(4).ok_or(DecodeError::Malformed)?;
         let (body, crc) = bytes.split_at_checked(split).ok_or(DecodeError::Malformed)?;
@@ -471,7 +476,9 @@ impl Stats {
         w.field_bool("empty", self.is_empty());
         w.field_u64("firstDay", u64::from(self.first_day.unwrap_or(0)));
         w.field_u64("days", u64::from(self.days_in_use(today)));
-        for (key, window) in [("week", Window::Week), ("month", Window::Month), ("all", Window::All)] {
+        for (key, window) in
+            [("week", Window::Week), ("month", Window::Month), ("all", Window::All)]
+        {
             w.key(key);
             counts_json(&mut w, &self.totals(window, today));
         }
@@ -564,11 +571,21 @@ fn count_of(v: i32) -> u32 {
 
 /// The blob after one scan (`verdict` as in [`verdict_from_code`]).
 #[must_use]
-pub fn blob_record_scan(blob: &[u8], day: i32, verdict: i32, trackers: i32, active: i32) -> Vec<u8> {
+pub fn blob_record_scan(
+    blob: &[u8],
+    day: i32,
+    verdict: i32,
+    trackers: i32,
+    active: i32,
+) -> Vec<u8> {
     let mut s = Stats::decode(blob);
     s.record(
         day_of(day),
-        Event::Scan { verdict: verdict_from_code(verdict), trackers: count_of(trackers), active: count_of(active) },
+        Event::Scan {
+            verdict: verdict_from_code(verdict),
+            trackers: count_of(trackers),
+            active: count_of(active),
+        },
     );
     s.encode()
 }
@@ -599,7 +616,13 @@ pub fn blob_summary_json(blob: &[u8], today: i32) -> Vec<u8> {
 /// instead, the threats under "active content" because the old counter did not tell the two
 /// apart. Call it once and then delete the old data.
 #[must_use]
-pub fn blob_fold_legacy(blob: &[u8], passport: &[u8], documents: i64, threats: i64, today: i32) -> Vec<u8> {
+pub fn blob_fold_legacy(
+    blob: &[u8],
+    passport: &[u8],
+    documents: i64,
+    threats: i64,
+    today: i32,
+) -> Vec<u8> {
     let mut s = Stats::decode(blob);
     let (counts, first) = match PatronStats::decode(passport) {
         Ok(p) => (

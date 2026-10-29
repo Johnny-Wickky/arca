@@ -269,7 +269,14 @@ fn make_table_and_delete() {
         col("Table2.col2", None),
         table("Table2", None),
         table("Table1", None),
-        row(attr::JOIN, Some("Table2.col1 = Table1.col2"), Some(1), None, Some("Table2"), Some("Table1")),
+        row(
+            attr::JOIN,
+            Some("Table2.col1 = Table1.col2"),
+            Some(1),
+            None,
+            Some("Table2"),
+            Some("Table1"),
+        ),
         row(attr::GROUP_BY, Some("Table2.col2"), None, None, None, None),
         row(attr::HAVING, Some("(((Max(Table2.col1))=\"buzz\"))"), None, None, None, None),
     ];
@@ -280,7 +287,9 @@ fn make_table_and_delete() {
     // A make-table query into another database.
     let mut other = rows.to_vec();
     other[0] = row(attr::TYPE, Some("Jet;"), Some(2), None, Some("My Table"), Some("c:\\x.mdb"));
-    assert!(sql(QueryKind::MakeTable, &other).contains("INTO [My Table] IN 'c:\\x.mdb' [Jet;]\nFROM"));
+    assert!(
+        sql(QueryKind::MakeTable, &other).contains("INTO [My Table] IN 'c:\\x.mdb' [Jet;]\nFROM")
+    );
     let rows = [
         typ(QueryKind::Delete, None, None),
         col("Table1.col1", None),
@@ -321,11 +330,8 @@ fn crosstab_queries() {
         "TRANSFORM Count([Table2].[col2]) AS CountOfcol2\nSELECT Table2_1.col1, [Table2].[col3]\nFROM Table1 INNER JOIN Table2 ON [Table1].[col1]=[Table2].[col1]\nGROUP BY Table2_1.col1\nORDER BY [Table2].[col3]\nPIVOT [Table1].[col1];"
     );
     // No PIVOT row: not a cross-tab query.
-    let broken: Vec<QueryRow> = rows
-        .iter()
-        .filter(|r| r.flag != Some(1) || r.attribute != attr::COLUMN)
-        .cloned()
-        .collect();
+    let broken: Vec<QueryRow> =
+        rows.iter().filter(|r| r.flag != Some(1) || r.attribute != attr::COLUMN).cloned().collect();
     assert_eq!(
         unsupported(QueryKind::Crosstab, &broken),
         "a cross-tab query needs exactly one PIVOT row"
@@ -443,7 +449,10 @@ fn joins_nest_the_way_access_writes_them() {
         Some("BogusTable"),
         Some("Table3Val"),
     ));
-    assert_eq!(from_of(&rows), "Table1, BogusTable INNER JOIN Table3Val ON (Table1.id = Table3Val.id)");
+    assert_eq!(
+        from_of(&rows),
+        "Table1, BogusTable INNER JOIN Table3Val ON (Table1.id = Table3Val.id)"
+    );
     // An unknown join type and a missing condition are refused.
     let bad = join_rows(2, &[(1, 2, 5)]);
     assert_eq!(unsupported(QueryKind::Select, &bad), "an unknown join type");
@@ -516,7 +525,9 @@ fn random_rows_never_panic_and_stay_bounded() {
                 if rng.below(4) == 0 {
                     None
                 } else {
-                    names.get(usize::try_from(rng.below(names.len() as u64)).unwrap()).map(|s| (*s).to_owned())
+                    names
+                        .get(usize::try_from(rng.below(names.len() as u64)).unwrap())
+                        .map(|s| (*s).to_owned())
                 }
             };
             rows.push(QueryRow {
@@ -527,7 +538,11 @@ fn random_rows_never_panic_and_stay_bounded() {
                 } else {
                     Some(i64::try_from(rng.below(0x10000)).unwrap() - 0x8000)
                 },
-                extra: if rng.below(3) == 0 { None } else { Some(i64::try_from(rng.below(100)).unwrap()) },
+                extra: if rng.below(3) == 0 {
+                    None
+                } else {
+                    Some(i64::try_from(rng.below(100)).unwrap())
+                },
                 name1: pick(&mut rng),
                 name2: pick(&mut rng),
                 order: Vec::new(),

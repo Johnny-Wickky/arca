@@ -57,16 +57,17 @@ fn emit_shapes(
     depth: usize,
     ordered: bool,
 ) -> bool {
-    let list: Vec<&Sheet> =
-        if ordered { reading_order(shapes) } else { shapes.iter().collect() };
+    let list: Vec<&Sheet> = if ordered { reading_order(shapes) } else { shapes.iter().collect() };
     for s in list {
         let level = u8::try_from(depth.min(6)).unwrap_or(6);
         let all = s.plain_text();
         let text = all.trim();
         let href = s.links.first().cloned().unwrap_or_default();
         if !text.is_empty() {
-            for line in
-                text.split(['\n', '\r', '\u{2028}', '\u{b}']).map(str::trim).filter(|l| !l.is_empty())
+            for line in text
+                .split(['\n', '\r', '\u{2028}', '\u{b}'])
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
             {
                 let p = Paragraph {
                     level,
@@ -111,7 +112,11 @@ fn emit_shapes(
             let p = Paragraph {
                 style: ParaStyle::Note,
                 level,
-                runs: vec![Run { text: link.clone(), style: style::SYNTHETIC, href: String::new() }],
+                runs: vec![Run {
+                    text: link.clone(),
+                    style: style::SYNTHETIC,
+                    href: String::new(),
+                }],
                 ..Paragraph::default()
             };
             if !sink.para(sec, p) {
@@ -121,7 +126,8 @@ fn emit_shapes(
         if s.kind == Kind::Foreign || s.foreign.is_some() {
             let alt = if text.is_empty() { s.name.clone() } else { label_of(s) };
             let media = s.foreign.clone().unwrap_or_default();
-            let info = ImageInfo { alt: alt.chars().take(60).collect(), media, ..ImageInfo::default() };
+            let info =
+                ImageInfo { alt: alt.chars().take(60).collect(), media, ..ImageInfo::default() };
             if !sink.image(sec, info) {
                 return false;
             }
@@ -200,11 +206,8 @@ pub(crate) fn emit_doc(doc: &Doc, sink: &mut Sink<'_>) {
         if sink.is_full() {
             break;
         }
-        let name = if page.name.trim().is_empty() {
-            format!("Page-{}", i + 1)
-        } else {
-            page.name.clone()
-        };
+        let name =
+            if page.name.trim().is_empty() { format!("Page-{}", i + 1) } else { page.name.clone() };
         let title = if page.background { format!("{name} (background)") } else { name };
         if !emit_page(page, &title, sink) {
             break;

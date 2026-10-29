@@ -49,10 +49,8 @@ pub const UPSTREAM_SOURCE: &str = "https://github.com/Johnny-Wickky/arca";
 pub const UPSTREAM_AUTHORS: &[Author] = &[Author { name: "Pharos", url: None }];
 
 /// Donation links of the original creators (none yet; add them here when they exist).
-pub const UPSTREAM_DONATION_LINKS: &[DonationLink] = &[DonationLink {
-    label: "Lava.top",
-    url: "https://app.lava.top/pharosteam",
-}];
+pub const UPSTREAM_DONATION_LINKS: &[DonationLink] =
+    &[DonationLink { label: "Lava.top", url: "https://app.lava.top/pharosteam" }];
 
 /// Copyright line of the original project.
 pub const UPSTREAM_COPYRIGHT: &str = "Copyright © 2026 Pharos and contributors";

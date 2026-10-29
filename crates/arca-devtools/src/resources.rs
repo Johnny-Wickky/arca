@@ -1021,8 +1021,11 @@ mod tests {
     fn manifest_policy_violations_are_reported() {
         let bad = |from: &str, to: &str| manifest_problems(&GOOD.replace(from, to));
         assert!(
-            bad("<application ", "<uses-permission android:name=\"android.permission.CAMERA\"/><application ")[0]
-                .contains("CAMERA")
+            bad(
+                "<application ",
+                "<uses-permission android:name=\"android.permission.CAMERA\"/><application "
+            )[0]
+            .contains("CAMERA")
         );
         assert!(
             bad("<application ", "<uses-permission-sdk-23 android:name=\"x\"/><application ")[0]

@@ -145,8 +145,8 @@ enum Grp {
 
 fn group_of(name: &str) -> Grp {
     match name {
-        "LineWeight" | "LineColor" | "LinePattern" | "LineColorTrans" | "Rounding" | "BeginArrow"
-        | "EndArrow" | "BeginArrowSize" | "EndArrowSize" => Grp::Line,
+        "LineWeight" | "LineColor" | "LinePattern" | "LineColorTrans" | "Rounding"
+        | "BeginArrow" | "EndArrow" | "BeginArrowSize" | "EndArrowSize" => Grp::Line,
         "FillForegnd" | "FillBkgnd" | "FillPattern" | "FillForegndTrans" | "FillBkgndTrans"
         | "ShdwPattern" => Grp::Fill,
         "LeftMargin" | "RightMargin" | "TopMargin" | "BottomMargin" | "VerticalAlign"
@@ -632,7 +632,8 @@ impl<'a> Painter<'a> {
         let (ux, uy) = (dx / d, dy / d);
         let base = (tip.0 - ux * len, tip.1 - uy * len);
         let half = len * 0.4;
-        let (l, r) = ((base.0 - uy * half, base.1 + ux * half), (base.0 + uy * half, base.1 - ux * half));
+        let (l, r) =
+            ((base.0 - uy * half, base.1 + ux * half), (base.0 + uy * half, base.1 - ux * half));
         self.push(Prim::Path {
             ops: vec![
                 op::MOVE,
@@ -654,7 +655,12 @@ impl<'a> Painter<'a> {
     }
 
     fn picture(&mut self, look: &Look<'_>, m: Mat, w: f64, h: f64) {
-        let label = match look.sheet.foreign.as_deref().or(look.target.and_then(|t| t.foreign.as_deref())) {
+        let label = match look
+            .sheet
+            .foreign
+            .as_deref()
+            .or(look.target.and_then(|t| t.foreign.as_deref()))
+        {
             Some(k) if !k.is_empty() => format!("picture ({k})"),
             _ => "picture".to_owned(),
         };
@@ -693,8 +699,12 @@ impl<'a> Painter<'a> {
         let tang = fin(look.num("TxtAngle").unwrap_or(0.0), 1.0e3);
         let tm = Mat::shape(tpin, tloc, tang, false, false).then(m);
         let margin = |n: &str| fin(look.num(n).unwrap_or(0.0), 1.0e6).max(0.0);
-        let (ml, mr, mt, mb) =
-            (margin("LeftMargin"), margin("RightMargin"), margin("TopMargin"), margin("BottomMargin"));
+        let (ml, mr, mt, mb) = (
+            margin("LeftMargin"),
+            margin("RightMargin"),
+            margin("TopMargin"),
+            margin("BottomMargin"),
+        );
         let avail = (tw - ml - mr).max(0.0);
         let rect_h = (th - mt - mb).max(0.0);
 
@@ -1002,13 +1012,8 @@ fn layout(paras: &[Para], max_w: f64, chars_left: usize) -> Laid {
             }
         }
         let default = RunFmt { size: 8.0, style: 0, color: 0xFF00_0000 };
-        let mut line = Line {
-            runs: Vec::new(),
-            align: p.align,
-            width: 0.0,
-            height: 0.0,
-            ascent: 0.0,
-        };
+        let mut line =
+            Line { runs: Vec::new(), align: p.align, width: 0.0, height: 0.0, ascent: 0.0 };
         let finish = |line: &mut Line, out: &mut Laid, fallback: RunFmt| {
             if line.runs.is_empty() {
                 // An empty line still takes the height of its paragraph's text.
@@ -1044,7 +1049,9 @@ fn layout(paras: &[Para], max_w: f64, chars_left: usize) -> Laid {
             line.width += wid;
             // Merge with the previous run when the format is the same.
             match line.runs.last_mut() {
-                Some(last) if last.size == f.size && last.style == f.style && last.color == f.color => {
+                Some(last)
+                    if last.size == f.size && last.style == f.style && last.color == f.color =>
+                {
                     last.text.push_str(&w);
                     last.width += wid;
                 }

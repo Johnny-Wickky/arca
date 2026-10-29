@@ -181,7 +181,14 @@ impl<'a> Builder<'a> {
                 self.elliptical_arc_to(x, y, g(r, "A"), g(r, "B"), g(r, "C"), g(r, "D"));
             }
             RowKind::RelEllipticalArcTo => {
-                self.elliptical_arc_to(x * w, y * h, g(r, "A") * w, g(r, "B") * h, g(r, "C"), g(r, "D"));
+                self.elliptical_arc_to(
+                    x * w,
+                    y * h,
+                    g(r, "A") * w,
+                    g(r, "B") * h,
+                    g(r, "C"),
+                    g(r, "D"),
+                );
             }
             RowKind::RelCubBezTo => {
                 let (a, b, c, d) = (g(r, "A") * w, g(r, "B") * h, g(r, "C") * w, g(r, "D") * h);
@@ -337,7 +344,14 @@ impl<'a> Builder<'a> {
         let (p0, p1, p2, p3) = (pt(1.0, 0.0), pt(0.0, 1.0), pt(-1.0, 0.0), pt(0.0, -1.0));
         self.move_to(p0.0, p0.1);
         let quarter = |a: (f64, f64), ta: (f64, f64), b: (f64, f64), tb: (f64, f64)| {
-            [a.0 + ta.0 * KAPPA, a.1 + ta.1 * KAPPA, b.0 - tb.0 * KAPPA, b.1 - tb.1 * KAPPA, b.0, b.1]
+            [
+                a.0 + ta.0 * KAPPA,
+                a.1 + ta.1 * KAPPA,
+                b.0 - tb.0 * KAPPA,
+                b.1 - tb.1 * KAPPA,
+                b.0,
+                b.1,
+            ]
         };
         // Tangent at angle t is d/dt (cos t * u + sin t * v).
         let (t0, t1) = ((vx, vy), (-ux, -uy));
@@ -398,7 +412,8 @@ impl<'a> Builder<'a> {
         let mut knots = vec![g(r, "C")];
         let mut weights = vec![num(&r.cells, "D").filter(|w| w.is_finite()).unwrap_or(1.0)];
         let mut it = args.iter().skip(4);
-        while let (Some(px), Some(py), Some(k), Some(wt)) = (it.next(), it.next(), it.next(), it.next())
+        while let (Some(px), Some(py), Some(k), Some(wt)) =
+            (it.next(), it.next(), it.next(), it.next())
         {
             if ctrl.len() >= MAX_CONTROLS {
                 self.flags.cut = true;
@@ -519,7 +534,8 @@ fn basis_funs(knots: &[f64], span: usize, degree: usize, t: f64) -> Vec<f64> {
             let rr = right.get(r + 1).copied().unwrap_or(0.0);
             let ll = left.get(j - r).copied().unwrap_or(0.0);
             let denom = rr + ll;
-            let temp = if denom.abs() < 1e-14 { 0.0 } else { n.get(r).copied().unwrap_or(0.0) / denom };
+            let temp =
+                if denom.abs() < 1e-14 { 0.0 } else { n.get(r).copied().unwrap_or(0.0) / denom };
             if let Some(slot) = n.get_mut(r) {
                 *slot = saved + rr * temp;
             }

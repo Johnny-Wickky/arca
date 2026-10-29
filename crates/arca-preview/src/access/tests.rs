@@ -293,4 +293,3 @@ fn a_small_budget_truncates_the_grid_and_says_so() {
     assert!(p.stats.truncated);
     assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Truncated));
 }
-

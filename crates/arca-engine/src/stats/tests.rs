@@ -15,7 +15,14 @@ fn scan(v: Verdict, t: u32, a: u32) -> Event {
     Event::Scan { verdict: v, trackers: t, active: a }
 }
 
-fn c(opened: u64, clean: u64, trackers: u64, active: u64, rejected: u64, unverified: u64) -> Counts {
+fn c(
+    opened: u64,
+    clean: u64,
+    trackers: u64,
+    active: u64,
+    rejected: u64,
+    unverified: u64,
+) -> Counts {
     Counts { opened, clean, trackers, active, rejected, unverified, sterile: 0, pictures: 0 }
 }
 
@@ -65,9 +72,13 @@ fn clean_and_rejected_ignore_finding_counts_and_unverified_keeps_them() {
 
 #[test]
 fn verdict_codes_are_the_wire_tags_and_unknown_is_never_clean() {
-    for v in
-        [Verdict::Clean, Verdict::HiddenTrackers, Verdict::ActiveContentNeutralized, Verdict::Rejected, Verdict::Unverified]
-    {
+    for v in [
+        Verdict::Clean,
+        Verdict::HiddenTrackers,
+        Verdict::ActiveContentNeutralized,
+        Verdict::Rejected,
+        Verdict::Unverified,
+    ] {
         assert_eq!(verdict_from_code(verdict_code(v)), v);
     }
     assert_eq!(verdict_code(Verdict::Clean), 0);
@@ -412,8 +423,16 @@ fn the_summary_json_has_all_three_windows() {
     s.record(D0 - 10, scan(Verdict::Clean, 0, 0));
     s.record(D0, scan(Verdict::ActiveContentNeutralized, 1, 2));
     let json = String::from_utf8(s.summary_json(D0)).unwrap();
-    assert!(json.starts_with("{\"version\":1,\"empty\":false,\"firstDay\":19990,\"days\":11,"), "{json}");
-    assert!(json.contains("\"week\":{\"opened\":1,\"clean\":0,\"trackers\":1,\"active\":2,\"threats\":3,"), "{json}");
+    assert!(
+        json.starts_with("{\"version\":1,\"empty\":false,\"firstDay\":19990,\"days\":11,"),
+        "{json}"
+    );
+    assert!(
+        json.contains(
+            "\"week\":{\"opened\":1,\"clean\":0,\"trackers\":1,\"active\":2,\"threats\":3,"
+        ),
+        "{json}"
+    );
     assert!(json.contains("\"month\":{\"opened\":2,"), "{json}");
     assert!(json.contains("\"all\":{\"opened\":2,"), "{json}");
     let empty = String::from_utf8(Stats::new().summary_json(D0)).unwrap();

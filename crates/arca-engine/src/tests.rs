@@ -691,7 +691,11 @@ fn a_page_picture_id_travels_as_a_decimal_string() {
     let page = arca_preview::page::PageModel {
         width: 10.0,
         height: 10.0,
-        prims: vec![arca_preview::page::Prim::Image { m: [1.0; 6], label: "x".into(), id: 16_777_217 }],
+        prims: vec![arca_preview::page::Prim::Image {
+            m: [1.0; 6],
+            label: "x".into(),
+            id: 16_777_217,
+        }],
         ..Default::default()
     };
     let v = json(&render::page_json(&page));

@@ -679,8 +679,7 @@ impl<'a> Db<'a> {
         }
         let Some(catalog) = self.table(CATALOG_PAGE) else { return };
         let col = |n: &str| catalog.columns.iter().position(|c| c.name == n);
-        let (Some(at_id), Some(at_kind), Some(at_prop)) =
-            (col("Id"), col("Type"), col("LvProp"))
+        let (Some(at_id), Some(at_kind), Some(at_prop)) = (col("Id"), col("Type"), col("LvProp"))
         else {
             return;
         };
@@ -714,7 +713,13 @@ impl<'a> Db<'a> {
     }
 
     /// The logical indexes of a table definition whose real-index blocks start at `at`.
-    fn indexes(&self, def: &[u8], at: usize, real: usize, columns: &[Column]) -> Option<Vec<Index>> {
+    fn indexes(
+        &self,
+        def: &[u8],
+        at: usize,
+        real: usize,
+        columns: &[Column],
+    ) -> Option<Vec<Index>> {
         let lay = self.lay;
         let logical = usize::try_from(u32_le(def, lay.num_logical)?).ok()?;
         if logical > MAX_INDEXES || real > MAX_INDEXES {
@@ -1054,18 +1059,15 @@ impl<'a> Db<'a> {
                 let text = self.text(bytes);
                 if c.flags & FLAG_HYPERLINK != 0 { link(&text) } else { Value::Text(text) }
             }
-            ty::OLE if self.keep_blobs.get() => {
-                Value::Blob(self.long_value(d).unwrap_or_default())
-            }
+            ty::OLE if self.keep_blobs.get() => Value::Blob(self.long_value(d).unwrap_or_default()),
             ty::OLE => Value::Ole(long_value_len(d)),
             ty::GUID => guid(d).map_or(Value::Null, Value::Guid),
             ty::NUMERIC if c.is_calculated() => calc_numeric(d).map_or(Value::Null, Value::Numeric),
             ty::NUMERIC => numeric(d, c.scale).map_or(Value::Null, Value::Numeric),
-            ty::COMPLEX => {
-                d.get(..4)
-                    .and_then(|b| <[u8; 4]>::try_from(b).ok())
-                    .map_or(Value::Null, |b| Value::Complex(i64::from(i32::from_le_bytes(b))))
-            }
+            ty::COMPLEX => d
+                .get(..4)
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                .map_or(Value::Null, |b| Value::Complex(i64::from(i32::from_le_bytes(b)))),
             ty::EXT_DATE => ext_date(d).map_or(Value::Null, Value::ExtDate),
             ty::BINARY if self.keep_blobs.get() => Value::Blob(d.to_vec()),
             _ => Value::Binary(d.len()),

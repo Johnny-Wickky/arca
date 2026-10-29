@@ -150,7 +150,11 @@ pub(crate) fn formula_numbers(f: &str) -> Option<Vec<f64>> {
             Err(_) => {
                 let end = t
                     .char_indices()
-                    .find(|(i, c)| !(c.is_ascii_digit() || matches!(c, '.' | '+' | '-') || (*i > 0 && matches!(c, 'e' | 'E'))))
+                    .find(|(i, c)| {
+                        !(c.is_ascii_digit()
+                            || matches!(c, '.' | '+' | '-')
+                            || (*i > 0 && matches!(c, 'e' | 'E')))
+                    })
                     .map_or(t.len(), |(i, _)| i);
                 let rest = t.get(end..)?.trim();
                 if end == 0 || !rest.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -237,8 +241,17 @@ impl Build {
             if (r.t == "NURBSTo" && name == "E") || (r.t == "PolylineTo" && name == "A") {
                 r.args = tag.attr("F").and_then(|f| formula_numbers(&f));
             }
-            if matches!(name, "LayerMember" | "Label" | "Value" | "Prompt" | "Address" | "SubAddress" | "Description" | "Name")
-                && let Some(raw) = v
+            if matches!(
+                name,
+                "LayerMember"
+                    | "Label"
+                    | "Value"
+                    | "Prompt"
+                    | "Address"
+                    | "SubAddress"
+                    | "Description"
+                    | "Name"
+            ) && let Some(raw) = v
             {
                 let s: String = raw.chars().take(MAX_NAME).collect();
                 r.strings.push((name, s));
@@ -265,7 +278,8 @@ impl Build {
             return Flow::SkipChildren;
         }
         let del = tag.attr("Del").is_some_and(|v| matches!(v.trim(), "1" | "true"));
-        let count = |f: &Frame| f.sheet.geoms.len().max(f.sheet.chars.len()).max(f.sheet.paras.len());
+        let count =
+            |f: &Frame| f.sheet.geoms.len().max(f.sheet.chars.len()).max(f.sheet.paras.len());
         if count(top) >= MAX_SECTIONS {
             self.truncated = true;
             return Flow::SkipChildren;
@@ -279,7 +293,8 @@ impl Build {
                     ..SecState::default()
                 });
             }
-            "Character" | "Paragraph" | "Property" | "User" | "Hyperlink" | "Layer" | "LayerMem" => {
+            "Character" | "Paragraph" | "Property" | "User" | "Hyperlink" | "Layer"
+            | "LayerMem" => {
                 self.sec = Some(SecState { name, ix, ..SecState::default() });
             }
             _ => return Flow::SkipChildren,
@@ -316,7 +331,13 @@ impl Build {
             "Geometry" => {
                 if let (Some(g), Some(kind)) = (sec.geom.as_mut(), RowKind::from_name(&r.t)) {
                     if g.rows.len() < MAX_GEOM_ROWS {
-                        g.rows.push(Row { kind, ix: r.ix, del: r.del, cells: r.cells, args: r.args });
+                        g.rows.push(Row {
+                            kind,
+                            ix: r.ix,
+                            del: r.del,
+                            cells: r.cells,
+                            args: r.args,
+                        });
                     } else {
                         self.truncated = true;
                     }
@@ -481,8 +502,7 @@ impl Handler for Build {
             }
             "ColorEntry" => {
                 let ix = id_of(tag, "IX").and_then(|v| usize::try_from(v).ok());
-                if let (Some(ix), Some(Val::Rgb(c))) =
-                    (ix, tag.attr("RGB").map(|v| parse_val(&v)))
+                if let (Some(ix), Some(Val::Rgb(c))) = (ix, tag.attr("RGB").map(|v| parse_val(&v)))
                     && self.colors.len() < 4_096
                 {
                     self.colors.push((ix, c));
@@ -736,4 +756,3 @@ fn read_masters(
     }
     Ok(())
 }
-

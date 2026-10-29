@@ -7,12 +7,18 @@
 #[path = "../../../arca-container/src/jet/testdb.rs"]
 mod testdb;
 
-
 use crate::model::{Block, NoticeKind, Preview, SectionKind, style};
 use testdb::{ColSpec, Cv, IndexSpec, TestDb, int, t, text};
 
 /// A stored row of `MSysQueries`: attribute, expression, flag, extra, name1, name2.
-type Qr = (u8, Option<&'static str>, Option<i16>, Option<i32>, Option<&'static str>, Option<&'static str>);
+type Qr = (
+    u8,
+    Option<&'static str>,
+    Option<i16>,
+    Option<i32>,
+    Option<&'static str>,
+    Option<&'static str>,
+);
 
 const SYSTEM: i64 = -2_147_483_648;
 
@@ -98,11 +104,8 @@ fn first_para(p: &Preview, name: &str) -> Option<(String, u16)> {
 }
 
 fn section_lines(p: &Preview, name: &str) -> Vec<String> {
-    let s = p
-        .sections
-        .iter()
-        .find(|s| s.name == name)
-        .unwrap_or_else(|| panic!("no section {name}"));
+    let s =
+        p.sections.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("no section {name}"));
     s.blocks.iter().find(|b| matches!(b, Block::Grid(_))).map(grid_lines).unwrap_or_default()
 }
 
@@ -184,7 +187,9 @@ fn saved_queries_of_every_kind_are_shown_as_synthetic_sql() {
     let s = p.sections.iter().find(|s| s.name == "Query: qSelect").unwrap();
     assert!(s.blocks.iter().all(|b| matches!(b, Block::Para(_))));
     assert!(
-        p.notices.iter().any(|n| n.kind == NoticeKind::BestEffort && n.detail.contains("never run"))
+        p.notices
+            .iter()
+            .any(|n| n.kind == NoticeKind::BestEffort && n.detail.contains("never run"))
     );
     assert!(!p.notices.iter().any(|n| n.detail.contains("stored rows, not as SQL")));
     assert!(!format!("{p:?}").contains("secret"), "the password of the connection string is shown");
@@ -211,7 +216,9 @@ fn a_query_that_does_not_fit_is_shown_as_its_stored_rows() {
     assert_eq!(lines.len(), 1 + 5);
     assert!(lines.contains(&"8|b = 2".to_owned()), "{lines:?}");
     assert!(
-        p.notices.iter().any(|n| n.kind == NoticeKind::Unsupported && n.detail.contains("stored rows"))
+        p.notices
+            .iter()
+            .any(|n| n.kind == NoticeKind::Unsupported && n.detail.contains("stored rows"))
     );
 }
 
@@ -328,10 +335,11 @@ fn linked_tables_are_listed_without_their_passwords() {
     let p = preview_bytes(&tdb.finish());
     let lines = section_lines(&p, "Database");
     assert!(
-        lines.contains(&"Linked table (ODBC)|dbo_Sales|ODBC;DSN=sales;UID=bob;PWD=***;DATABASE=x".to_owned())
-            || lines.contains(
-                &"Linked table (ODBC)|dbo_Sales||ODBC;DSN=sales;UID=bob;PWD=***;DATABASE=x".to_owned()
-            ),
+        lines.contains(
+            &"Linked table (ODBC)|dbo_Sales|ODBC;DSN=sales;UID=bob;PWD=***;DATABASE=x".to_owned()
+        ) || lines.contains(
+            &"Linked table (ODBC)|dbo_Sales||ODBC;DSN=sales;UID=bob;PWD=***;DATABASE=x".to_owned()
+        ),
         "{lines:?}"
     );
     assert!(lines.iter().any(|l| l.ends_with("C:\\data\\other.mdb")), "{lines:?}");
@@ -393,7 +401,16 @@ fn attachments_db() -> Vec<u8> {
         &[],
     );
     let att = |id: i64, fk: i64, name: &str, len: usize| {
-        vec![int(id), int(fk), Cv::Null, text(name), text("txt"), Cv::Long(vec![9; len]), Cv::Null, int(0)]
+        vec![
+            int(id),
+            int(fk),
+            Cv::Null,
+            text(name),
+            text("txt"),
+            Cv::Long(vec![9; len]),
+            Cv::Null,
+            int(0),
+        ]
     };
     let att_flat = tdb.add_table(
         "f_Files",
@@ -513,7 +530,8 @@ fn a_query_with_more_rows_than_the_limit_is_shown_as_stored() {
 
 #[test]
 fn an_oversized_expression_is_never_cut() {
-    let big: &'static str = Box::leak("x".repeat(super::MAX_QUERY_FIELD_CHARS + 10).into_boxed_str());
+    let big: &'static str =
+        Box::leak("x".repeat(super::MAX_QUERY_FIELD_CHARS + 10).into_boxed_str());
     let queries: Vec<(&str, i64, Vec<Qr>)> = vec![(
         "qHuge",
         0,

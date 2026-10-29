@@ -175,7 +175,10 @@ fn strings_of(body: &[u8], version: u16) -> Vec<String> {
     };
     if version > 6 {
         for u in body.chunks_exact(2) {
-            let v = u16::from_le_bytes([u.first().copied().unwrap_or(0), u.get(1).copied().unwrap_or(0)]);
+            let v = u16::from_le_bytes([
+                u.first().copied().unwrap_or(0),
+                u.get(1).copied().unwrap_or(0),
+            ]);
             match char::from_u32(u32::from(v)).filter(|c| ok(*c)) {
                 Some(c) => cur.push(c),
                 None => flush(&mut cur, &mut out),
@@ -497,7 +500,12 @@ impl Reader {
             }
             0x9c => {
                 const NAMES: [&str; 7] = [
-                    "TxtPinX", "TxtPinY", "TxtWidth", "TxtHeight", "TxtLocPinX", "TxtLocPinY",
+                    "TxtPinX",
+                    "TxtPinY",
+                    "TxtWidth",
+                    "TxtHeight",
+                    "TxtLocPinX",
+                    "TxtLocPinY",
                     "TxtAngle",
                 ];
                 for (n, name) in NAMES.iter().enumerate() {
@@ -511,7 +519,8 @@ impl Reader {
                 b.text = Some(t.chars().take(MAX_TEXT).collect());
             }
             0x85 | 0x86 | 0x87 | 0x94 | 0x95 => {
-                let mut counts = (std::mem::take(&mut b.char_counts), std::mem::take(&mut b.para_counts));
+                let mut counts =
+                    (std::mem::take(&mut b.char_counts), std::mem::take(&mut b.para_counts));
                 apply_format(&mut b.sheet, c, version, &mut counts);
                 b.char_counts = counts.0;
                 b.para_counts = counts.1;
@@ -617,8 +626,8 @@ impl Reader {
                 .then(|| index.get(&s.parent).copied())
                 .flatten()
                 .filter(|p| *p != i);
-            let p = by_field
-                .or_else(|| listed_parent.get(&s.sheet.id).copied().filter(|p| *p != i));
+            let p =
+                by_field.or_else(|| listed_parent.get(&s.sheet.id).copied().filter(|p| *p != i));
             parent.push(p);
             for (end, begin) in [(s.begin_id, true), (s.end_id, false)] {
                 if let Some(to) = end
@@ -708,12 +717,7 @@ fn attach(
 }
 
 /// Line, fill, text block, character and paragraph chunks (of a shape or a style sheet).
-fn apply_format(
-    s: &mut Sheet,
-    c: &Chunk<'_>,
-    version: u16,
-    counts: &mut (Vec<u32>, Vec<u32>),
-) {
+fn apply_format(s: &mut Sheet, c: &Chunk<'_>, version: u16, counts: &mut (Vec<u32>, Vec<u32>)) {
     let b = c.body;
     let _ = version;
     match c.ty {
@@ -770,9 +774,8 @@ fn apply_format(
             }
         }
         0x87 => {
-            for (n, name) in ["LeftMargin", "RightMargin", "TopMargin", "BottomMargin"]
-                .iter()
-                .enumerate()
+            for (n, name) in
+                ["LeftMargin", "RightMargin", "TopMargin", "BottomMargin"].iter().enumerate()
             {
                 if let Some(v) = tagged(b, n) {
                     put(&mut s.cells, name, num(v));
@@ -924,7 +927,9 @@ fn polyline_formula(b: &[u8]) -> Formula {
     }
     let mut pos = 29usize;
     loop {
-        let Some(len) = u32_le(b, pos).and_then(|l| usize::try_from(l).ok()) else { return (None, None, None) };
+        let Some(len) = u32_le(b, pos).and_then(|l| usize::try_from(l).ok()) else {
+            return (None, None, None);
+        };
         if len < 6 {
             return (None, None, None);
         }
@@ -972,7 +977,9 @@ fn nurbs_formula(b: &[u8]) -> Formula {
     }
     let mut pos = 61usize;
     loop {
-        let Some(len) = u32_le(b, pos).and_then(|l| usize::try_from(l).ok()) else { return (None, None, None) };
+        let Some(len) = u32_le(b, pos).and_then(|l| usize::try_from(l).ok()) else {
+            return (None, None, None);
+        };
         if len < 6 {
             return (None, None, None);
         }
@@ -993,12 +1000,14 @@ fn nurbs_formula(b: &[u8]) -> Formula {
     let (Some(last), Some(degree)) = (d(b, at + 1), u16_le(b, at + 9)) else {
         return (None, None, None);
     };
-    let (x_type, y_type) = (b.get(at + 11).copied().unwrap_or(1), b.get(at + 12).copied().unwrap_or(1));
+    let (x_type, y_type) =
+        (b.get(at + 11).copied().unwrap_or(1), b.get(at + 12).copied().unwrap_or(1));
     let reps = u32_le(b, at + 13).and_then(|r| usize::try_from(r).ok()).unwrap_or(0);
     let mut args = vec![last, f64::from(degree), f64::from(x_type), f64::from(y_type)];
     let mut p = at + 17;
     for _ in 0..reps.min(MAX_POINTS) {
-        let (Some(x), Some(y), Some(k), Some(w)) = (d(b, p), d(b, p + 8), d(b, p + 16), d(b, p + 24))
+        let (Some(x), Some(y), Some(k), Some(w)) =
+            (d(b, p), d(b, p + 8), d(b, p + 16), d(b, p + 24))
         else {
             break;
         };

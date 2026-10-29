@@ -140,7 +140,9 @@ fn read_values(
         let Some(name) = names.get(usize::from(idx)) else { continue };
         let value = match dtype {
             T_BOOL => PropValue::Bool(data.first().is_some_and(|b| *b != 0)),
-            T_BYTE => data.first().map_or(PropValue::Other(data.len()), |b| PropValue::Int(i64::from(*b))),
+            T_BYTE => {
+                data.first().map_or(PropValue::Other(data.len()), |b| PropValue::Int(i64::from(*b)))
+            }
             T_INT => data
                 .get(..2)
                 .and_then(|b| <[u8; 2]>::try_from(b).ok())
@@ -218,7 +220,8 @@ mod tests {
     #[test]
     fn a_property_list_reads_back() {
         let props = parse(&sample(), &decode);
-        let got: Vec<(&str, &PropValue)> = props.iter().map(|p| (p.name.as_str(), &p.value)).collect();
+        let got: Vec<(&str, &PropValue)> =
+            props.iter().map(|p| (p.name.as_str(), &p.value)).collect();
         assert_eq!(
             got,
             [

@@ -426,7 +426,13 @@ fn shape_body(parent: u32, master: u32, master_shape: u32, styles: (u32, u32, u3
 }
 
 /// XForm: PinX, PinY, Width, Height, LocPinX, LocPinY, Angle, then the flip bytes at 63, 64.
-fn xform_body(pin: (f64, f64), size: (f64, f64), loc: (f64, f64), angle: f64, flips: (u8, u8)) -> Vec<u8> {
+fn xform_body(
+    pin: (f64, f64),
+    size: (f64, f64),
+    loc: (f64, f64),
+    angle: f64,
+    flips: (u8, u8),
+) -> Vec<u8> {
     let mut b = nums(&[pin.0, pin.1, size.0, size.1, loc.0, loc.1, angle]);
     b.extend([flips.0, flips.1]);
     b
@@ -499,7 +505,13 @@ fn rect_page(version: u16, style: (u32, u32, u32), extra: &[u8]) -> Vec<u8> {
     p.extend_from_slice(extra);
     p.extend(rows(
         version,
-        &[move_to(0.0, 0.0), line_to(2.0, 0.0), line_to(2.0, 1.0), line_to(0.0, 1.0), line_to(0.0, 0.0)],
+        &[
+            move_to(0.0, 0.0),
+            line_to(2.0, 0.0),
+            line_to(2.0, 1.0),
+            line_to(0.0, 1.0),
+            line_to(0.0, 0.0),
+        ],
     ));
     p
 }
@@ -531,7 +543,13 @@ fn a_binary_page_is_drawn_from_xform_line_fill_and_geometry() {
     for version in [11u16, 6] {
         let mut extra = chunk(version, 0x85, 0, &line_body(0.02, 0x0000_00ff, 1, (0, 0)));
         extra.extend(chunk(version, 0x86, 0, &fill_body(Some(0xff0000), 0, Some(0xffffff), 1, 1)));
-        let data = drawing_ex(version, &[fg(rect_page(version, (NONE, NONE, NONE), &extra))], &[], &[], &[]);
+        let data = drawing_ex(
+            version,
+            &[fg(rect_page(version, (NONE, NONE, NONE), &extra))],
+            &[],
+            &[],
+            &[],
+        );
         let policy = PreviewPolicy::default();
         assert_eq!(crate::visio_draw::visio_page_count(&data, &policy).unwrap(), 1);
         let p = render(&data);
@@ -615,7 +633,12 @@ fn masters_styles_and_colours_are_inherited() {
     let styles = Extra { ty: 0x1a, data: styles, format: 0xd4 };
     // The stencil page (master 0) holds a shape with the geometry.
     let mut stencil = chunk(11, 0x48, 1, &shape_body(0, NONE, NONE, (6, 6, NONE)));
-    stencil.extend(chunk(11, 0x9b, 0, &xform_body((0.0, 0.0), (2.0, 1.0), (0.0, 0.0), 0.0, (0, 0))));
+    stencil.extend(chunk(
+        11,
+        0x9b,
+        0,
+        &xform_body((0.0, 0.0), (2.0, 1.0), (0.0, 0.0), 0.0, (0, 0)),
+    ));
     stencil.extend(rows(
         11,
         &[move_to(0.0, 0.0), line_to(2.0, 0.0), line_to(2.0, 1.0), line_to(0.0, 0.0)],
@@ -652,7 +675,10 @@ fn arcs_ellipses_splines_and_nurbs_of_binary_files() {
     let p = mk(&[ellipse]);
     let pts = &path_points(&p)[0];
     assert_eq!(pts.len(), 5);
-    assert!(close(pts[0], (3.0 * 72.0, (11.0 - 1.0) * 72.0)) && close(pts[1], (2.0 * 72.0, (11.0 - 2.0) * 72.0)));
+    assert!(
+        close(pts[0], (3.0 * 72.0, (11.0 - 1.0) * 72.0))
+            && close(pts[1], (2.0 * 72.0, (11.0 - 2.0) * 72.0))
+    );
     let p = mk(&[move_to(0.0, 1.0), arc]);
     assert!(close(path_points(&p)[0][1], (72.0, 11.0 * 72.0)), "{:?}", path_points(&p));
     let p = mk(&[move_to(0.0, 0.0), elliptical]);
@@ -784,7 +810,8 @@ fn connections_shape_data_and_hyperlinks_are_read_and_marked_unverified() {
     assert_eq!(&texts[..2], ["Start", "Finish"], "{texts:?}");
     // Shape data as "label: value"; the hyperlink as plain text that links nowhere.
     assert!(texts.contains(&"Cost: Twelve"), "{texts:?}");
-    let link = lines.iter().find(|(t, ..)| t == "Hyperlink: http://example.org/page").expect("link text");
+    let link =
+        lines.iter().find(|(t, ..)| t == "Hyperlink: http://example.org/page").expect("link text");
     assert!(link.2.is_empty(), "never a live link");
     // The connection is made up by the viewer and marked so.
     let conn = lines.iter().find(|(t, ..)| t == "Start → Finish").expect("connection");
@@ -842,7 +869,11 @@ fn page_names_come_from_the_name_index_and_background_pages_lie_under() {
     }
     let (at, len) = put(&mut doc, &idx);
     let idx_ptr = pointer(0xc9, at, len, 0x44);
-    let mut back = rect_page(version, (NONE, NONE, NONE), &chunk(version, 0x85, 0, &line_body(0.01, 0, 1, (0, 0))));
+    let mut back = rect_page(
+        version,
+        (NONE, NONE, NONE),
+        &chunk(version, 0x85, 0, &line_body(0.01, 0, 1, (0, 0))),
+    );
     back.extend(text_chunk(version, 0, "b"));
     let mut front = chunk(version, 0x15, NONE, &{
         let mut b = vec![0u8; 80];
@@ -850,7 +881,12 @@ fn page_names_come_from_the_name_index_and_background_pages_lie_under() {
         b
     });
     front.extend(chunk(version, 0x48, 5, &shape_body(0, NONE, NONE, (NONE, NONE, NONE))));
-    front.extend(chunk(version, 0x9b, 0, &xform_body((1.0, 1.0), (1.0, 1.0), (0.0, 0.0), 0.0, (0, 0))));
+    front.extend(chunk(
+        version,
+        0x9b,
+        0,
+        &xform_body((1.0, 1.0), (1.0, 1.0), (0.0, 0.0), 0.0, (0, 0)),
+    ));
     front.extend(chunk(version, 0x85, 0, &line_body(0.01, 0, 1, (0, 0))));
     front.extend(rows(version, &[move_to(0.0, 0.0), line_to(1.0, 1.0)]));
     front.extend(text_chunk(version, 0, "f"));
@@ -894,7 +930,8 @@ fn a_binary_page_hides_hidden_layers_by_policy() {
     p.extend(chunk(11, 0xa7, 0, &mem));
     p.extend(rows(11, &[move_to(0.0, 0.0), line_to(1.0, 1.0)]));
     let data = drawing_ex(11, &[fg(p)], &[], &[], &[]);
-    let shown = crate::visio_draw::render_visio_page_noted(&data, 0, &PreviewPolicy::default()).unwrap();
+    let shown =
+        crate::visio_draw::render_visio_page_noted(&data, 0, &PreviewPolicy::default()).unwrap();
     assert_eq!(shown.hidden_shown, 1);
     let policy = PreviewPolicy { reveal_hidden: false, ..PreviewPolicy::default() };
     let hidden = crate::visio_draw::render_visio_page_noted(&data, 0, &policy).unwrap();
@@ -945,7 +982,10 @@ fn hostile_binary_drawings_stay_bounded() {
     nurbs.extend(u32::try_from(blk.len() + 4).unwrap().to_le_bytes());
     nurbs.extend(blk);
     nurbs.extend(0u32.to_le_bytes());
-    p.extend(rows(11, &[move_to(0.0, 0.0), (0xc3, nurbs.clone()), (0xc1, nurbs), (0x90, nums(&[f64::NAN; 6]))]));
+    p.extend(rows(
+        11,
+        &[move_to(0.0, 0.0), (0xc3, nurbs.clone()), (0xc1, nurbs), (0x90, nums(&[f64::NAN; 6]))],
+    ));
     let page = render(&drawing_ex(11, &[fg(p)], &[], &[], &[]));
     for q in &page.prims {
         if let crate::page::Prim::Path { ops, .. } = q {
@@ -960,7 +1000,13 @@ fn damaged_binary_drawings_never_panic() {
     extra.extend(chunk(11, 0x86, 0, &fill_body(Some(0xff0000), 0, None, 0, 1)));
     let page = rect_page(11, (3, 3, 3), &extra);
     let colours = Extra { ty: 0x16, data: vec![0, 0, 1, 0, 1, 2, 3, 0], format: 0x44 };
-    let base = drawing_ex(11, &[fg(page)], &["a", "b", "c"], &[colours], &[rect_page(11, (NONE, NONE, NONE), &[])]);
+    let base = drawing_ex(
+        11,
+        &[fg(page)],
+        &["a", "b", "c"],
+        &[colours],
+        &[rect_page(11, (NONE, NONE, NONE), &[])],
+    );
     let mut state = 0x1234_5678_9ABC_DEF1u64;
     let mut next = move || {
         state ^= state << 13;
