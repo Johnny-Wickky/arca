@@ -263,6 +263,109 @@ fn float_index(n: f64) -> Option<usize> {
     (n.is_finite() && (0.0..=1.0e6).contains(&n)).then(|| n.round() as usize)
 }
 
+/// The on/off lengths of a Visio line pattern, in line widths (`None`: solid). Patterns 2 to 5
+/// are dash, dot, dash-dot and dash-dot-dot; the longer ones are drawn as long dashes.
+fn dash_lengths(pattern: f64) -> Option<&'static [f64]> {
+    match float_index(pattern)? {
+        0 | 1 => None,
+        2 => Some(&[4.0, 3.0]),
+        3 => Some(&[1.0, 2.0]),
+        4 => Some(&[4.0, 2.0, 1.0, 2.0]),
+        5 => Some(&[4.0, 2.0, 1.0, 2.0, 1.0, 2.0]),
+        _ => Some(&[8.0, 3.0]),
+    }
+}
+
+/// Cuts the stroked polylines of `ops` into dashes. Curves are flattened first. Returns `None`
+/// where the result would be too big (the line is then drawn solid).
+fn dash_path(ops: &[f32], pattern: &[f64], width: f32, limit: usize) -> Option<Vec<f32>> {
+    // Flatten into polylines.
+    let mut lines: Vec<(Vec<(f32, f32)>, bool)> = Vec::new();
+    let mut i = 0usize;
+    let mut cur: Vec<(f32, f32)> = Vec::new();
+    let flush = |cur: &mut Vec<(f32, f32)>, closed: bool, lines: &mut Vec<(Vec<(f32, f32)>, bool)>| {
+        if cur.len() > 1 {
+            lines.push((std::mem::take(cur), closed));
+        } else {
+            cur.clear();
+        }
+    };
+    while let Some(&code) = ops.get(i) {
+        if code == op::MOVE {
+            flush(&mut cur, false, &mut lines);
+            cur.push((*ops.get(i + 1)?, *ops.get(i + 2)?));
+            i += 3;
+        } else if code == op::LINE {
+            cur.push((*ops.get(i + 1)?, *ops.get(i + 2)?));
+            i += 3;
+        } else if code == op::CURVE {
+            let (x0, y0) = *cur.last()?;
+            let p: Vec<f32> = (1..=6).map(|k| ops.get(i + k).copied()).collect::<Option<_>>()?;
+            for s in 1..=12u8 {
+                let t = f32::from(s) / 12.0;
+                let u = 1.0 - t;
+                let b = |a: f32, b1: f32, c: f32, d: f32| {
+                    u * u * u * a + 3.0 * u * u * t * b1 + 3.0 * u * t * t * c + t * t * t * d
+                };
+                cur.push((b(x0, p[0], p[2], p[4]), b(y0, p[1], p[3], p[5])));
+            }
+            i += 7;
+        } else {
+            if let Some(&first) = cur.first() {
+                cur.push(first);
+            }
+            flush(&mut cur, true, &mut lines);
+            i += 1;
+        }
+    }
+    flush(&mut cur, false, &mut lines);
+
+    let unit = f64::from(width.max(0.75));
+    let period: f64 = pattern.iter().sum::<f64>() * unit;
+    let mut out: Vec<f32> = Vec::new();
+    for (pts, _) in &lines {
+        let length: f64 = pts.windows(2).map(|w| f64::from((w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))).sum();
+        if period <= 0.0 || length / period * 6.0 * (pattern.len() as f64 / 2.0) > limit as f64 {
+            return None;
+        }
+        let (mut k, mut left, mut on) = (0usize, pattern.first().copied()? * unit, true);
+        let mut open = false;
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let seg = f64::from((b.0 - a.0).hypot(b.1 - a.1));
+            if seg < 1e-6 {
+                continue;
+            }
+            let (dx, dy) = (f64::from(b.0 - a.0) / seg, f64::from(b.1 - a.1) / seg);
+            let mut at = 0.0f64;
+            while at < seg {
+                let step = left.min(seg - at);
+                let from = (f64::from(a.0) + dx * at, f64::from(a.1) + dy * at);
+                let to = (from.0 + dx * step, from.1 + dy * step);
+                if on {
+                    if !open {
+                        out.extend([op::MOVE, from.0 as f32, from.1 as f32]);
+                        open = true;
+                    }
+                    out.extend([op::LINE, to.0 as f32, to.1 as f32]);
+                }
+                at += step;
+                left -= step;
+                if left <= 1e-9 {
+                    k = (k + 1) % pattern.len();
+                    left = pattern[k] * unit;
+                    on = k % 2 == 0;
+                    open = false;
+                }
+                if out.len() > limit {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 // ---- the recorder -------------------------------------------------------------------------------
 
 struct Painter<'a> {
@@ -281,6 +384,8 @@ struct Painter<'a> {
     hidden_shown: u64,
     /// Opacity of what is drawn now (less for hidden shapes that are shown).
     opacity: f64,
+    /// The line pattern of the shape being drawn.
+    pattern: f64,
     /// Half the length of lines that stand for infinite ones, in inches.
     reach: f64,
 }
@@ -435,6 +540,7 @@ impl<'a> Painter<'a> {
         let geoms = Self::merged_geoms(look);
         let line_pt = self.line_width(look);
         let (line_color, line_on) = self.line_color(look);
+        self.pattern = look.num("LinePattern").unwrap_or(1.0);
         let (fill_color, fill_on) = self.fill_color(look);
         if !geoms.is_empty() && (line_on || fill_on) {
             self.style_notes(look);
@@ -487,8 +593,8 @@ impl<'a> Painter<'a> {
     }
 
     fn style_notes(&mut self, look: &Look<'_>) {
-        if look.num("LinePattern").is_some_and(|p| p > 1.0) {
-            self.note("dashed and dotted lines are drawn solid");
+        if dash_lengths(look.num("LinePattern").unwrap_or(1.0)).is_some() {
+            self.note("dash patterns are approximated by regular dashes");
         }
         if look.num("Rounding").is_some_and(|r| r > 0.0) {
             self.note("rounded corners are not drawn");
@@ -582,11 +688,30 @@ impl<'a> Painter<'a> {
             return;
         }
         self.numbers += ops.len();
+        let width = f32c(width_pt.max(0.25));
+        // A dashed line: the fill (if any) first, then the dashes as a path of their own.
+        let dashes = if want_line {
+            dash_lengths(self.pattern).and_then(|pat| dash_path(&ops, pat, width, MAX_PATH_NUMBERS))
+        } else {
+            None
+        };
+        if let Some(dashes) = dashes {
+            if fill_on {
+                self.push(Prim::Path { ops, fill, stroke: 0, width, even_odd: true });
+            }
+            if self.numbers.saturating_add(dashes.len()) > MAX_SEGMENTS * 3 {
+                self.full = true;
+                return;
+            }
+            self.numbers += dashes.len();
+            self.push(Prim::Path { ops: dashes, fill: 0, stroke: line, width, even_odd: false });
+            return;
+        }
         self.push(Prim::Path {
             ops,
             fill: if fill_on { fill } else { 0 },
             stroke: if want_line { line } else { 0 },
-            width: f32c(width_pt.max(0.25)),
+            width,
             even_odd: true,
         });
     }
@@ -1117,6 +1242,7 @@ pub(crate) fn draw_page<'a>(
         shapes_left: MAX_SHAPES,
         segs_left: MAX_SEGMENTS,
         numbers: 0,
+        pattern: 1.0,
         chars_left: MAX_TEXT_CHARS,
         hidden_omitted: 0,
         hidden_shown: 0,
