@@ -50,9 +50,10 @@
         <!--
           One activity, every size. It handles the configuration changes that a window of a new
           shape causes (rotation, folding and unfolding, split-screen and freeform resizing,
-          density and display-size changes, an attached keyboard) by rebuilding its views. Theme
-          and language changes are not listed on purpose: they recreate the activity so the
-          matching resources are loaded.
+          density and display-size changes, a monitor attached in Samsung DeX or desktop mode, an
+          attached keyboard) by rebuilding its views. A change between light and dark (uiMode) is
+          handled in code: it recreates the activity so the matching resources are loaded. Theme
+          and language changes made in the app do the same.
         -->
         <activity
             android:name=".MainActivity"
@@ -60,7 +61,7 @@
             android:launchMode="singleTask"
             android:screenOrientation="unspecified"
             android:resizeableActivity="true"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|colorMode|layoutDirection|touchscreen">
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation|colorMode|layoutDirection|touchscreen">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

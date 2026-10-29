@@ -1040,6 +1040,20 @@ public final class Session {
         return total;
     }
 
+    /**
+     * The app went out of sight or memory is short: forgets the decoded pictures and overwrites
+     * their pixels, so a picture of the document does not linger in memory (main thread). A screen
+     * that shows one asks for it again when it is rebuilt.
+     */
+    public void trimMemory() {
+        for (ImageResult r : images.values()) {
+            if (r.bitmap != null && r.bitmap.isMutable() && !r.bitmap.isRecycled()) {
+                r.bitmap.eraseColor(0);
+            }
+        }
+        images.clear();
+    }
+
     /** A picture that is already loaded, or {@code null} (main thread). */
     public ImageResult cachedImage(int id) {
         return images.get(id);

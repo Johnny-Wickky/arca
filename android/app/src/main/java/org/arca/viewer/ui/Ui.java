@@ -264,6 +264,36 @@ public final class Ui {
 
     // ---- controls ---------------------------------------------------------------------------
 
+    /** A second tap within this time of an accepted one is dropped (a double tap must not act twice). */
+    private static final long DEBOUNCE_MS = 250;
+    private static long lastClick;
+
+    /**
+     * Wraps a click listener so that a tap right after another does nothing. The clock is shared by
+     * every control: a double tap often lands on the control that replaced the one tapped first.
+     */
+    public static View.OnClickListener debounced(final View.OnClickListener l) {
+        if (l == null) {
+            return null;
+        }
+        return new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                long now = android.os.SystemClock.uptimeMillis();
+                if (now - lastClick < DEBOUNCE_MS) {
+                    return;
+                }
+                lastClick = now;
+                l.onClick(v);
+            }
+        };
+    }
+
+    /** Shows the hand cursor over a control when a mouse or a touchpad is in use. */
+    private void hand(View v) {
+        v.setPointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_HAND));
+    }
+
     public Button button(CharSequence label, int kind, int iconRes, View.OnClickListener l) {
         Button b = new Button(context);
         b.setText(label);
@@ -316,7 +346,8 @@ public final class Ui {
                 b.setCompoundDrawablePadding(dp(10));
             }
         }
-        b.setOnClickListener(l);
+        b.setOnClickListener(debounced(l));
+        hand(b);
         return b;
     }
 
@@ -332,7 +363,8 @@ public final class Ui {
         b.setContentDescription(context.getString(descRes));
         b.setScaleType(ImageView.ScaleType.CENTER);
         b.setLayoutParams(lp(dp(TOUCH), dp(TOUCH)));
-        b.setOnClickListener(l);
+        b.setOnClickListener(debounced(l));
+        hand(b);
         return b;
     }
 
@@ -353,7 +385,8 @@ public final class Ui {
         }
         t.setClickable(true);
         t.setFocusable(true);
-        t.setOnClickListener(l);
+        t.setOnClickListener(debounced(l));
+        hand(t);
         Compat.markSelected(t, selected);
         return t;
     }

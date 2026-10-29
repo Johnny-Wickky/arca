@@ -9,6 +9,8 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.widget.FrameLayout;
@@ -56,6 +58,11 @@ public final class MainActivity extends Activity implements Session.Listener, En
     private boolean rebuildRequested;
     private final Compat.Back back = new Compat.Back(this);
     private boolean started;
+    /** The system asked for memory while the screen was out of sight: rebuild when it returns. */
+    private boolean trimmed;
+    /** The night-mode bits of the configuration last seen (a change recreates the activity). */
+    private int lastNight;
+    private long lastWheelZoom;
 
     @Override
     protected void attachBaseContext(Context base) {
@@ -67,6 +74,7 @@ public final class MainActivity extends Activity implements Session.Listener, En
         super.onCreate(savedInstanceState);
         boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
             == Configuration.UI_MODE_NIGHT_YES;
+        lastNight = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
         Compat.edgeToEdge(this, night);
         Compat.setSecure(this, Prefs.secureScreen(this));
         Compat.noAutofill(this);
@@ -157,6 +165,10 @@ public final class MainActivity extends Activity implements Session.Listener, En
     protected void onStart() {
         super.onStart();
         started = true;
+        if (trimmed) {
+            trimmed = false;
+            show();
+        }
         Hinge.start(this, new Runnable() {
             @Override
             public void run() {
@@ -187,8 +199,136 @@ public final class MainActivity extends Activity implements Session.Listener, En
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        // Rotation, folding, resizing: the window changed shape, the document did not.
+        // Rotation, folding, resizing, a cable to a monitor (Samsung DeX, desktop mode: density,
+        // window size and the UI mode change at once): the window changed shape, the document did not.
+        int night = newConfig.uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        if (night != lastNight) {
+            // Light and dark need the other resources; that is the one change that rebuilds the activity.
+            lastNight = night;
+            recreate();
+            return;
+        }
         show();
+    }
+
+    // ---- memory -----------------------------------------------------------------------------
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_UI_HIDDEN) {
+            trim(false);
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        trim(true);
+    }
+
+    /**
+     * Drops what holds the content of the document in memory: the pages of the reading view, the
+     * decoded pictures (their pixels are overwritten) and the picture viewer. The document itself
+     * stays in the sandbox; the screen is built again when the person comes back.
+     */
+    private void trim(boolean visible) {
+        org.arca.viewer.ui.ImageViewer.dismiss();
+        if (top != null) {
+            top.onTrim();
+        }
+        Session.get().trimMemory();
+        if (visible && started) {
+            show();
+        } else {
+            trimmed = true;
+        }
+    }
+
+    // ---- hardware keyboard and mouse (Samsung DeX, Chromebooks, tablets) ---------------------
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN && shortcut(e)) {
+            return true;
+        }
+        return super.dispatchKeyEvent(e);
+    }
+
+    private boolean shortcut(KeyEvent e) {
+        int code = e.getKeyCode();
+        boolean typing = getCurrentFocus() instanceof android.widget.EditText;
+        if (e.isCtrlPressed()) {
+            switch (code) {
+                case KeyEvent.KEYCODE_F:
+                    return e.getRepeatCount() == 0 && top != null && top.onFind();
+                case KeyEvent.KEYCODE_O:
+                    if (e.getRepeatCount() == 0) {
+                        pickFile();
+                    }
+                    return true;
+                case KeyEvent.KEYCODE_PLUS:
+                case KeyEvent.KEYCODE_EQUALS:
+                case KeyEvent.KEYCODE_NUMPAD_ADD:
+                    return top != null && top.onZoom(1);
+                case KeyEvent.KEYCODE_MINUS:
+                case KeyEvent.KEYCODE_NUMPAD_SUBTRACT:
+                    return top != null && top.onZoom(-1);
+                default:
+                    return false;
+            }
+        }
+        if (e.isAltPressed() || e.isMetaPressed()) {
+            return false;
+        }
+        switch (code) {
+            case KeyEvent.KEYCODE_ESCAPE:
+                return escape();
+            case KeyEvent.KEYCODE_PAGE_UP:
+                return !typing && top != null && top.onPage(-1);
+            case KeyEvent.KEYCODE_PAGE_DOWN:
+                return !typing && top != null && top.onPage(1);
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                return !typing && top != null && top.onPage(-1);
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                return !typing && top != null && top.onPage(1);
+            default:
+                return false;
+        }
+    }
+
+    /** Esc closes the picture, the search or the row card, else goes back one screen (never leaves from Home). */
+    private boolean escape() {
+        if (org.arca.viewer.ui.ImageViewer.dismiss()) {
+            return true;
+        }
+        if (top != null && top.onBack()) {
+            return true;
+        }
+        if (ROUTES.size() > 1) {
+            back();
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent e) {
+        // Ctrl + wheel zooms; the plain wheel (vertical and horizontal) is scrolled by the views.
+        if (e.getActionMasked() == MotionEvent.ACTION_SCROLL && (e.getMetaState() & KeyEvent.META_CTRL_ON) != 0) {
+            float v = e.getAxisValue(MotionEvent.AXIS_VSCROLL);
+            if (v != 0f && top != null) {
+                long now = android.os.SystemClock.uptimeMillis();
+                if (now - lastWheelZoom < 80) {
+                    return true; // a smooth wheel sends many small ticks
+                }
+                if (top.onZoom(v > 0f ? 1 : -1)) {
+                    lastWheelZoom = now;
+                    return true;
+                }
+            }
+        }
+        return super.dispatchGenericMotionEvent(e);
     }
 
     @Override
