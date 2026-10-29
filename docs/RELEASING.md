@@ -74,6 +74,25 @@ Environment secrets*. Окружение создайте заранее (имя
 Отпечаток сертификата подписи автоматически попадает в заметки релиза: сохраните его и
 сверяйте с ним все следующие версии.
 
+**Постоянный ключ 0.3.0 (ручная подпись).** Ключ `PKCS12 RSA-4096` лежит вне репозитория:
+`../arca-keys/arca-release.p12` (рядом с каталогом проекта), алиас `arca`, срок 100 лет, пароль известен только
+владельцу и в Git, логи сборки и скрипты не попадает. Отпечаток сертификата (SHA-256):
+`3b3b819dea6a02ffdea05ac7ce53df9b2bdf004dac3082c048557383cfaf737e`. Сборка и подпись вручную (Linux или контейнер
+с Rust 1.97, NDK 27.3 и build-tools 36):
+
+```sh
+export ARCA_RELEASE=1 ARCA_KEYSTORE=../arca-keys/arca-release.p12 ARCA_KEY_ALIAS=arca
+read -rs ARCA_KEYSTORE_PASS && export ARCA_KEYSTORE_PASS   # пароль вводится, а не записывается
+bash tools/android/build-local.sh                           # гость -> библиотеки -> dist/arca-0.3.0.apk
+apksigner verify --verbose --print-certs dist/arca-0.3.0.apk
+```
+
+Файлы ключей (`.p12`, `.pfx`, `.jks`, `.keystore`, `.key`, `.pem`) запрещены в репозитории:
+`tools/check-unsafe.sh` (он выполняется в CI) падает, если такой файл отслеживается Git, а
+`tools/hooks/pre-commit` (`git config core.hooksPath tools/hooks`) не даёт его закоммитить.
+Сборки `0.2.x` подписаны одноразовыми ключами, поэтому переход на 0.3.0 требует **чистой установки**
+(сначала удалить старый APK).
+
 ## Каждый релиз
 
 1. Напишите `docs/releases/vX.Y.Z.md` — заметки релиза. Воркфлоу откажется публиковать без
