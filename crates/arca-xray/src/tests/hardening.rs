@@ -50,10 +50,19 @@ fn sanitized(
 
 #[test]
 fn b1_object_names_are_found_whatever_their_case() {
+    let d = arca_container::jet::database_with_objects(1, &[(-32766, "aUtOeXeC")]);
+    assert!(scan_default(&d).has(K::MacroAutoExec));
+    let d = arca_container::jet::database_with_objects(1, &[(5, "vbaPROJECT")]);
+    assert!(scan_default(&d).has(K::VbaMacros));
+    let d = arca_container::jet::database_with_objects(1, &[(-32761, "Module1")]);
+    assert!(scan_default(&d).has(K::VbaMacros));
+    // The same words in a damaged database are found as bytes, in both encodings.
     let mut d = MDB.to_vec();
+    d[2 * 4096..3 * 4096].fill(0);
     d.extend_from_slice(b"aUtOeXeC");
     assert!(scan_default(&d).has(K::MacroAutoExec));
     let mut d = MDB.to_vec();
+    d[2 * 4096..3 * 4096].fill(0);
     d.extend("vbaPROJECT".encode_utf16().flat_map(u16::to_le_bytes));
     assert!(scan_default(&d).has(K::VbaMacros));
 }

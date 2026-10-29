@@ -628,10 +628,18 @@ vector!(jet_catalog_page_chain_loops_back, Expect::Active(K::MalformedContainer)
     d
 });
 vector!(jet_database_with_an_autoexec_macro, Expect::Active(K::MacroAutoExec), {
-    let mut d = MDB.to_vec();
-    d.extend_from_slice(b"AutoExec");
-    d
+    arca_container::jet::database_with_objects(1, &[(-32766, "AutoExec")])
 });
+vector!(
+    jet_database_with_an_autoexec_name_in_a_damaged_catalog,
+    Expect::Active(K::MacroAutoExec),
+    {
+        let mut d = MDB.to_vec();
+        d[2 * 4096..3 * 4096].fill(0);
+        d.extend_from_slice(b"AutoExec");
+        d
+    }
+);
 vector!(jet_header_and_nothing_else, Expect::Unverified(K::EncryptedDocument), {
     let mut d = vec![0u8; 3 * 4096];
     d[4..19].copy_from_slice(b"Standard Jet DB");

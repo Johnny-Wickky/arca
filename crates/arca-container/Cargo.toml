@@ -16,5 +16,9 @@ quick-xml.workspace = true
 miniz_oxide.workspace = true
 zeroize.workspace = true
 
+[features]
+# A builder of small Jet databases for the tests of other crates. Never enabled in a product build.
+test-support = []
+
 [lints]
 workspace = true

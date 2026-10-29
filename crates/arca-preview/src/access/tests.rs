@@ -160,6 +160,7 @@ fn tables_become_sheets_and_objects_are_listed() {
                 (SectionKind::Sheet, "Customers"),
                 (SectionKind::Sheet, "Everything"),
                 (SectionKind::Sheet, "Orders"),
+                (SectionKind::Sheet, "Schema"),
             ],
             "{name}"
         );
@@ -177,6 +178,17 @@ fn tables_become_sheets_and_objects_are_listed() {
         assert_eq!(deleted, Some(34), "{name}");
         let Some(Block::Grid(orders)) = p.sections[3].blocks.first() else { panic!("no grid") };
         assert_eq!(orders.rows.len(), 1 + 206, "{name}");
+        // The schema lists every column with its type; the autonumber key is named.
+        let Some(Block::Grid(schema)) = p.sections[4].blocks.first() else { panic!("no grid") };
+        let columns: Vec<_> = schema.rows.iter().map(line).collect();
+        assert!(
+            columns.iter().any(|l| l.starts_with("Customers|ID|AutoNumber|4|")),
+            "{name}: {columns:?}"
+        );
+        assert!(
+            columns.iter().any(|l| l.starts_with("Customers|Name|Short Text|")),
+            "{name}: {columns:?}"
+        );
     }
 }
 
@@ -292,4 +304,32 @@ fn a_small_budget_truncates_the_grid_and_says_so() {
     let p = crate::preview(&fixture("access-2000.mdb"), &policy).unwrap();
     assert!(p.stats.truncated);
     assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Truncated));
+}
+
+#[test]
+fn the_relationship_diagram_names_every_table_and_only_one_page_exists() {
+    use crate::page::Prim;
+    for name in FIXTURES {
+        let data = fixture(name);
+        let page = crate::render_page(&data, 0, &crate::PreviewPolicy::default()).unwrap();
+        assert_eq!(page.pages, 1, "{name}");
+        assert!(page.width > 100.0 && page.width < 20_000.0, "{name}: {}", page.width);
+        assert!(page.height > 100.0 && page.height < 20_000.0, "{name}: {}", page.height);
+        let texts: Vec<&str> = page
+            .prims
+            .iter()
+            .filter_map(
+                |p| if let Prim::Text { text, .. } = p { Some(text.as_str()) } else { None },
+            )
+            .collect();
+        for table in ["Customers", "Orders", "Everything"] {
+            assert!(texts.contains(&table), "{name}: {table} not drawn in {texts:?}");
+        }
+        // The key column of a table is listed in its box.
+        assert!(texts.contains(&"ID"), "{name}: {texts:?}");
+        assert!(
+            crate::render_page(&data, 1, &crate::PreviewPolicy::default()).is_err(),
+            "{name}: there is no second page"
+        );
+    }
 }

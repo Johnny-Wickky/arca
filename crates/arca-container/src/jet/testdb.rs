@@ -567,3 +567,15 @@ pub(crate) fn text(s: &str) -> Cv {
 pub(crate) fn int(v: i64) -> Cv {
     Cv::Int(v)
 }
+
+/// A database whose catalog lists exactly the given objects, `(type, name)`, besides itself.
+/// `version` is the version byte (1 for Access 2000, 3 for 2010). For the tests of other crates.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn database_with_objects(version: u8, objects: &[(i64, &str)]) -> Vec<u8> {
+    let mut db = TestDb::new(version);
+    for (n, (kind, name)) in (10i64..).zip(objects) {
+        db.add_object(n, *kind, name, 0);
+    }
+    db.finish()
+}

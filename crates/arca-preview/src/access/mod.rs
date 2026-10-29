@@ -22,7 +22,10 @@
 //! * databases that are encrypted or password protected are reported, not opened.
 
 mod db;
+mod er;
 mod query;
+
+pub(crate) use er::render_er;
 
 use crate::PreviewError;
 use crate::model::{Block, CellKind, FileFormat, NoticeKind, Paragraph, Run, SectionKind, style};
@@ -88,12 +91,7 @@ pub(crate) fn extract(
         sink.truncated("catalog");
     }
 
-    let user = |o: &Object| {
-        order(o.kind) < OTHER
-            && o.flags & SYSTEM_FLAGS == 0
-            && !o.name.starts_with("MSys")
-            && !o.name.starts_with('~')
-    };
+    let user = is_user_object;
     let mut shown: Vec<&Object> = objects.iter().filter(|o| user(o)).collect();
     shown.sort_by_key(|o| (order(o.kind), o.name.to_lowercase()));
     shown.truncate(MAX_OBJECTS);
@@ -175,6 +173,7 @@ pub(crate) fn extract(
         );
     }
 
+    schema_section(sink, &db, &tables);
     indexes_section(sink, &tables);
     relationships_section(sink, &db, &objects);
     queries_section(sink, &db, &objects, &shown);
@@ -184,6 +183,14 @@ pub(crate) fn extract(
         sink.count(NoticeKind::DeletedRecords, "", deleted_total);
     }
     Ok(())
+}
+
+/// Whether `o` is an object the user made (not a system, hidden-system or temporary one).
+fn is_user_object(o: &Object) -> bool {
+    order(o.kind) < OTHER
+        && o.flags & SYSTEM_FLAGS == 0
+        && !o.name.starts_with("MSys")
+        && !o.name.starts_with('~')
 }
 
 /// The position of the objects that are not listed.
@@ -429,6 +436,120 @@ fn stored_rows(sink: &Sink<'_>, rows: &[QueryRow]) -> crate::model::Grid {
     grid.finish()
 }
 
+/// Most tables whose stored column properties (required, description) are read for the schema.
+const MAX_SCHEMA_TABLES: usize = 512;
+
+/// The name of a column type as Access shows it.
+fn type_name(c: &db::Column) -> &'static str {
+    match c.ty {
+        ty::BOOL => "Yes/No",
+        ty::BYTE => "Byte",
+        ty::INT => "Integer",
+        ty::LONG if c.is_auto_number() => "AutoNumber",
+        ty::LONG => "Long Integer",
+        ty::MONEY => "Currency",
+        ty::FLOAT => "Single",
+        ty::DOUBLE => "Double",
+        ty::DATE => "Date/Time",
+        ty::BINARY => "Binary",
+        ty::TEXT if c.is_hyperlink() => "Hyperlink",
+        ty::TEXT => "Short Text",
+        ty::OLE => "OLE Object",
+        ty::MEMO if c.is_hyperlink() => "Hyperlink",
+        ty::MEMO => "Long Text",
+        ty::GUID => "GUID",
+        ty::NUMERIC => "Decimal",
+        ty::COMPLEX => "Attachment / multi-value",
+        ty::BIGINT => "Large Number",
+        _ => "Other",
+    }
+}
+
+/// The column list of every table: type, size, key, whether a value is required, attributes and
+/// the description Access stores with the column.
+fn schema_section(sink: &mut Sink<'_>, db: &Db<'_>, tables: &[(&Object, Option<Table>)]) {
+    if !tables.iter().any(|(_, t)| t.is_some()) {
+        return;
+    }
+    let Some(sec) = sink.open_section(SectionKind::Sheet, "Schema", false) else { return };
+    let mut grid =
+        GridBuilder::new(sink.policy, sink.items_left()).with_char_budget(sink.chars_left());
+    let mut line = 1u32;
+    let mut ok = grid.row(line, false);
+    for (i, head) in
+        ["Table", "Column", "Type", "Size", "Key", "Required", "Attributes", "Description"]
+            .into_iter()
+            .enumerate()
+    {
+        ok = ok && grid.cell(u32::try_from(i).unwrap_or(0), CellKind::Text, head.to_owned());
+    }
+    'tables: for (n, (o, t)) in tables.iter().enumerate() {
+        let Some(t) = t else { continue };
+        let props = if n < MAX_SCHEMA_TABLES { db.properties_of(&o.name) } else { None };
+        let props = props.unwrap_or_default();
+        let property = |column: &str, name: &str| {
+            props
+                .iter()
+                .find(|p| {
+                    p.map_kind == 1
+                        && p.scope.eq_ignore_ascii_case(column)
+                        && p.name.eq_ignore_ascii_case(name)
+                })
+                .map(|p| &p.value)
+        };
+        let in_index = |column: &str, primary: bool| {
+            t.indexes.iter().any(|ix| {
+                (!primary || ix.kind == IndexKind::Primary)
+                    && ix.columns.iter().any(|(c, _)| c.eq_ignore_ascii_case(column))
+            })
+        };
+        for c in &t.columns {
+            if !ok {
+                break 'tables;
+            }
+            line = line.saturating_add(1);
+            let required = match property(&c.name, "Required") {
+                Some(PropValue::Bool(true)) => "Yes",
+                Some(PropValue::Bool(false)) => "No",
+                _ => "",
+            };
+            let description = match property(&c.name, "Description") {
+                Some(PropValue::Text(s)) => short(s),
+                _ => String::new(),
+            };
+            let mut attributes: Vec<&str> = Vec::new();
+            if c.is_auto_number() {
+                attributes.push("AutoNumber");
+            }
+            if c.is_calculated() {
+                attributes.push("Calculated");
+            }
+            if c.is_hidden() {
+                attributes.push("Hidden");
+            }
+            if in_index(&c.name, false) {
+                attributes.push("Indexed");
+            }
+            let key = if in_index(&c.name, true) { "Primary key" } else { "" };
+            let size = db.column_size(c).map(|s| s.to_string());
+            ok = grid.row(line, false)
+                && grid.cell(0, CellKind::Text, o.name.clone())
+                && grid.cell(1, CellKind::Text, c.name.clone())
+                && grid.cell(2, CellKind::Text, type_name(c).to_owned())
+                && size.is_none_or(|s| grid.cell(3, CellKind::Number, s))
+                && (key.is_empty() || grid.cell(4, CellKind::Text, key.to_owned()))
+                && (required.is_empty() || grid.cell(5, CellKind::Text, required.to_owned()))
+                && (attributes.is_empty() || grid.cell(6, CellKind::Text, attributes.join(", ")))
+                && (description.is_empty() || grid.cell(7, CellKind::Text, description));
+        }
+    }
+    let grid = grid.finish();
+    if grid.truncated || !ok {
+        sink.truncated("schema");
+    }
+    sink.push(sec, Block::Grid(grid));
+}
+
 /// A list of the indexes of all tables: name, kind, columns.
 fn indexes_section(sink: &mut Sink<'_>, tables: &[(&Object, Option<Table>)]) {
     if !tables.iter().any(|(_, t)| t.as_ref().is_some_and(|t| !t.indexes.is_empty())) {
@@ -494,15 +615,28 @@ fn relationship_attributes(grbit: i64) -> String {
     parts.join(", ")
 }
 
-/// A list of the relationships between tables.
-fn relationships_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object]) {
-    let Some(table) = objects
+/// One relationship of `MSysRelationships`: the table that holds the foreign key, the table it
+/// refers to, the `grbit` flags and the column pairs.
+pub(crate) struct Rel {
+    /// The table with the foreign key.
+    pub(crate) table: String,
+    /// The table the key refers to.
+    pub(crate) related: String,
+    /// The `grbit` bits ([`relationship_attributes`]).
+    pub(crate) flags: i64,
+    /// (position, column of `table`, column of `related`).
+    pub(crate) columns: Vec<(i64, String, String)>,
+}
+
+/// The relationships by name, and whether reading stopped before the end.
+pub(crate) fn read_relationships(
+    db: &Db<'_>,
+    objects: &[Object],
+) -> Option<(BTreeMap<String, Rel>, bool)> {
+    let table = objects
         .iter()
         .find(|o| o.kind == kind::TABLE && o.name.eq_ignore_ascii_case("MSysRelationships"))
-        .and_then(|o| db.table(o.page))
-    else {
-        return;
-    };
+        .and_then(|o| db.table(o.page))?;
     let col = |n: &str| table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(n));
     let (Some(c_name), Some(c_obj), Some(c_col), Some(c_ref_obj), Some(c_ref_col)) = (
         col("szRelationship"),
@@ -511,16 +645,9 @@ fn relationships_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object]) {
         col("szReferencedObject"),
         col("szReferencedColumn"),
     ) else {
-        return;
+        return None;
     };
     let (c_flags, c_index) = (col("grbit"), col("icolumn"));
-    // (name, table, related table, flags) with the column pairs by position.
-    struct Rel {
-        table: String,
-        related: String,
-        flags: i64,
-        columns: Vec<(i64, String, String)>,
-    }
     let mut rels: BTreeMap<String, Rel> = BTreeMap::new();
     let mut seen = 0usize;
     let stats = db.rows(&table, |v| {
@@ -547,6 +674,15 @@ fn relationships_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object]) {
         }
         true
     });
+    for rel in rels.values_mut() {
+        rel.columns.sort_by_key(|c| c.0);
+    }
+    Some((rels, stats.stopped))
+}
+
+/// A list of the relationships between tables.
+fn relationships_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object]) {
+    let Some((rels, stopped)) = read_relationships(db, objects) else { return };
     if rels.is_empty() {
         return;
     }
@@ -562,11 +698,10 @@ fn relationships_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object]) {
     {
         ok = ok && grid.cell(u32::try_from(i).unwrap_or(0), CellKind::Text, head.to_owned());
     }
-    for (name, rel) in &mut rels {
+    for (name, rel) in &rels {
         if !ok {
             break;
         }
-        rel.columns.sort_by_key(|c| c.0);
         let own: Vec<&str> = rel.columns.iter().map(|c| c.1.as_str()).collect();
         let other: Vec<&str> = rel.columns.iter().map(|c| c.2.as_str()).collect();
         line = line.saturating_add(1);
@@ -579,7 +714,7 @@ fn relationships_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object]) {
             && grid.cell(5, CellKind::Text, relationship_attributes(rel.flags));
     }
     let grid = grid.finish();
-    if grid.truncated || !ok || stats.stopped {
+    if grid.truncated || !ok || stopped {
         sink.truncated("relationships");
     }
     sink.push(sec, Block::Grid(grid));
