@@ -384,8 +384,13 @@ fn android_reads_the_default_from_the_rules_and_names_the_switch() {
         prefs.contains("ReminderRules.enabledOrDefault("),
         "Prefs.reminders must resolve the stored choice through ReminderRules"
     );
-    let rules = include_str!("../../../../android/app/src/main/java/org/arca/viewer/core/ReminderRules.java");
-    assert!(rules.contains("ENABLED_BY_DEFAULT = true"), "the Java default must equal the Rust one");
+    let rules = include_str!(
+        "../../../../android/app/src/main/java/org/arca/viewer/core/ReminderRules.java"
+    );
+    assert!(
+        rules.contains("ENABLED_BY_DEFAULT = true"),
+        "the Java default must equal the Rust one"
+    );
     let en = include_str!("../../../../android/app/src/main/res/values/strings.xml");
     let ru = include_str!("../../../../android/app/src/main/res/values-ru/strings.xml");
     assert!(en.contains("Weekly support reminders"));

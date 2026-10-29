@@ -336,7 +336,9 @@ pub fn sniff_dimensions(data: &[u8]) -> Option<(u32, u32)> {
                     }
                     _ => {}
                 }
-                at = at.checked_add(2)?.checked_add(usize::try_from(be16(at.checked_add(2)?)?).ok()?)?;
+                at = at
+                    .checked_add(2)?
+                    .checked_add(usize::try_from(be16(at.checked_add(2)?)?).ok()?)?;
             }
             found?
         }

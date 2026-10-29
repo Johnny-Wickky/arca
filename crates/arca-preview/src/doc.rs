@@ -631,7 +631,11 @@ impl Chp {
             0
         } else {
             let pct = u32::from(self.hps) * 100 / u32::from(body.max(8));
-            if (96..=104).contains(&pct) { 0 } else { u16::try_from(pct.clamp(40, 400)).unwrap_or(0) }
+            if (96..=104).contains(&pct) {
+                0
+            } else {
+                u16::try_from(pct.clamp(40, 400)).unwrap_or(0)
+            }
         };
         let shown = |c: u32| if c == AUTO { 0 } else { c };
         RunFmt { fg: shown(self.fg), bg: shown(self.bg), scale }
@@ -863,9 +867,7 @@ fn border_rgb(kind: u8, colour: u32) -> u32 {
 fn parse_pap_into(p: &mut Pap, prl: &[u8]) {
     for (op, arg) in Sprms::new(prl) {
         let b = arg.first().copied().unwrap_or(0);
-        let word = |at: usize| {
-            arg.get(at..at + 2).map_or(0, |s| i16::from_le_bytes([s[0], s[1]]))
-        };
+        let word = |at: usize| arg.get(at..at + 2).map_or(0, |s| i16::from_le_bytes([s[0], s[1]]));
         match op {
             0x4600 => p.istd = u16_le(arg, 0).unwrap_or(p.istd),
             0x2416 => p.in_table = b & 1 == 1,
@@ -894,11 +896,15 @@ fn parse_pap_into(p: &mut Pap, prl: &[u8]) {
             }
             // Left border: Brc80 (line width, type, ico, flags) or Brc (cb, COLORREF, width, type).
             0x6425 => {
-                p.brc_left = border_rgb(arg.get(1).copied().unwrap_or(0), ico_rgb(arg.get(2).copied().unwrap_or(0)));
+                p.brc_left = border_rgb(
+                    arg.get(1).copied().unwrap_or(0),
+                    ico_rgb(arg.get(2).copied().unwrap_or(0)),
+                );
                 p.set |= has::BRC_LEFT;
             }
             0xC64F => {
-                p.brc_left = border_rgb(arg.get(6).copied().unwrap_or(0), arg.get(1..5).map_or(0, colorref));
+                p.brc_left =
+                    border_rgb(arg.get(6).copied().unwrap_or(0), arg.get(1..5).map_or(0, colorref));
                 p.set |= has::BRC_LEFT;
             }
             // Top, bottom and right borders: only whether one is drawn.
@@ -948,7 +954,11 @@ fn read_tabs(p: &mut Pap, arg: &[u8], at: usize) {
             _ => 0,
         };
         if let Some(slot) = out.get_mut(count) {
-            *slot = TabStop { pos: u16::try_from(pt_of(i32::from(pos)).max(0)).unwrap_or(0), kind, leader };
+            *slot = TabStop {
+                pos: u16::try_from(pt_of(i32::from(pos)).max(0)).unwrap_or(0),
+                kind,
+                leader,
+            };
             count += 1;
         }
     }
@@ -973,7 +983,11 @@ fn fkp_pages(table: &[u8], fc: usize, lcb: usize, modern: bool) -> Vec<usize> {
     (0..n.min(MAX_PAGES))
         .filter_map(|i| {
             let at = first.checked_add(i.checked_mul(width)?)?;
-            if modern { u32_le(plc, at).map(|pn| pn & 0x3F_FFFF) } else { u16_le(plc, at).map(u32::from) }
+            if modern {
+                u32_le(plc, at).map(|pn| pn & 0x3F_FFFF)
+            } else {
+                u16_le(plc, at).map(u32::from)
+            }
         })
         .map(usz)
         .collect()
@@ -1080,7 +1094,6 @@ fn collect_pap(
     (RunSet::build(out), true)
 }
 
-
 /// The formatting sprms of Word 6/95 (one-byte opcodes) as the Word 97 sprms they became, so
 /// one reader serves both. `(Word 6 opcode, Word 97 opcode, operand bytes, widened to 16 bits)`.
 const SPRM6: [(u8, u16, usize, bool); 13] = [
@@ -1132,7 +1145,6 @@ fn sprm6_to_97(prl: &[u8]) -> Vec<u8> {
     }
     out
 }
-
 
 /// The page of the first section: `PlcfSed` names where its properties are stored (`Sepx`).
 fn read_page(wd: &[u8], table: &[u8], fib: &Fib) -> crate::model::PageSetup {
@@ -1263,7 +1275,8 @@ fn parse_styles(table: &[u8], fib: &Fib) -> Vec<StyleInfo> {
         // After the fixed part: the name (length, UTF-16 text, terminator), then the UPXs from
         // an even offset.
         let cch = usize::from(u16_le(std, base_len).unwrap_or(0));
-        let mut at = base_len.saturating_add(2).saturating_add(cch.saturating_mul(2)).saturating_add(2);
+        let mut at =
+            base_len.saturating_add(2).saturating_add(cch.saturating_mul(2)).saturating_add(2);
         at = at.saturating_add(at & 1);
         match (w1 & 0xF, w2 & 0xF) {
             // Paragraph style: UpxPapx (its own istd, then the sprms) and UpxChpx.
@@ -1552,11 +1565,8 @@ impl Env {
 
     /// Properties of a span: the paragraph style, a character style, then the span's own.
     fn effective_chp(&self, direct: &Chp, pbase: &Chp) -> Chp {
-        let under = if direct.cstyle != 0 {
-            self.style_chp(direct.cstyle).apply(pbase)
-        } else {
-            *pbase
-        };
+        let under =
+            if direct.cstyle != 0 { self.style_chp(direct.cstyle).apply(pbase) } else { *pbase };
         direct.apply(&under)
     }
 
@@ -2304,10 +2314,8 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         // The first six stories hold the note separators; then come the even, odd and first
         // page headers and footers of the first section.
         let start = fib.story_start(Story::Headers);
-        let cps = fib
-            .pair(pair::PLCF_HDD)
-            .map(|(fc, lcb)| plc_cps(&table, fc, lcb))
-            .unwrap_or_default();
+        let cps =
+            fib.pair(pair::PLCF_HDD).map(|(fc, lcb)| plc_cps(&table, fc, lcb)).unwrap_or_default();
         page.header = running_story(&env, sink, start, &cps, hdd, &[7, 6, 10]);
         page.footer = running_story(&env, sink, start, &cps, hdd, &[9, 8, 11]);
     }
@@ -3044,7 +3052,10 @@ mod tests {
         assert_eq!((quote.runs[0].fg, quote.runs[0].scale), (0xFFCC_0000, 0), "red, body size");
 
         let plain = by("Plain");
-        assert_eq!((plain.align, plain.indent_left, plain.border, plain.runs[0].fg), (Align::Start, 0, 0, 0));
+        assert_eq!(
+            (plain.align, plain.indent_left, plain.border, plain.runs[0].fg),
+            (Align::Start, 0, 0, 0)
+        );
 
         let big = by("BigRed");
         assert_eq!((big.align, big.indent_left), (Align::End, 20), "direct formatting wins");
@@ -3055,19 +3066,29 @@ mod tests {
         assert_eq!(big.runs[1].scale, 0);
 
         let ico = by("Ico");
-        assert_eq!((ico.runs[0].text.as_str(), ico.runs[0].fg, ico.runs[0].bg), ("Ico", 0xFFFF_0000, 0xFFFF_FF00));
+        assert_eq!(
+            (ico.runs[0].text.as_str(), ico.runs[0].fg, ico.runs[0].bg),
+            ("Ico", 0xFFFF_0000, 0xFFFF_FF00)
+        );
 
         let child = by("Child");
         assert_eq!(child.align, Align::End, "its own alignment");
-        assert_eq!((child.indent_left, child.indent_first, child.border), (36, -18, 0xFFFF_0000), "from its base");
+        assert_eq!(
+            (child.indent_left, child.indent_first, child.border),
+            (36, -18, 0xFFFF_0000),
+            "from its base"
+        );
         assert_eq!(child.runs[0].fg, 0xFFCC_0000, "text colour of the base style");
     }
 
     #[test]
     fn a_frame_needs_the_left_border_and_another_side() {
         let stsh = stsh_of(&[std_with(0, 0x0FFF, 1, &[], &[])]);
-        let both = [sp4(0x6425, u32::from_le_bytes([4, 1, 2, 0])), sp4(0x6426, u32::from_le_bytes([4, 1, 2, 0]))]
-            .concat();
+        let both = [
+            sp4(0x6425, u32::from_le_bytes([4, 1, 2, 0])),
+            sp4(0x6426, u32::from_le_bytes([4, 1, 2, 0])),
+        ]
+        .concat();
         let w = W::new()
             .piece("framed\rbar\r", true)
             .extra(pair::STSHF, stsh)
@@ -3078,7 +3099,6 @@ mod tests {
         assert_eq!((paras[0].border, paras[0].boxed), (0xFF00_00FF, true));
         assert_eq!((paras[1].border, paras[1].boxed), (0xFF00_00FF, false));
     }
-
 
     /// Files written by LibreOffice: the style sheet, the list indents and the colours of
     /// real documents are read, not only those of the synthetic ones above.
@@ -3091,12 +3111,14 @@ mod tests {
             .expect("a fixture");
             ok(&data)
         };
-        let paras = |p: &Preview| -> Vec<Paragraph> { paragraphs(body(p)).into_iter().cloned().collect() };
+        let paras =
+            |p: &Preview| -> Vec<Paragraph> { paragraphs(body(p)).into_iter().cloned().collect() };
 
         let report = paras(&load("report.doc"));
         let item = report.iter().find(|q| q.text().starts_with("Первый пункт")).expect("item");
         assert_eq!((item.indent_left, item.indent_first), (35, -14), "list indent and hanging");
-        let nested = report.iter().find(|q| q.text().starts_with("Вложенный пункт A")).expect("item");
+        let nested =
+            report.iter().find(|q| q.text().starts_with("Вложенный пункт A")).expect("item");
         assert_eq!(nested.indent_left, 70);
         assert!(
             report.iter().flat_map(|q| &q.runs).any(|r| r.fg == 0xFF00_0080),
@@ -3115,7 +3137,10 @@ mod tests {
             Block::Para(q) if q.text().starts_with("Текст сноски") => Some(q.clone()),
             _ => None,
         });
-        assert!(notes.into_iter().any(|q| q.runs.iter().any(|r| r.scale > 0 && r.scale < 100)), "footnote text is smaller");
+        assert!(
+            notes.into_iter().any(|q| q.runs.iter().any(|r| r.scale > 0 && r.scale < 100)),
+            "footnote text is smaller"
+        );
     }
 
     #[test]
@@ -3133,10 +3158,11 @@ mod tests {
         assert!(sprm6_to_97(&[85]).is_empty(), "a sprm without its operand is dropped");
     }
 
-
     #[test]
     fn real_documents_say_their_page() {
-        for (name, w, h) in [("report.doc", 595, 841), ("lo-rich.doc", 595, 841), ("nested.doc", 612, 792)] {
+        for (name, w, h) in
+            [("report.doc", 595, 841), ("lo-rich.doc", 595, 841), ("nested.doc", 612, 792)]
+        {
             let data = std::fs::read(
                 concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/").to_owned() + name,
             )
@@ -3144,14 +3170,20 @@ mod tests {
             let p = ok(&data);
             let page = &body(&p).page;
             assert_eq!((page.width, page.height), (w, h), "{name}: the sheet");
-            assert!(page.left > 20 && page.right > 20 && page.top > 20 && page.bottom > 20, "{name}");
+            assert!(
+                page.left > 20 && page.right > 20 && page.top > 20 && page.bottom > 20,
+                "{name}"
+            );
         }
-        let rich = ok(&std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/lo-rich.doc")).expect("a fixture"));
+        let rich = ok(&std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/lo-rich.doc"
+        ))
+        .expect("a fixture"));
         let page = &body(&rich).page;
         assert!(page.header[0].text().contains("ACME Confidential"));
         assert!(page.footer[0].text().contains("Нижний колонтитул"));
     }
-
 
     #[test]
     fn tab_stops_of_a_binary_paragraph_and_its_style() {
@@ -3161,10 +3193,7 @@ mod tests {
         // sprmPChgTabsPapx in a style: one centred stop at 2000 twips.
         let mut styled = 0xC60Du16.to_le_bytes().to_vec();
         styled.extend([4, 1, 0xD0, 0x07, 0x01]);
-        let stsh = stsh_of(&[
-            std_with(0, 0x0FFF, 1, &[], &[]),
-            std_with(1, 0, 1, &styled, &[]),
-        ]);
+        let stsh = stsh_of(&[std_with(0, 0x0FFF, 1, &[], &[]), std_with(1, 0, 1, &styled, &[])]);
         let w = W::new()
             .piece("direct\rstyled\r", true)
             .extra(pair::STSHF, stsh)

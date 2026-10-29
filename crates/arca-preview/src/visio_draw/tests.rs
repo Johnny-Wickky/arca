@@ -500,7 +500,10 @@ fn arrowheads_dashes_and_pictures_are_marked() {
     assert!(r.notes.iter().any(|n| n.contains("arrowheads")));
     assert!(r.notes.iter().any(|n| n.contains("dash patterns")));
     // The line is cut into dashes: many separate strokes, together shorter than the line.
-    let line = paths(&r.page).into_iter().find(|(_, fill, stroke, _)| *fill == 0 && *stroke != 0).expect("the dashes");
+    let line = paths(&r.page)
+        .into_iter()
+        .find(|(_, fill, stroke, _)| *fill == 0 && *stroke != 0)
+        .expect("the dashes");
     let moves = line.0.chunks(3).filter(|c| c[0] == op::MOVE).count();
     assert!(moves >= 8, "{moves} dashes");
     let mut on = 0.0f32;

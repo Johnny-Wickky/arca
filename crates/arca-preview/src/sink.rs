@@ -470,7 +470,13 @@ impl<'p> Sink<'p> {
                 self.discarded.push(self.sections.len());
             }
         }
-        self.sections.push(Section { kind, name, hidden, blocks: Vec::new(), page: crate::model::PageSetup::default() });
+        self.sections.push(Section {
+            kind,
+            name,
+            hidden,
+            blocks: Vec::new(),
+            page: crate::model::PageSetup::default(),
+        });
         Some(SectionId(self.sections.len().saturating_sub(1)))
     }
 

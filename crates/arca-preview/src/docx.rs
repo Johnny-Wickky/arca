@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::PreviewError;
 use crate::model::{
-    Align, Block, Cell, IMAGE_NONE, ImageInfo, PageSetup, ParaFmt, ParaStyle, Paragraph, Row, RunFmt,
-    SectionKind, TabStop, Table, style,
+    Align, Block, Cell, IMAGE_NONE, ImageInfo, PageSetup, ParaFmt, ParaStyle, Paragraph, Row,
+    RunFmt, SectionKind, TabStop, Table, style,
 };
 use crate::opc::Package;
 use crate::sink::{ParaBuilder, SectionId, Sink};
@@ -1208,16 +1208,15 @@ impl Handler for Walker<'_, '_> {
                 } else {
                     (0, String::new(), link.is_some(), IMAGE_NONE)
                 };
-                let info =
-                    ImageInfo {
-                        alt: self.alt.clone(),
-                        media: ext,
-                        bytes,
-                        external,
-                        id: pic_id,
-                        width: self.extent.0,
-                        height: self.extent.1,
-                    };
+                let info = ImageInfo {
+                    alt: self.alt.clone(),
+                    media: ext,
+                    bytes,
+                    external,
+                    id: pic_id,
+                    width: self.extent.0,
+                    height: self.extent.1,
+                };
                 if self.para.is_none() {
                     self.begin_para();
                 }
@@ -2006,10 +2005,7 @@ mod docx_tests {
         let para = paragraphs(sec).into_iter().next().expect("paragraph").clone();
         assert_eq!(
             para.tabs,
-            vec![
-                TabStop { pos: 72, kind: 0, leader: 0 },
-                TabStop { pos: 400, kind: 2, leader: 1 },
-            ],
+            vec![TabStop { pos: 72, kind: 0, leader: 0 }, TabStop { pos: 400, kind: 2, leader: 1 },],
             "a cleared stop is dropped and the rest are in order"
         );
     }

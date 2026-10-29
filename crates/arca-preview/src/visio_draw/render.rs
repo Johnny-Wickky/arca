@@ -283,13 +283,14 @@ fn dash_path(ops: &[f32], pattern: &[f64], width: f32, limit: usize) -> Option<V
     let mut lines: Vec<(Vec<(f32, f32)>, bool)> = Vec::new();
     let mut i = 0usize;
     let mut cur: Vec<(f32, f32)> = Vec::new();
-    let flush = |cur: &mut Vec<(f32, f32)>, closed: bool, lines: &mut Vec<(Vec<(f32, f32)>, bool)>| {
-        if cur.len() > 1 {
-            lines.push((std::mem::take(cur), closed));
-        } else {
-            cur.clear();
-        }
-    };
+    let flush =
+        |cur: &mut Vec<(f32, f32)>, closed: bool, lines: &mut Vec<(Vec<(f32, f32)>, bool)>| {
+            if cur.len() > 1 {
+                lines.push((std::mem::take(cur), closed));
+            } else {
+                cur.clear();
+            }
+        };
     while let Some(&code) = ops.get(i) {
         if code == op::MOVE {
             flush(&mut cur, false, &mut lines);
@@ -324,7 +325,8 @@ fn dash_path(ops: &[f32], pattern: &[f64], width: f32, limit: usize) -> Option<V
     let period: f64 = pattern.iter().sum::<f64>() * unit;
     let mut out: Vec<f32> = Vec::new();
     for (pts, _) in &lines {
-        let length: f64 = pts.windows(2).map(|w| f64::from((w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))).sum();
+        let length: f64 =
+            pts.windows(2).map(|w| f64::from((w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))).sum();
         if period <= 0.0 || length / period * 6.0 * (pattern.len() as f64 / 2.0) > limit as f64 {
             return None;
         }

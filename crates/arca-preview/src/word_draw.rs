@@ -351,10 +351,8 @@ fn push_run(run: &Run, role: ParaStyle, para_size: f32, para_bold: bool, out: &m
 /// Where the next tab stop after `rel` (points from the left edge of the column) is, and what
 /// kind it is: the paragraph's own stops, then a stop every half inch.
 fn next_stop(tabs: &[TabStop], rel: f32) -> (f32, u8, u8) {
-    let own = tabs
-        .iter()
-        .filter(|t| t.kind < 4 && f32::from(t.pos) > rel + 0.5)
-        .min_by_key(|t| t.pos);
+    let own =
+        tabs.iter().filter(|t| t.kind < 4 && f32::from(t.pos) > rel + 0.5).min_by_key(|t| t.pos);
     match own {
         Some(t) => (f32::from(t.pos), t.kind, t.leader),
         None => (((rel / 36.0).floor() + 1.0) * 36.0, 0, 0),
@@ -372,7 +370,11 @@ fn after_tab(rest: &[Piece], decimal: bool) -> f32 {
         if decimal {
             if let Some(at) = p.text.find(['.', ',']) {
                 let part = &p.text[..at];
-                let frac = if p.text.is_empty() { 0.0 } else { part.chars().count() as f32 / p.text.chars().count() as f32 };
+                let frac = if p.text.is_empty() {
+                    0.0
+                } else {
+                    part.chars().count() as f32 / p.text.chars().count() as f32
+                };
                 w += p.width * frac;
                 break;
             }
@@ -390,7 +392,8 @@ fn tab_piece(from: &Piece, width: f32, leader: u8) -> Piece {
         3 => '_',
         _ => ' ',
     };
-    let mut piece = Piece { width, text: String::new(), tab: true, fixed: true, gap: 0.0, ..from.clone() };
+    let mut piece =
+        Piece { width, text: String::new(), tab: true, fixed: true, gap: 0.0, ..from.clone() };
     piece.underline = false;
     piece.strike = false;
     piece.bg = 0;

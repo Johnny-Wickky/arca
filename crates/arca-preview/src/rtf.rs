@@ -431,7 +431,8 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             Dest::Side => {
                 let mut p = self.side_b.take(ParaStyle::HeaderFooter);
                 trim_end(&mut p);
-                let slot = if self.side_footer { &mut self.page.footer } else { &mut self.page.header };
+                let slot =
+                    if self.side_footer { &mut self.page.footer } else { &mut self.page.header };
                 if slot.is_empty() && !p.is_blank() {
                     slot.push(p.clone());
                 }

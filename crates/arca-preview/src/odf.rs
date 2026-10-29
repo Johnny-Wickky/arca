@@ -342,7 +342,8 @@ impl Handler for StyleHandler {
             "page-layout-properties" if !self.page_seen => {
                 self.page_seen = true;
                 self.in_page_props = true;
-                let pt = |name: &str| tag.attr(name).and_then(|v| length_pt(&v)).map_or(0, pt_to_u16);
+                let pt =
+                    |name: &str| tag.attr(name).and_then(|v| length_pt(&v)).map_or(0, pt_to_u16);
                 let (mut w, mut h) = (pt("page-width"), pt("page-height"));
                 if tag.attr("print-orientation").as_deref() == Some("landscape") && w < h {
                     std::mem::swap(&mut w, &mut h);
@@ -357,7 +358,8 @@ impl Handler for StyleHandler {
             "columns" if self.in_page_props => {
                 let n = tag.attr("column-count").and_then(|v| v.parse::<u8>().ok()).unwrap_or(1);
                 self.page.columns = n.clamp(1, 8);
-                self.page.gap = tag.attr("column-gap").and_then(|v| length_pt(&v)).map_or(0, pt_to_u16);
+                self.page.gap =
+                    tag.attr("column-gap").and_then(|v| length_pt(&v)).map_or(0, pt_to_u16);
             }
             "table-properties" => {
                 if let Some((_, _, info)) = self.cur.as_mut() {
@@ -967,7 +969,11 @@ impl<'a, 'p> Odf<'a, 'p> {
             if let Block::Para(p) = block {
                 let key = p.text();
                 if self.hf_main && !key.trim().is_empty() {
-                    let slot = if self.hf_kind == 2 { &mut self.page_footer } else { &mut self.page_header };
+                    let slot = if self.hf_kind == 2 {
+                        &mut self.page_footer
+                    } else {
+                        &mut self.page_header
+                    };
                     if slot.len() < 8 {
                         slot.push(p.clone());
                     }

@@ -605,7 +605,11 @@ fn a_damaged_or_foreign_header_gives_no_size() {
     assert_eq!(sniff_dimensions(&[]), None);
     assert_eq!(sniff_dimensions(b"not a picture at all"), None);
     assert_eq!(sniff_dimensions(&[0xFF, 0xD8, 0xFF]), None, "a JPEG without a frame header");
-    assert_eq!(sniff_dimensions(&[0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xFF, 1]), None, "a segment past the end");
+    assert_eq!(
+        sniff_dimensions(&[0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xFF, 1]),
+        None,
+        "a segment past the end"
+    );
     let mut zero = b"GIF89a".to_vec();
     zero.extend_from_slice(&[0, 0, 5, 0]);
     assert_eq!(sniff_dimensions(&zero), None, "a zero width is no size");
