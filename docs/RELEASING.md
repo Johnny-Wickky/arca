@@ -83,10 +83,10 @@ Environment secrets*. Окружение создайте заранее (имя
 ```sh
 export ARCA_RELEASE=1 ARCA_KEYSTORE=../arca-keys/arca-release.p12 ARCA_KEY_ALIAS=arca
 read -rs ARCA_KEYSTORE_PASS && export ARCA_KEYSTORE_PASS   # пароль вводится, а не записывается
-bash tools/android/build-local.sh                           # гость -> библиотеки -> dist/arca-0.4.5.apk
-apksigner verify --verbose --print-certs dist/arca-0.4.5.apk
+bash tools/android/build-local.sh                           # гость -> библиотеки -> dist/arca-0.5.0.apk
+apksigner verify --verbose --print-certs dist/arca-0.5.0.apk
 # пакет, собранный без ключа (одноразовая подпись), подписывается постоянным ключом отдельно:
-bash tools/android/sign-release.sh dist/arca-0.4.5-throwaway-signed.apk dist/arca-0.4.5.apk
+bash tools/android/sign-release.sh dist/arca-0.5.0-throwaway-signed.apk dist/arca-0.5.0.apk
 ```
 
 Файлы ключей (`.p12`, `.pfx`, `.jks`, `.keystore`, `.key`, `.pem`) запрещены в репозитории:

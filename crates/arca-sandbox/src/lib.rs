@@ -788,7 +788,6 @@ impl Sandbox {
     }
 }
 
-
 /// A guest module that has already been hashed, matched against the pins, parsed, validated and
 /// checked for imports and exports, together with the engine it was compiled for.
 ///

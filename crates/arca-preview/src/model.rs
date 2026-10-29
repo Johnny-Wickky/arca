@@ -649,7 +649,7 @@ mod tests {
         Preview {
             format: FileFormat::Docx,
             sections: vec![Section {
-            page: Default::default(),
+                page: Default::default(),
                 kind: SectionKind::Sheet,
                 name: "Лист1".into(),
                 hidden: true,

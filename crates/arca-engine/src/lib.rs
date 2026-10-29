@@ -28,7 +28,9 @@ pub mod selftest;
 pub mod stats;
 pub mod support;
 
-pub use host::{Engine, EngineConfig, Handle, Host, PreparedGuest, RunOutput, Status, guest_digest_of, op};
+pub use host::{
+    Engine, EngineConfig, Handle, Host, PreparedGuest, RunOutput, Status, guest_digest_of, op,
+};
 pub use render::{Counters, PreviewIndex};
 
 #[cfg(test)]

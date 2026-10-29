@@ -16,7 +16,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use arca_engine::render::{self, lang_from_code};
-use arca_engine::{Engine, EngineConfig, Handle, Host, PreparedGuest, Status, schedule, selftest, stats};
+use arca_engine::{
+    Engine, EngineConfig, Handle, Host, PreparedGuest, Status, schedule, selftest, stats,
+};
 
 mod guest {
     include!(concat!(env!("OUT_DIR"), "/guest.rs"));

@@ -114,7 +114,7 @@ fn sample_preview() -> Preview {
         format: FileFormat::Xlsx,
         sections: vec![
             Section {
-            page: Default::default(),
+                page: Default::default(),
                 kind: SectionKind::Body,
                 name: String::new(),
                 hidden: false,
@@ -134,7 +134,7 @@ fn sample_preview() -> Preview {
                 ],
             },
             Section {
-            page: Default::default(),
+                page: Default::default(),
                 kind: SectionKind::Sheet,
                 name: "Лист \"1\"".into(),
                 hidden: true,
@@ -145,7 +145,7 @@ fn sample_preview() -> Preview {
                 ],
             },
             Section {
-            page: Default::default(),
+                page: Default::default(),
                 kind: SectionKind::Slide,
                 name: String::new(),
                 hidden: false,

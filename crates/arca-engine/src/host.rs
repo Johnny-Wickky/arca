@@ -262,7 +262,10 @@ impl Engine {
     /// worker thread only when a guest runs. `None` if the digest differs or the module is not
     /// acceptable (a run then fails in the usual way).
     #[must_use]
-    pub fn prepare_guest(wasm: impl Into<Arc<[u8]>>, expected_sha256: &str) -> Option<PreparedGuest> {
+    pub fn prepare_guest(
+        wasm: impl Into<Arc<[u8]>>,
+        expected_sha256: &str,
+    ) -> Option<PreparedGuest> {
         let module = GuestModule::new("arca-guest-xray", wasm);
         if module.digest().to_string() != expected_sha256 {
             return None;
