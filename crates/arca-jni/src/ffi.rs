@@ -234,6 +234,11 @@ pub extern "system" fn Java_org_arca_viewer_Native_init(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_arca_viewer_Native_preloadGuest(_env: Env, _class: JObject) -> JInt {
+    guard(FAULT, api::preload_guest)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_arca_viewer_Native_info(env: Env, _class: JObject) -> JObject {
     bytes_result(env, api::info)
 }

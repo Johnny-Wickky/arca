@@ -123,7 +123,13 @@ impl EngineConfig {
 pub struct Engine {
     module: GuestModule,
     config: EngineConfig,
+    prepared: Option<arca_sandbox::PreparedModule>,
 }
+
+/// The guest module hashed, matched against its build-time digest, parsed and validated ahead of
+/// time (see [`Engine::prepare_guest`]).
+#[derive(Debug, Clone)]
+pub struct PreparedGuest(arca_sandbox::PreparedModule);
 
 /// A decoded, typed guest result or the reason there is none.
 pub struct RunOutput {
@@ -220,7 +226,11 @@ impl Engine {
     /// sandbox re-verifies before every run).
     #[must_use]
     pub fn new(wasm: impl Into<Arc<[u8]>>, config: EngineConfig) -> Self {
-        Self { module: GuestModule::new("arca-guest-xray", wasm), config: config.clamped() }
+        Self {
+            module: GuestModule::new("arca-guest-xray", wasm),
+            config: config.clamped(),
+            prepared: None,
+        }
     }
 
     /// As [`Engine::new`], for a module that must be the one the build recorded: `expected_sha256`
@@ -244,6 +254,29 @@ impl Engine {
         } else {
             Err(Status::Fault)
         }
+    }
+
+    /// Checks the guest `wasm` against the build-time digest `expected_sha256` and validates it
+    /// ahead of any run. This is single-threaded computation in memory, which is why it may be
+    /// done in the app zygote before the process of a document is forked; the sandbox starts its
+    /// worker thread only when a guest runs. `None` if the digest differs or the module is not
+    /// acceptable (a run then fails in the usual way).
+    #[must_use]
+    pub fn prepare_guest(wasm: impl Into<Arc<[u8]>>, expected_sha256: &str) -> Option<PreparedGuest> {
+        let module = GuestModule::new("arca-guest-xray", wasm);
+        if module.digest().to_string() != expected_sha256 {
+            return None;
+        }
+        let sandbox = Sandbox::new(SandboxPolicy::default(), [module.pin()]);
+        sandbox.prepare(&module).ok().map(PreparedGuest)
+    }
+
+    /// This engine, running the guest from `prepared` instead of validating it again each run.
+    /// The sandbox still re-hashes the module and uses the prepared copy only if it matches.
+    #[must_use]
+    pub fn with_prepared(mut self, prepared: PreparedGuest) -> Self {
+        self.prepared = Some(prepared.0);
+        self
     }
 
     /// SHA-256 of the guest module, lowercase hex.
@@ -389,7 +422,10 @@ impl Engine {
         }
         let mut policy = self.policy_for(op, document.len(), inflated);
         self.size_for_picture_copy(&mut policy, op, op_flags, document);
-        let sandbox = Sandbox::new(policy, [self.module.pin()]);
+        let mut sandbox = Sandbox::new(policy, [self.module.pin()]);
+        if let Some(prepared) = &self.prepared {
+            sandbox = sandbox.with_prepared(prepared.clone());
+        }
         let options = RunOptions::new().cancel_token(cancel.clone());
         // The prefix carries the password: wiped when this call returns.
         let Some(prefix) = request::prefix(op, op_flags, password).map(Zeroizing::new) else {
