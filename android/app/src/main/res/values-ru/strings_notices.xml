@@ -89,6 +89,7 @@
     <string name="notice_d_truncated_repeated_cells">повторяющиеся ячейки сверх предела</string>
     <string name="notice_d_truncated_repeated_rows">повторяющиеся строки сверх предела</string>
     <string name="notice_d_truncated_runs_per_paragraph">фрагменты форматированного текста в абзаце сверх предела</string>
+    <string name="notice_d_truncated_schema">столбцы таблиц сверх предела</string>
     <string name="notice_d_truncated_section_name">слишком длинное название раздела</string>
     <string name="notice_d_truncated_sections">разделы сверх предела</string>
     <string name="notice_d_truncated_shape_data_texts_and_connections">данные фигур, тексты и связи сверх предела</string>
@@ -103,6 +104,7 @@
     <string name="notice_d_unsupported_attachments_are_listed_not_opened">открытие вложений (они только перечислены)</string>
     <string name="notice_d_unsupported_charts">диаграммы</string>
     <string name="notice_d_unsupported_charts_smartart_and_embedded_objects">диаграммы, SmartArt и встроенные объекты</string>
+    <string name="notice_d_unsupported_smartart_shown_as_a_text_list">диаграммы SmartArt показаны списком их текста</string>
     <string name="notice_d_unsupported_drawings_and_charts">рисунки и диаграммы</string>
     <string name="notice_d_unsupported_drawings_and_shapes">рисунки и фигуры</string>
     <string name="notice_d_unsupported_elements_in_a_foreign_namespace_were_ignored">элементы из чужого пространства имён XML (они пропущены)</string>

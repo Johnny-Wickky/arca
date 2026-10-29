@@ -790,7 +790,7 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Res
     let mut catalog_complete = false;
     // Databases are written in whole pages: a file that ends inside one was cut off.
     let page = if matches!(fmt, FileFormat::AccessJet3) { 2048 } else { 4096 };
-    if data.len() % page != 0 {
+    if !data.len().is_multiple_of(page) {
         ctx.report.add(
             ThreatKind::MalformedContainer,
             location,

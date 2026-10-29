@@ -21,8 +21,18 @@ mod complex;
 mod props;
 #[cfg(any(test, feature = "test-support"))]
 mod testdb;
+
+/// A database whose catalog lists exactly the given objects, `(type, name)`, besides itself.
+/// `version` is the version byte (1 for Access 2000, 3 for 2010). For the tests of other crates.
 #[cfg(feature = "test-support")]
-pub use testdb::database_with_objects;
+#[must_use]
+pub fn database_with_objects(version: u8, objects: &[(i64, &str)]) -> Vec<u8> {
+    let mut db = testdb::TestDb::new(version);
+    for (n, (kind, name)) in (10i64..).zip(objects) {
+        db.add_object(n, *kind, name, 0);
+    }
+    db.finish()
+}
 #[cfg(test)]
 mod values_tests;
 

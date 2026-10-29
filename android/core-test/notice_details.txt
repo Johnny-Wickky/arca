@@ -74,6 +74,7 @@ Truncated|relationships
 Truncated|repeated cells
 Truncated|repeated rows
 Truncated|runs per paragraph
+Truncated|schema
 Truncated|section name
 Truncated|sections
 Truncated|shape data, texts and connections
@@ -86,6 +87,7 @@ Unsupported|access: the database names a {} ({}); it is never opened or run
 Unsupported|attachments are listed, not opened
 Unsupported|charts
 Unsupported|charts, SmartArt and embedded objects
+Unsupported|SmartArt shown as a text list
 Unsupported|drawings and charts
 Unsupported|drawings and shapes
 Unsupported|elements in a foreign namespace were ignored
