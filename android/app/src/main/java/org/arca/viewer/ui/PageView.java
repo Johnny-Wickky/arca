@@ -24,6 +24,8 @@ final class PageView extends View {
     private final Paint sheet = new Paint();
     private final int placeholder;
     private final int placeholderText;
+    /** Obsidian Vault: the lightness of the sheet and of everything on it is turned around. */
+    private final boolean invert;
     /** Largest zoom of the page, and tallest view it may make (a bitmap-backed canvas must stay sane). */
     private static final float MAX_SCALE = 8f;
     private static final int MAX_HEIGHT_PX = 32768;
@@ -36,9 +38,14 @@ final class PageView extends View {
         this.page = page;
         this.placeholder = placeholder;
         this.placeholderText = placeholderText;
-        sheet.setColor(0xFFFFFFFF);
+        this.invert = Theme.invertSheet(context);
+        sheet.setColor(tone(0xFFFFFFFF));
         setContentDescription(null);
         setClickable(true);
+    }
+
+    private int tone(int argb) {
+        return invert ? Theme.invertTone(argb) : argb;
     }
 
     /**
@@ -173,12 +180,12 @@ final class PageView extends View {
         }
         if ((p.fill >>> 24) != 0) {
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(p.fill);
+            paint.setColor(tone(p.fill));
             c.drawPath(path, paint);
         }
         if ((p.stroke >>> 24) != 0) {
             paint.setStyle(Paint.Style.STROKE);
-            paint.setColor(p.stroke);
+            paint.setColor(tone(p.stroke));
             // A hairline (width 0) is drawn one device pixel wide.
             paint.setStrokeWidth(p.width > 0f ? p.width : 1f / scale);
             c.drawPath(path, paint);
@@ -197,7 +204,7 @@ final class PageView extends View {
         paint.setStyle(Paint.Style.FILL);
         paint.setTypeface(Typeface.create(family, style));
         paint.setTextSize(p.size);
-        paint.setColor(p.color);
+        paint.setColor(tone(p.color));
         paint.setTextScaleX(1f);
         // The document says how wide the run is; fit the substitute font to it.
         float natural = paint.measureText(p.text);

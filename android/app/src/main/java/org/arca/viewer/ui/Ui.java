@@ -64,7 +64,18 @@ public final class Ui {
     }
 
     public int color(int res) {
-        return context.getColor(res);
+        return Theme.color(context, res);
+    }
+
+    /** Whether the translucent "liquid glass" panels are on. */
+    public boolean glass() {
+        return Theme.glass(context);
+    }
+
+    private boolean nightMode() {
+        return (context.getResources().getConfiguration().uiMode
+            & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+            == android.content.res.Configuration.UI_MODE_NIGHT_YES;
     }
 
     public String str(int res) {
@@ -209,7 +220,11 @@ public final class Ui {
     /** A rounded card with an outline, padded. */
     public LinearLayout card() {
         LinearLayout l = vbox();
-        l.setBackground(rounded(color(R.color.arca_surface), color(R.color.arca_outline), 16));
+        if (glass()) {
+            l.setBackground(Theme.glassPanel(context, color(R.color.arca_surface), nightMode(), dp(22), dp(1)));
+        } else {
+            l.setBackground(rounded(color(R.color.arca_surface), color(R.color.arca_outline), 16));
+        }
         int p = dp(16);
         l.setPadding(p, p, p, p);
         return l;
@@ -218,7 +233,11 @@ public final class Ui {
     /** A card with custom fill and no outline (verdict banners). */
     public LinearLayout banner(int fillColorRes) {
         LinearLayout l = vbox();
-        l.setBackground(rounded(color(fillColorRes), 0, 20));
+        if (glass()) {
+            l.setBackground(Theme.glassPanel(context, color(fillColorRes), nightMode(), dp(24), dp(1)));
+        } else {
+            l.setBackground(rounded(color(fillColorRes), 0, 20));
+        }
         int p = dp(16);
         l.setPadding(p, p, p, p);
         return l;

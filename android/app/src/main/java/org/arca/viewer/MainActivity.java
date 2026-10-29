@@ -72,7 +72,13 @@ public final class MainActivity extends Activity implements Session.Listener, En
         Compat.noAutofill(this);
 
         root = new FrameLayout(this);
-        root.setBackgroundColor(getColor(R.color.arca_bg));
+        if (Prefs.glass(this)) {
+            root.setBackground(org.arca.viewer.ui.Theme.glassBackdrop(
+                org.arca.viewer.ui.Theme.color(this, R.color.arca_bg),
+                org.arca.viewer.ui.Theme.color(this, R.color.arca_primary)));
+        } else {
+            root.setBackgroundColor(org.arca.viewer.ui.Theme.color(this, R.color.arca_bg));
+        }
         root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
