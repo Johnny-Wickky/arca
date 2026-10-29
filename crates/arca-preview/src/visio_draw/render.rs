@@ -279,83 +279,89 @@ fn dash_lengths(pattern: f64) -> Option<&'static [f64]> {
 /// Cuts the stroked polylines of `ops` into dashes. Curves are flattened first. Returns `None`
 /// where the result would be too big (the line is then drawn solid).
 fn dash_path(ops: &[f32], pattern: &[f64], width: f32, limit: usize) -> Option<Vec<f32>> {
+    type Pt = (f64, f64);
     // Flatten into polylines.
-    let mut lines: Vec<(Vec<(f32, f32)>, bool)> = Vec::new();
+    let mut lines: Vec<Vec<Pt>> = Vec::new();
+    let mut cur: Vec<Pt> = Vec::new();
     let mut i = 0usize;
-    let mut cur: Vec<(f32, f32)> = Vec::new();
-    let flush =
-        |cur: &mut Vec<(f32, f32)>, closed: bool, lines: &mut Vec<(Vec<(f32, f32)>, bool)>| {
-            if cur.len() > 1 {
-                lines.push((std::mem::take(cur), closed));
-            } else {
-                cur.clear();
-            }
-        };
+    let num = |k: usize| ops.get(k).map(|v| f64::from(*v));
+    let flush = |cur: &mut Vec<Pt>, lines: &mut Vec<Vec<Pt>>| {
+        if cur.len() > 1 {
+            lines.push(std::mem::take(cur));
+        } else {
+            cur.clear();
+        }
+    };
     while let Some(&code) = ops.get(i) {
         if code == op::MOVE {
-            flush(&mut cur, false, &mut lines);
-            cur.push((*ops.get(i + 1)?, *ops.get(i + 2)?));
+            flush(&mut cur, &mut lines);
+            cur.push((num(i + 1)?, num(i + 2)?));
             i += 3;
         } else if code == op::LINE {
-            cur.push((*ops.get(i + 1)?, *ops.get(i + 2)?));
+            cur.push((num(i + 1)?, num(i + 2)?));
             i += 3;
         } else if code == op::CURVE {
             let (x0, y0) = *cur.last()?;
-            let p: Vec<f32> = (1..=6).map(|k| ops.get(i + k).copied()).collect::<Option<_>>()?;
+            let (c1, c2, e) = (
+                (num(i + 1)?, num(i + 2)?),
+                (num(i + 3)?, num(i + 4)?),
+                (num(i + 5)?, num(i + 6)?),
+            );
             for s in 1..=12u8 {
-                let t = f32::from(s) / 12.0;
+                let t = f64::from(s) / 12.0;
                 let u = 1.0 - t;
-                let b = |a: f32, b1: f32, c: f32, d: f32| {
+                let b = |a: f64, b1: f64, c: f64, d: f64| {
                     u * u * u * a + 3.0 * u * u * t * b1 + 3.0 * u * t * t * c + t * t * t * d
                 };
-                cur.push((b(x0, p[0], p[2], p[4]), b(y0, p[1], p[3], p[5])));
+                cur.push((b(x0, c1.0, c2.0, e.0), b(y0, c1.1, c2.1, e.1)));
             }
             i += 7;
         } else {
+            // CLOSE: back to where the subpath began.
             if let Some(&first) = cur.first() {
                 cur.push(first);
             }
-            flush(&mut cur, true, &mut lines);
+            flush(&mut cur, &mut lines);
             i += 1;
         }
     }
-    flush(&mut cur, false, &mut lines);
+    flush(&mut cur, &mut lines);
 
     let unit = f64::from(width.max(0.75));
     let period: f64 = pattern.iter().sum::<f64>() * unit;
+    if period <= 0.0 {
+        return None;
+    }
     let mut out: Vec<f32> = Vec::new();
-    for (pts, _) in &lines {
-        let length: f64 =
-            pts.windows(2).map(|w| f64::from((w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))).sum();
-        if period <= 0.0 || length / period * 6.0 * (pattern.len() as f64 / 2.0) > limit as f64 {
+    for pts in &lines {
+        let length: f64 = pts.windows(2).map(|w| segment(w).2).sum();
+        if length / period * 6.0 * (pattern.len() as f64 / 2.0) > limit as f64 {
             return None;
         }
         let (mut k, mut left, mut on) = (0usize, pattern.first().copied()? * unit, true);
         let mut open = false;
         for w in pts.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            let seg = f64::from((b.0 - a.0).hypot(b.1 - a.1));
+            let (a, (dx, dy), seg) = segment(w);
             if seg < 1e-6 {
                 continue;
             }
-            let (dx, dy) = (f64::from(b.0 - a.0) / seg, f64::from(b.1 - a.1) / seg);
             let mut at = 0.0f64;
             while at < seg {
                 let step = left.min(seg - at);
-                let from = (f64::from(a.0) + dx * at, f64::from(a.1) + dy * at);
+                let from = (a.0 + dx * at, a.1 + dy * at);
                 let to = (from.0 + dx * step, from.1 + dy * step);
                 if on {
                     if !open {
-                        out.extend([op::MOVE, from.0 as f32, from.1 as f32]);
+                        out.extend([op::MOVE, f32c(from.0), f32c(from.1)]);
                         open = true;
                     }
-                    out.extend([op::LINE, to.0 as f32, to.1 as f32]);
+                    out.extend([op::LINE, f32c(to.0), f32c(to.1)]);
                 }
                 at += step;
                 left -= step;
                 if left <= 1e-9 {
                     k = (k + 1) % pattern.len();
-                    left = pattern[k] * unit;
+                    left = pattern.get(k).copied()? * unit;
                     on = k % 2 == 0;
                     open = false;
                 }
@@ -366,6 +372,17 @@ fn dash_path(ops: &[f32], pattern: &[f64], width: f32, limit: usize) -> Option<V
         }
     }
     Some(out)
+}
+
+/// The start, unit direction and length of the segment between the first two points of `w`.
+fn segment(w: &[(f64, f64)]) -> ((f64, f64), (f64, f64), f64) {
+    let (Some(&a), Some(&b)) = (w.first(), w.get(1)) else { return ((0.0, 0.0), (0.0, 0.0), 0.0) };
+    let len = (b.0 - a.0).hypot(b.1 - a.1);
+    if len < 1e-12 {
+        (a, (0.0, 0.0), 0.0)
+    } else {
+        (a, ((b.0 - a.0) / len, (b.1 - a.1) / len), len)
+    }
 }
 
 // ---- the recorder -------------------------------------------------------------------------------

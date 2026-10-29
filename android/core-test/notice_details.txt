@@ -34,7 +34,7 @@ Skipped|content.xml (styles)
 Skipped|curves of a degree above 8 are drawn with degree 8
 Skipped|damaged PDF stream
 Skipped|damaged Word text
-Skipped|dashed and dotted lines are drawn solid
+Skipped|dash patterns are approximated by regular dashes
 Skipped|fill patterns and gradients are drawn as flat colours
 Skipped|macro text
 Skipped|object stream

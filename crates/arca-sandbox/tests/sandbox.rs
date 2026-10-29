@@ -83,8 +83,8 @@ fn traps_are_contained() {
 
 #[test]
 fn abi_version_is_checked() {
-    let (sb, m) = pinned(guest(RunBody::Echo, 7, None, 2));
-    assert_eq!(sb.run(&m, b"x").unwrap_err(), SandboxError::AbiMismatch(7));
+    let (sb, m) = pinned(guest(RunBody::Echo, ABI + 1, None, 2));
+    assert_eq!(sb.run(&m, b"x").unwrap_err(), SandboxError::AbiMismatch(ABI + 1));
 }
 
 #[test]

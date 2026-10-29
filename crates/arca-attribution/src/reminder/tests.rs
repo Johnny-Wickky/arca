@@ -357,7 +357,7 @@ fn the_privacy_note_states_the_zero_telemetry_promise() {
 
 #[test]
 fn the_support_card_is_on_until_the_person_turns_it_off() {
-    assert!(ENABLED_BY_DEFAULT);
+    const { assert!(ENABLED_BY_DEFAULT) };
     assert!(enabled_or_default(None), "no stored choice: the card is on");
     assert!(enabled_or_default(Some(true)));
     assert!(!enabled_or_default(Some(false)), "an explicit off is kept");

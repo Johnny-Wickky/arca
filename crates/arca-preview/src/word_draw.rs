@@ -367,17 +367,11 @@ fn after_tab(rest: &[Piece], decimal: bool) -> f32 {
         if p.tab || p.br {
             break;
         }
-        if decimal {
-            if let Some(at) = p.text.find(['.', ',']) {
-                let part = &p.text[..at];
-                let frac = if p.text.is_empty() {
-                    0.0
-                } else {
-                    part.chars().count() as f32 / p.text.chars().count() as f32
-                };
-                w += p.width * frac;
-                break;
-            }
+        if decimal && let Some(at) = p.text.find(['.', ',']) {
+            let before = p.text.get(..at).map_or(0, |s| s.chars().count());
+            let all = p.text.chars().count().max(1);
+            w += p.width * before as f32 / all as f32;
+            break;
         }
         w += p.width;
     }
@@ -401,9 +395,9 @@ fn tab_piece(from: &Piece, width: f32, leader: u8) -> Piece {
         let rs = RunStyle::plain(f64::from(from.size), from.color);
         let unit = text_width(&ch.to_string(), &rs) as f32;
         if unit > 0.1 {
-            let n = (width / unit).floor();
+            let n = (width / unit).floor().clamp(0.0, 2_000.0);
             if n >= 1.0 {
-                piece.text = ch.to_string().repeat(n as usize);
+                piece.text = ch.to_string().repeat(usize::try_from(n as i32).unwrap_or(0));
                 piece.gap = width - n * unit;
             }
         }

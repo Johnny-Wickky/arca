@@ -45,7 +45,7 @@
     <string name="notice_d_skipped_curves_of_a_degree_above_8_are_drawn_with_degree_8">кривые степени выше 8 показаны со степенью 8</string>
     <string name="notice_d_skipped_damaged_pdf_stream">повреждённый поток PDF</string>
     <string name="notice_d_skipped_damaged_word_text">повреждённый текст Word</string>
-    <string name="notice_d_skipped_dashed_and_dotted_lines_are_drawn_solid">пунктирные линии показаны сплошными</string>
+    <string name="notice_d_skipped_dash_patterns_are_approximated_by_regular_dashes">рисунок штриха приблизителен: штрихи и точки показаны равными отрезками</string>
     <string name="notice_d_skipped_fill_patterns_and_gradients_are_drawn_as_flat_colours">узорные и градиентные заливки показаны плоским цветом</string>
     <string name="notice_d_skipped_macro_text">текст макросов (макросы никогда не запускаются)</string>
     <string name="notice_d_skipped_n_slide_part_s_that_the_presentation_does_not_list">части слайдов, которых нет в списке презентации: %1$s</string>
