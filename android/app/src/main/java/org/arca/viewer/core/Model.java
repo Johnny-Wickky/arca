@@ -493,6 +493,9 @@ public final class Model {
         public boolean external;
         /** What to ask the engine for to see the picture, or -1. */
         public int id = -1;
+        /** Size in the document in points, 0 where unknown. */
+        public int width;
+        public int height;
 
         @Override
         public String kind() {
@@ -604,6 +607,8 @@ public final class Model {
                     i.bytes = Json.num(m, "bytes");
                     i.external = Json.bool(m, "ext");
                     i.id = m.containsKey("id") ? Json.integer(m, "id") : -1;
+                    i.width = (int) Math.max(0L, Math.min(5000L, Json.num(m, "w")));
+                    i.height = (int) Math.max(0L, Math.min(5000L, Json.num(m, "h")));
                     out.add(i);
                     break;
                 }

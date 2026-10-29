@@ -733,6 +733,8 @@ struct Walker<'a, 'p> {
     skip_note: u32,
     depth_note: u32,
     drawing: u32,
+    /// Size of the drawing being read, in points (`wp:extent`), `(0, 0)` if not given.
+    extent: (u16, u16),
     alt: String,
 }
 
@@ -778,6 +780,7 @@ impl<'a, 'p> Walker<'a, 'p> {
             skip_note: 0,
             depth_note: 0,
             drawing: 0,
+            extent: (0, 0),
             alt: String::new(),
         }
     }
@@ -1135,6 +1138,14 @@ impl Handler for Walker<'_, '_> {
                 self.drawing += 1;
                 self.alt.clear();
             }
+            "extent" if self.drawing > 0 => {
+                let pt = |name: &str| {
+                    tag.attr(name)
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .map_or(0, |emu| u16::try_from((emu / 12_700).clamp(0, 5_000)).unwrap_or(0))
+                };
+                self.extent = (pt("cx"), pt("cy"));
+            }
             "docPr" | "cNvPr" if self.drawing > 0 => {
                 let d = tag
                     .attr("descr")
@@ -1161,7 +1172,15 @@ impl Handler for Walker<'_, '_> {
                     (0, String::new(), link.is_some(), IMAGE_NONE)
                 };
                 let info =
-                    ImageInfo { alt: self.alt.clone(), media: ext, bytes, external, id: pic_id };
+                    ImageInfo {
+                        alt: self.alt.clone(),
+                        media: ext,
+                        bytes,
+                        external,
+                        id: pic_id,
+                        width: self.extent.0,
+                        height: self.extent.1,
+                    };
                 if self.para.is_none() {
                     self.begin_para();
                 }
@@ -1227,7 +1246,12 @@ impl Handler for Walker<'_, '_> {
                 self.finish_para();
                 self.para = self.saved.pop().flatten();
             }
-            "drawing" | "pict" | "object" => self.drawing = self.drawing.saturating_sub(1),
+            "drawing" | "pict" | "object" => {
+                self.drawing = self.drawing.saturating_sub(1);
+                if self.drawing == 0 {
+                    self.extent = (0, 0);
+                }
+            }
             "tc" => {
                 if let Some(t) = self.tables.last_mut()
                     && let Some(cell) = t.cell.take()

@@ -1317,7 +1317,7 @@ impl<'a, 'p> Odf<'a, 'p> {
             String::new()
         };
         let id = if external { IMAGE_NONE } else { self.pkg.entry_id(path).unwrap_or(IMAGE_NONE) };
-        ImageInfo { alt: String::new(), media, bytes, external, id }
+        ImageInfo { alt: String::new(), media, bytes, external, id, ..ImageInfo::default() }
     }
 }
 

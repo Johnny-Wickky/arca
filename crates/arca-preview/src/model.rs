@@ -229,6 +229,8 @@ pub struct Paragraph {
     pub border: u32,
     /// The border goes all round.
     pub boxed: bool,
+    /// Tab stops, left to right; empty for the default ones every half inch.
+    pub tabs: Vec<TabStop>,
 }
 wire_struct!(Paragraph {
     style,
@@ -240,7 +242,8 @@ wire_struct!(Paragraph {
     indent_first,
     line_spacing,
     border,
-    boxed
+    boxed,
+    tabs
 });
 
 impl Paragraph {
@@ -382,12 +385,24 @@ pub struct ImageInfo {
     /// What to ask the sandbox for to see the picture ([`IMAGE_NONE`] if it cannot be shown).
     /// The meaning belongs to the document format and is only ever interpreted by the guest.
     pub id: u32,
+    /// Width in the document in points, `0` where the document does not say.
+    pub width: u16,
+    /// Height in the document in points, `0` where the document does not say.
+    pub height: u16,
 }
-wire_struct!(ImageInfo { alt, media, bytes, external, id });
+wire_struct!(ImageInfo { alt, media, bytes, external, id, width, height });
 
 impl Default for ImageInfo {
     fn default() -> Self {
-        Self { alt: String::new(), media: String::new(), bytes: 0, external: false, id: IMAGE_NONE }
+        Self {
+            alt: String::new(),
+            media: String::new(),
+            bytes: 0,
+            external: false,
+            id: IMAGE_NONE,
+            width: 0,
+            height: 0,
+        }
     }
 }
 
@@ -464,6 +479,54 @@ wire_enum!(SectionKind {
     Body = 0, Sheet = 1, Slide = 2, Page = 3, Comments = 4, Notes = 5, Headers = 6,
 });
 
+/// A tab stop of a paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TabStop {
+    /// Distance from the left edge of the text area, in points.
+    pub pos: u16,
+    /// `0` left, `1` centre, `2` right, `3` decimal.
+    pub kind: u8,
+    /// `0` none, `1` dots, `2` hyphens, `3` underscores.
+    pub leader: u8,
+}
+wire_struct!(TabStop { pos, kind, leader });
+
+/// The page a text document is set on: size, margins, columns, running header and footer.
+/// Every number is `0` where the document does not say (the viewer then uses A4 and its own
+/// margins).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PageSetup {
+    /// Sheet width in points, already turned for landscape.
+    pub width: u16,
+    /// Sheet height in points.
+    pub height: u16,
+    /// Left margin in points.
+    pub left: u16,
+    /// Right margin in points.
+    pub right: u16,
+    /// Top margin in points.
+    pub top: u16,
+    /// Bottom margin in points.
+    pub bottom: u16,
+    /// Number of text columns (`0` or `1`: one).
+    pub columns: u8,
+    /// Gap between columns in points.
+    pub gap: u16,
+    /// Running header (default pages), laid out on every page.
+    pub header: Vec<Paragraph>,
+    /// Running footer (default pages), laid out on every page.
+    pub footer: Vec<Paragraph>,
+}
+wire_struct!(PageSetup { width, height, left, right, top, bottom, columns, gap, header, footer });
+
+impl PageSetup {
+    /// `true` where the document said nothing about its page.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A sheet, slide, page or the body of a document.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Section {
@@ -475,8 +538,10 @@ pub struct Section {
     pub hidden: bool,
     /// Content.
     pub blocks: Vec<Block>,
+    /// The page of a text document's body (empty for everything else).
+    pub page: PageSetup,
 }
-wire_struct!(Section { kind, name, hidden, blocks });
+wire_struct!(Section { kind, name, hidden, blocks, page });
 
 /// Why a [`Notice`] was raised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,6 +649,7 @@ mod tests {
         Preview {
             format: FileFormat::Docx,
             sections: vec![Section {
+            page: Default::default(),
                 kind: SectionKind::Sheet,
                 name: "Лист1".into(),
                 hidden: true,
@@ -614,6 +680,8 @@ mod tests {
                         bytes: 12,
                         external: true,
                         id: 7,
+                        width: 120,
+                        height: 80,
                     }),
                     Block::Rule,
                 ],

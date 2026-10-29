@@ -1371,6 +1371,10 @@ public final class PreviewScreen extends Screen {
         iv.setAdjustViewBounds(true);
         iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
         iv.setMaxHeight(ui.dp(460));
+        if (img.width > 0) {
+            // Never larger than the document drew it (a 60 pt logo is not stretched to the column).
+            iv.setMaxWidth(ui.dp(img.width * 1.6f));
+        }
         iv.setContentDescription(ui.str(R.string.image_description, img.alt.isEmpty() ? "" : Fmt.clip(Fmt.safe(img.alt), 80)));
         iv.setOnClickListener(new View.OnClickListener() {
             @Override

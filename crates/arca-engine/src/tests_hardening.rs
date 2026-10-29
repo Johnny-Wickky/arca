@@ -347,6 +347,7 @@ fn grid_preview(cols: u32, grids: usize, cell_col: u32, text: &str) -> Preview {
     Preview {
         format: FileFormat::Xlsx,
         sections: vec![Section {
+            page: Default::default(),
             kind: SectionKind::Sheet,
             name: "S".into(),
             hidden: false,

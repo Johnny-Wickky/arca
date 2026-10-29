@@ -82,9 +82,46 @@ pub(crate) fn extract_file(
         bytes: u64::try_from(data.len()).unwrap_or(u64::MAX),
         external: false,
         id: 0,
+        width: u16::try_from(facts.width).unwrap_or(u16::MAX),
+        height: u16::try_from(facts.height).unwrap_or(u16::MAX),
     };
     sink.image(sec, info);
     Ok(())
+}
+
+/// The pixel sizes the headers of pictures `ids` state, as `(id, width, height)`; a picture
+/// that is missing, is not a PNG, JPEG, GIF or BMP, or has a damaged header is left out. Nothing
+/// is decoded: only the first bytes of each picture are looked at ([`arca_image::sniff_dimensions`]).
+pub(crate) fn natural_sizes(
+    data: &[u8],
+    ids: &[u32],
+    policy: &PreviewPolicy,
+) -> Vec<(u32, u32, u32)> {
+    let mut out = Vec::new();
+    let Ok(doc) = detect::open(data, policy) else { return out };
+    match doc {
+        Doc::Rtf(file) => {
+            for &id in ids {
+                if let Some(bytes) =
+                    crate::rtf::picture_bytes(file, usize::try_from(id).unwrap_or(usize::MAX))
+                    && let Some((w, h)) = arca_image::sniff_dimensions(&bytes)
+                {
+                    out.push((id, w, h));
+                }
+            }
+        }
+        Doc::Opc { mut pkg, .. } | Doc::Odf { mut pkg, .. } => {
+            for &id in ids {
+                if let Ok(Some((_, bytes))) = pkg.read_by_id(id)
+                    && let Some((w, h)) = arca_image::sniff_dimensions(&bytes)
+                {
+                    out.push((id, w, h));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// Decodes picture `id` of the document `data`.
