@@ -2,6 +2,8 @@
 //! saved queries of every kind, relationships, indexes, complex and calculated columns and the
 //! database properties — structures the small fixtures written by Jackcess do not contain.
 
+#![allow(clippy::string_slice, reason = "test code with ASCII text")]
+
 #[path = "../../../arca-container/src/jet/testdb.rs"]
 mod testdb;
 

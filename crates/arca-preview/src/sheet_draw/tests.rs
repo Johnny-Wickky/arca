@@ -1048,3 +1048,19 @@ fn damaged_workbooks_give_errors_or_pages_never_panics() {
         }
     }
 }
+
+#[test]
+fn the_page_entry_point_draws_workbook_pages_in_sheet_order() {
+    let rows = format!("<row r=\"1\">{}</row>", text_cell("A1", 0, "Hello"));
+    let second = format!("<row r=\"1\">{}</row>", text_cell("A1", 0, "World"));
+    let data = xlsx_book(&[("One", &rows, false), ("Two", &second, false)], "", None);
+    let policy = plain();
+    let first = crate::render_page(&data, 0, &policy).unwrap();
+    assert!(texts(&first).iter().any(|t| t == "Hello"));
+    assert_eq!(first.index, 0);
+    assert_eq!(first.pages, 2);
+    let last = crate::render_page(&data, 1, &policy).unwrap();
+    assert!(texts(&last).iter().any(|t| t == "World"));
+    assert_eq!(last.index, 1);
+    assert!(crate::render_page(&data, 2, &policy).is_err());
+}

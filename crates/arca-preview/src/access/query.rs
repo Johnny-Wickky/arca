@@ -69,7 +69,8 @@ pub(super) struct QueryRow {
     pub(super) extra: Option<i64>,
     pub(super) name1: Option<String>,
     pub(super) name2: Option<String>,
-    /// The sort key of the row (`Order`).
+    /// The sort key of the row (`Order`); the rows are already read in this order.
+    #[allow(dead_code)]
     pub(super) order: Vec<u8>,
 }
 
@@ -194,7 +195,11 @@ struct Builder<'a> {
 
 /// A table or a join of tables in the `FROM` list.
 enum Node {
-    Table { key: String, text: String },
+    Table {
+        #[allow(dead_code)]
+        key: String,
+        text: String,
+    },
     Join { from: usize, to: usize, kind: i64, on: Vec<String> },
 }
 
@@ -323,7 +328,7 @@ impl<'a> Builder<'a> {
             out.push_str(&ident(target));
             remote(out, t.and_then(|r| r.name2.as_deref()), t.and_then(|r| r.expression.as_deref()));
         }
-        let from = self.from_tables()?;
+        let from = self.build_from_list()?;
         if !from.is_empty() {
             out.push_str("\nFROM ");
             out.push_str(&from.join(", "));
@@ -421,7 +426,7 @@ impl<'a> Builder<'a> {
     }
 
     /// The `FROM` items: tables as stored, and joins arranged the way Access nests them.
-    fn from_tables(&mut self) -> Res<Vec<String>> {
+    fn build_from_list(&mut self) -> Res<Vec<String>> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut order: Vec<usize> = Vec::new();
         // The lower-cased table keys inside each node.
@@ -551,7 +556,7 @@ impl<'a> Builder<'a> {
     }
 
     fn update(&mut self, out: &mut String) -> Res<()> {
-        let tables = self.from_tables()?;
+        let tables = self.build_from_list()?;
         out.push_str("UPDATE ");
         out.push_str(&tables.join(", "));
         self.remote_db(out)?;
