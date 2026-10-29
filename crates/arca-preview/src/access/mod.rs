@@ -367,7 +367,12 @@ fn queries_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object], shown: 
         };
         // The viewer's own words are marked as such (`SYNTHETIC`); the rows below are the file's.
         let mut p = Paragraph::default();
-        p.runs.push(Run { text, style: style::MONO | style::SYNTHETIC, href: String::new() });
+        p.runs.push(Run {
+            text,
+            style: style::MONO | style::SYNTHETIC,
+            href: String::new(),
+            ..Run::default()
+        });
         sink.push(sec, Block::Para(p));
         if show_rows {
             let rows_grid = stored_rows(sink, &found.rows);

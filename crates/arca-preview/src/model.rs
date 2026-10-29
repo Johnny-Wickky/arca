@@ -44,6 +44,33 @@ pub mod style {
     pub const ALL: u16 = (1 << 11) - 1;
 }
 
+/// The colours and size a document gives to a span of text, beyond the [`style`] bits.
+///
+/// Colours are `0xFFRRGGBB`, `0` for "the viewer's own". The viewer draws them only where they
+/// stay readable on its background (white text on white is shown in the viewer's colour), so a
+/// colour can decorate text but never hide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RunFmt {
+    /// Text colour.
+    pub fg: u32,
+    /// Highlight or shading behind the text.
+    pub bg: u32,
+    /// Size relative to the body text, in percent (`0` = the same as the body).
+    pub scale: u16,
+}
+
+impl RunFmt {
+    /// `self` where it says something, else `base`.
+    #[must_use]
+    pub const fn or(self, base: Self) -> Self {
+        Self {
+            fg: if self.fg != 0 { self.fg } else { base.fg },
+            bg: if self.bg != 0 { self.bg } else { base.bg },
+            scale: if self.scale != 0 { self.scale } else { base.scale },
+        }
+    }
+}
+
 /// A span of text with uniform formatting.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Run {
@@ -53,8 +80,22 @@ pub struct Run {
     pub style: u16,
     /// Link target, empty for none. **Display only** — never followed.
     pub href: String,
+    /// Text colour as `0xFFRRGGBB`, `0` for the viewer's own.
+    pub fg: u32,
+    /// Highlight colour as `0xFFRRGGBB`, `0` for none.
+    pub bg: u32,
+    /// Size relative to the body text in percent, `0` for the same.
+    pub scale: u16,
 }
-wire_struct!(Run { text, style, href });
+wire_struct!(Run { text, style, href, fg, bg, scale });
+
+impl Run {
+    /// The colours and size of the run.
+    #[must_use]
+    pub const fn fmt(&self) -> RunFmt {
+        RunFmt { fg: self.fg, bg: self.bg, scale: self.scale }
+    }
+}
 
 /// Role of a paragraph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -127,6 +168,44 @@ pub enum Align {
 }
 wire_enum!(Align { Start = 0, Center = 1, End = 2, Justify = 3 });
 
+/// How a paragraph is set: indents, line spacing and a frame, as the document gives them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ParaFmt {
+    /// Left indent in points.
+    pub indent_left: u16,
+    /// Extra indent of the first line in points; negative for a hanging indent.
+    pub indent_first: i64,
+    /// Line spacing in percent of single (`0` = single).
+    pub line_spacing: u16,
+    /// Colour of the bar down the left edge, or of the frame, `0xFFRRGGBB`; `0` for none.
+    pub border: u32,
+    /// The border goes all round (a framed paragraph) instead of only down the left edge.
+    pub boxed: bool,
+}
+
+impl ParaFmt {
+    /// `self` where it says something, else `base`.
+    #[must_use]
+    pub const fn or(self, base: Self) -> Self {
+        let own_border = self.border != 0;
+        Self {
+            indent_left: if self.indent_left != 0 { self.indent_left } else { base.indent_left },
+            indent_first: if self.indent_first != 0 {
+                self.indent_first
+            } else {
+                base.indent_first
+            },
+            line_spacing: if self.line_spacing != 0 {
+                self.line_spacing
+            } else {
+                base.line_spacing
+            },
+            border: if own_border { self.border } else { base.border },
+            boxed: if own_border { self.boxed } else { base.boxed },
+        }
+    }
+}
+
 /// A paragraph.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Paragraph {
@@ -140,14 +219,46 @@ pub struct Paragraph {
     pub marker: String,
     /// The text.
     pub runs: Vec<Run>,
+    /// Left indent in points.
+    pub indent_left: u16,
+    /// Extra indent of the first line in points; negative for a hanging indent.
+    pub indent_first: i64,
+    /// Line spacing in percent of single, `0` for single.
+    pub line_spacing: u16,
+    /// Colour of the left bar or the frame as `0xFFRRGGBB`, `0` for none.
+    pub border: u32,
+    /// The border goes all round.
+    pub boxed: bool,
 }
-wire_struct!(Paragraph { style, align, level, marker, runs });
+wire_struct!(Paragraph {
+    style,
+    align,
+    level,
+    marker,
+    runs,
+    indent_left,
+    indent_first,
+    line_spacing,
+    border,
+    boxed
+});
 
 impl Paragraph {
     /// A plain paragraph with a single unstyled run.
     #[must_use]
     pub fn plain(text: &str) -> Self {
         Self { runs: vec![Run { text: text.to_owned(), ..Run::default() }], ..Self::default() }
+    }
+
+    /// This paragraph set as `fmt` says.
+    #[must_use]
+    pub fn with_fmt(mut self, fmt: ParaFmt) -> Self {
+        self.indent_left = fmt.indent_left;
+        self.indent_first = fmt.indent_first;
+        self.line_spacing = fmt.line_spacing;
+        self.border = fmt.border;
+        self.boxed = fmt.boxed;
+        self
     }
 
     /// The concatenated text of all runs.
@@ -455,11 +566,20 @@ mod tests {
             level: 2,
             marker: "1.".into(),
             runs: vec![
-                Run { text: "Привет ".into(), style: style::BOLD, href: String::new() },
                 Run {
-                    text: "мир".into(), style: style::ITALIC | style::HIDDEN, href: "u".into()
+                    text: "Привет ".into(),
+                    style: style::BOLD,
+                    href: String::new(),
+                    ..Default::default()
+                },
+                Run {
+                    text: "мир".into(),
+                    style: style::ITALIC | style::HIDDEN,
+                    href: "u".into(),
+                    ..Default::default()
                 },
             ],
+            ..Paragraph::default()
         };
         Preview {
             format: FileFormat::Docx,

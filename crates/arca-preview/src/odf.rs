@@ -55,10 +55,78 @@ impl Fam {
     }
 }
 
+/// Colours and size a style gives to text. The size is either absolute (`pt`, in tenths of a
+/// point) or a percentage of the style it is based on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OLook {
+    fg: u32,
+    bg: u32,
+    pt: u16,
+    pct: u16,
+}
+
+impl OLook {
+    fn or(self, base: Self) -> Self {
+        Self {
+            fg: if self.fg != 0 { self.fg } else { base.fg },
+            bg: if self.bg != 0 { self.bg } else { base.bg },
+            pt: if self.pt != 0 { self.pt } else { base.pt },
+            pct: if self.pct != 0 { self.pct } else { base.pct },
+        }
+    }
+
+    /// The size this look leaves text at, given the size it started from (tenths of a point).
+    fn size(self, from: u16) -> u16 {
+        if self.pt != 0 {
+            self.pt
+        } else if self.pct != 0 {
+            u16::try_from((u32::from(from) * u32::from(self.pct) / 100).min(u32::from(u16::MAX)))
+                .unwrap_or(from)
+        } else {
+            from
+        }
+    }
+}
+
+/// A colour such as `#336699`; `transparent`, `auto` and anything else give `0`.
+fn odf_color(v: &str) -> u32 {
+    let h = v.trim().trim_start_matches('#');
+    if v.trim().starts_with('#') && h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        u32::from_str_radix(h, 16).map_or(0, |c| 0xFF00_0000 | c)
+    } else {
+        0
+    }
+}
+
+/// A length such as `1.5cm` or `12pt` in points.
+fn length_pt(v: &str) -> Option<f32> {
+    let v = v.trim();
+    let split = v.find(|c: char| c.is_ascii_alphabetic() || c == '%').unwrap_or(v.len());
+    let (num, unit) = v.split_at(split);
+    let n: f32 = num.trim().parse().ok()?;
+    let k = match unit {
+        "pt" | "" => 1.0,
+        "cm" => 28.346,
+        "mm" => 2.8346,
+        "in" => 72.0,
+        "px" => 0.75,
+        "pc" => 12.0,
+        _ => return None,
+    };
+    let pt = n * k;
+    pt.is_finite().then_some(pt)
+}
+
+fn pt_to_u16(v: f32) -> u16 {
+    u16::try_from((v.max(0.0).round() as i64).min(2000)).unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Default)]
 struct StyleInfo {
     parent: String,
     display_name: String,
+    look: OLook,
+    pfmt: crate::model::ParaFmt,
     /// Style bits turned on / off by this style.
     set: u16,
     clear: u16,
@@ -82,6 +150,8 @@ struct ListLevel {
 struct Styles {
     by_name: BTreeMap<(Fam, String), StyleInfo>,
     lists: BTreeMap<String, Vec<ListLevel>>,
+    /// Size of the body text in tenths of a point (the default paragraph style), `0` if unknown.
+    body_pt: u16,
 }
 
 /// What a style (and its ancestors) amounts to.
@@ -95,6 +165,10 @@ struct Resolved {
     role: Option<ParaStyle>,
     table_hidden: bool,
     page_hidden: bool,
+    /// Colours of the style and its ancestors, and the size they leave text at.
+    look: OLook,
+    size: u16,
+    pfmt: crate::model::ParaFmt,
 }
 
 impl Styles {
@@ -109,11 +183,16 @@ impl Styles {
             cur = info.parent.as_str();
         }
         let mut out = Resolved::default();
+        let mut size = self.body_size();
         for (_, info) in chain.iter().rev() {
             out.flags = (out.flags | info.set) & !info.clear;
             out.cleared = (out.cleared | info.clear) & !info.set;
+            size = info.look.size(size);
         }
+        out.size = size;
         for (n, info) in &chain {
+            out.look = out.look.or(info.look);
+            out.pfmt = out.pfmt.or(info.pfmt);
             if out.align.is_none() {
                 out.align = info.align;
             }
@@ -127,6 +206,11 @@ impl Styles {
             out.page_hidden |= info.page_hidden;
         }
         out
+    }
+
+    /// Size of the body text in tenths of a point.
+    fn body_size(&self) -> u16 {
+        if self.body_pt >= 40 { self.body_pt } else { 120 }
     }
 
     fn marker(&self, list_style: &str, depth: usize, counter: u32) -> String {
@@ -169,6 +253,8 @@ fn is_off(v: &str) -> bool {
 #[derive(Default)]
 struct StyleHandler {
     styles: Styles,
+    /// Inside `style:default-style` of the paragraph family.
+    in_default_para: bool,
     cur: Option<(Fam, String, StyleInfo)>,
     cur_list: Option<String>,
     /// Stop once the automatic styles of the content part are read.
@@ -190,6 +276,14 @@ impl Handler for StyleHandler {
                 };
                 self.cur = Some((fam, name, info));
             }
+            "default-style" => {
+                self.in_default_para = tag.attr("family").as_deref() == Some("paragraph");
+            }
+            "text-properties" if self.in_default_para && self.cur.is_none() => {
+                if let Some(sz) = tag.attr("font-size").and_then(|v| length_pt(&v)) {
+                    self.styles.body_pt = pt_to_u16(sz * 10.0);
+                }
+            }
             "text-properties" => {
                 if let Some((_, _, info)) = self.cur.as_mut() {
                     text_props(tag, info);
@@ -197,6 +291,7 @@ impl Handler for StyleHandler {
             }
             "paragraph-properties" => {
                 if let Some((_, _, info)) = self.cur.as_mut() {
+                    para_props(tag, info);
                     info.align = match tag.attr("text-align").as_deref() {
                         Some("center") => Some(Align::Center),
                         Some("end" | "right") => Some(Align::End),
@@ -262,6 +357,7 @@ impl Handler for StyleHandler {
                     self.styles.by_name.insert((fam, name), info);
                 }
             }
+            "default-style" => self.in_default_para = false,
             "list-style" => self.cur_list = None,
             "automatic-styles" if self.until_automatic_end => self.finished = true,
             _ => {}
@@ -277,7 +373,64 @@ impl Handler for StyleHandler {
     }
 }
 
+/// Indents, line height and borders of a paragraph style.
+fn para_props(tag: &Tag<'_>, info: &mut StyleInfo) {
+    let f = &mut info.pfmt;
+    if let Some(v) =
+        tag.attr("margin-left").or_else(|| tag.attr("margin-start")).and_then(|v| length_pt(&v))
+    {
+        f.indent_left = pt_to_u16(v);
+    }
+    if let Some(v) = tag.attr("text-indent").and_then(|v| length_pt(&v)) {
+        f.indent_first = v.round() as i64;
+    }
+    if let Some(v) = tag.attr("line-height")
+        && let Some(pct) = v.trim().strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok())
+    {
+        f.line_spacing = pt_to_u16(pct.clamp(50.0, 500.0));
+    }
+    let side = |name: &str| -> u32 {
+        tag.attr(name)
+            .map(|v| {
+                let color = v.split_whitespace().find(|w| w.starts_with('#')).map_or(0, odf_color);
+                if v.trim() == "none" {
+                    0
+                } else if color == 0 {
+                    0xFF80_8080
+                } else {
+                    color
+                }
+            })
+            .unwrap_or(0)
+    };
+    let all = side("border");
+    let left = side("border-left");
+    if all != 0 {
+        f.border = all;
+        f.boxed = true;
+    } else if left != 0 {
+        f.border = left;
+        f.boxed = false;
+    }
+}
+
 fn text_props(tag: &Tag<'_>, info: &mut StyleInfo) {
+    if let Some(c) = tag.attr("color") {
+        info.look.fg = odf_color(&c);
+    }
+    if let Some(c) = tag.attr("background-color") {
+        info.look.bg = odf_color(&c);
+    }
+    if let Some(v) = tag.attr("font-size") {
+        let v = v.trim();
+        if let Some(pct) = v.strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok()) {
+            info.look.pct = pt_to_u16(pct);
+            info.look.pt = 0;
+        } else if let Some(pt) = length_pt(v) {
+            info.look.pt = pt_to_u16(pt * 10.0);
+            info.look.pct = 0;
+        }
+    }
     let mut toggle = |on: bool, bit: u16| {
         if on {
             info.set |= bit;
@@ -347,6 +500,14 @@ struct ParaCtx {
     level: u8,
     base: u16,
     spans: Vec<(u16, u16)>,
+    /// What each open span gives to the text, parallel to `spans`.
+    span_looks: Vec<OLook>,
+    /// The look of the paragraph style, the size it leaves text at, and the body text's size
+    /// (tenths of a point).
+    look: OLook,
+    size: u16,
+    body: u16,
+    pfmt: crate::model::ParaFmt,
     hrefs: Vec<String>,
     /// A collapsed run of white space waiting for the next visible character, with the
     /// formatting in force where it was written.
@@ -357,6 +518,24 @@ struct ParaCtx {
 }
 
 impl ParaCtx {
+    /// The colours and relative size of text written now.
+    fn fmt(&self) -> crate::model::RunFmt {
+        let mut look = self.look;
+        let mut size = self.size;
+        for l in &self.span_looks {
+            look = (*l).or(look);
+            size = l.size(size);
+        }
+        let body = u32::from(self.body.max(40));
+        let pct = u32::from(size) * 100 / body;
+        let scale = if (96..=104).contains(&pct) {
+            0
+        } else {
+            u16::try_from(pct.clamp(40, 400)).unwrap_or(0)
+        };
+        crate::model::RunFmt { fg: look.fg, bg: look.bg, scale }
+    }
+
     fn flags(&self, extra: u16) -> u16 {
         let mut f = self.base;
         for (set, clear) in &self.spans {
@@ -622,6 +801,11 @@ impl<'a, 'p> Odf<'a, 'p> {
             level: 0,
             base: r.flags,
             spans: Vec::new(),
+            span_looks: Vec::new(),
+            look: r.look,
+            size: r.size,
+            body: self.styles.body_size(),
+            pfmt: r.pfmt,
             hrefs: Vec::new(),
             pending_space: None,
             pending: Vec::new(),
@@ -647,8 +831,8 @@ impl<'a, 'p> Odf<'a, 'p> {
         if ctx.skip {
             return;
         }
-        let ParaCtx { mut b, style: ps, align, marker, level, pending, .. } = ctx;
-        let mut p = b.take(ps);
+        let ParaCtx { mut b, style: ps, align, marker, level, pending, pfmt, .. } = ctx;
+        let mut p = b.take(ps).with_fmt(pfmt);
         p.align = align;
         p.marker = marker;
         p.level = level;
@@ -771,6 +955,7 @@ impl<'a, 'p> Odf<'a, 'p> {
             return;
         }
         let st = ctx.flags(extra);
+        let fmt = ctx.fmt();
         let href = ctx.hrefs.last().cloned().unwrap_or_default();
         let mut buf = String::new();
         // White space seen since the last visible character of this call.
@@ -792,7 +977,7 @@ impl<'a, 'p> Odf<'a, 'p> {
         }
         if !buf.is_empty() {
             let text = if ruby { format!("({buf})") } else { buf };
-            ctx.b.text(&text, st, &href);
+            ctx.b.text_fmt(&text, st, &href, fmt);
         }
         if space && ctx.pending_space.is_none() && !ctx.b.is_empty() {
             ctx.pending_space = Some((st, href));
@@ -807,11 +992,12 @@ impl<'a, 'p> Odf<'a, 'p> {
             return;
         }
         let st = ctx.flags(extra);
+        let fmt = ctx.fmt();
         let href = ctx.hrefs.last().cloned().unwrap_or_default();
         if let Some((sst, shref)) = ctx.pending_space.take() {
             ctx.b.text(" ", sst, &shref);
         }
-        ctx.b.text(text, st, &href);
+        ctx.b.text_fmt(text, st, &href, fmt);
     }
 
     fn add_flagged(&mut self, text: &str, bits: u16) {
@@ -1140,6 +1326,11 @@ impl ParaCtx {
             level: 0,
             base: 0,
             spans: Vec::new(),
+            span_looks: Vec::new(),
+            look: OLook::default(),
+            size: 0,
+            body: 0,
+            pfmt: crate::model::ParaFmt::default(),
             hrefs: Vec::new(),
             pending_space: None,
             pending: Vec::new(),
@@ -1218,6 +1409,7 @@ impl Handler for Odf<'_, '_> {
                     let r = self.styles.resolve(Fam::Text, &r_name);
                     // `resolve` folds the chain into one set/clear pair.
                     ctx.spans.push((r.flags, r.cleared));
+                    ctx.span_looks.push(r.look);
                 }
             }
             "a" => {
@@ -1392,6 +1584,7 @@ impl Handler for Odf<'_, '_> {
             "span" => {
                 if let Some(ctx) = self.paras.last_mut() {
                     ctx.spans.pop();
+                    ctx.span_looks.pop();
                 }
             }
             "a" => {
@@ -1569,8 +1762,14 @@ pub(crate) fn extract(
                         text: if author.is_empty() { String::new() } else { format!("{author}: ") },
                         style: style::BOLD,
                         href: String::new(),
+                        ..Default::default()
                     },
-                    crate::model::Run { text, style: 0, href: String::new() },
+                    crate::model::Run {
+                        text,
+                        style: 0,
+                        href: String::new(),
+                        ..crate::model::Run::default()
+                    },
                 ],
                 ..Paragraph::default()
             };
@@ -1664,6 +1863,30 @@ mod tests {
         let link = para.runs.iter().find(|r| r.text == "link").expect("link");
         assert_eq!(link.href, "http://e.example/x");
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::HiddenShown && n.detail == "text"));
+    }
+
+    #[test]
+    fn colours_sizes_indents_spacing_and_rules_follow_the_style_chain() {
+        let auto = r##"<style:default-style style:family="paragraph"><style:text-properties fo:font-size="12pt"/></style:default-style>
+            <style:style style:name="Note" style:family="paragraph"><style:paragraph-properties fo:margin-left="1cm" fo:text-indent="-0.5cm" fo:line-height="150%" fo:border-left="0.5pt solid #3366cc"/><style:text-properties fo:color="#cc0000" fo:font-size="18pt"/></style:style>
+            <style:style style:name="Derived" style:family="paragraph" style:parent-style-name="Note"><style:text-properties fo:color="#00aa00"/></style:style>
+            <style:style style:name="Hl" style:family="text"><style:text-properties fo:background-color="#ffff00" fo:font-size="50%"/></style:style>
+            <style:style style:name="Boxed" style:family="paragraph"><style:paragraph-properties fo:border="1pt solid #000000"/></style:style>"##;
+        let body = r##"<text:p text:style-name="Derived">own <text:span text:style-name="Hl">marked</text:span> after</text:p>
+            <text:p text:style-name="Boxed">framed</text:p><text:p>plain</text:p>"##;
+        let p = ok(&odt(auto, body));
+        let paras = paragraphs(p.sections.first().expect("s"));
+        let d = paras[0];
+        assert_eq!(d.runs[0].fg, 0xFF00_AA00, "the style's colour wins over the parent's");
+        assert_eq!(d.runs[0].scale, 150, "18 pt against a 12 pt body");
+        assert_eq!((d.indent_left, d.indent_first, d.line_spacing), (28, -14, 150));
+        assert_eq!((d.border, d.boxed), (0xFF33_66CC, false));
+        let marked = d.runs.iter().find(|r| r.text.contains("marked")).expect("marked");
+        assert_eq!((marked.bg, marked.scale), (0xFFFF_FF00, 75), "50 % of 18 pt is 9 pt");
+        let after = d.runs.last().expect("after");
+        assert_eq!((after.bg, after.scale), (0, 150), "the span ends");
+        assert!(paras[1].boxed && paras[1].border == 0xFF00_0000);
+        assert_eq!(paras[2].runs[0].fmt(), crate::model::RunFmt::default());
     }
 
     #[test]

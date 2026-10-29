@@ -64,13 +64,17 @@ fn sample_preview() -> Preview {
         level: 2,
         marker: "1.".into(),
         runs: vec![
-            Run { text: "Заголовок ".into(), style: 1, href: String::new() },
+            Run {
+                text: "Заголовок ".into(), style: 1, href: String::new(), ..Run::default()
+            },
             Run {
                 text: "ссылка \"q\"".into(),
                 style: 4 | 128,
                 href: "https://x.test/?a=1&b=2".into(),
+                ..Run::default()
             },
         ],
+        ..Paragraph::default()
     };
     let table = Table {
         rows: (0..3)

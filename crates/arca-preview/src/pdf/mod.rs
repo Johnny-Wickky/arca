@@ -562,7 +562,7 @@ fn annotations(pdf: &mut PdfFile<'_>, sink: &mut Sink<'_>, sec: SectionId, page:
                 if u.trim().is_empty() {
                     continue;
                 }
-                let run = Run { text: u.clone(), style: 0, href: u };
+                let run = Run { text: u.clone(), style: 0, href: u, ..Run::default() };
                 if !sink.para(sec, Paragraph { runs: vec![run], ..Paragraph::default() }) {
                     return;
                 }

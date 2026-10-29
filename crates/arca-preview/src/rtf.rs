@@ -37,6 +37,8 @@ enum Dest {
     FontTbl,
     /// Style sheet (only the names of paragraph styles are read).
     StyleSheet,
+    /// Colour table (`\\red`, `\\green`, `\\blue` up to each `;`).
+    ColorTbl,
     /// A list label such as `1.` or a bullet.
     Marker,
     /// Field instruction.
@@ -70,6 +72,11 @@ struct G {
     font: i32,
     /// Index into the link table, `0` = none.
     href: u32,
+    /// Colour table entries of the text colour (`\\cfN`) and the highlight (`\\highlightN`, `\\cbN`); `0` = none.
+    cf: u16,
+    cb: u16,
+    /// Font size in half-points (`\\fsN`), `0` = not set.
+    fs: u16,
     /// Where this group started (for sizing pictures).
     start: usize,
 }
@@ -90,6 +97,9 @@ impl G {
             uc: 1,
             font: -1,
             href: 0,
+            cf: 0,
+            cb: 0,
+            fs: 0,
             start: 0,
         }
     }
@@ -123,6 +133,11 @@ struct Font {
 }
 
 /// RTF character set (`\fcharsetN`) → Windows code page.
+/// A colour table index from a control word parameter (`0` and anything out of range: none).
+fn color_index(param: Option<i32>) -> u16 {
+    param.and_then(|n| u16::try_from(n).ok()).filter(|n| *n < 256).unwrap_or(0)
+}
+
 const fn charset_codepage(n: i32) -> Option<u16> {
     Some(match n {
         128 => 932,
@@ -165,6 +180,19 @@ struct Parser<'a, 's, 'p> {
     font_name: String,
     links: Vec<String>,
     pending_href: u32,
+
+    // Colours and paragraph settings.
+    /// The colour table as `0xFFRRGGBB`; entry 0 is "auto".
+    colors: Vec<u32>,
+    cur_rgb: [u8; 3],
+    cur_rgb_set: bool,
+    /// The first font size set, taken as the size of the body text.
+    base_fs: u16,
+    left: u32,
+    first: i64,
+    line_pct: u16,
+    border: u32,
+    boxed: bool,
 
     // Paragraph state.
     para: ParaBuilder,
@@ -236,6 +264,15 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             font_name: String::new(),
             links: vec![String::new()],
             pending_href: 0,
+            colors: Vec::new(),
+            cur_rgb: [0; 3],
+            cur_rgb_set: false,
+            base_fs: 0,
+            left: 0,
+            first: 0,
+            line_pct: 0,
+            border: 0,
+            boxed: false,
             para: ParaBuilder::new(),
             align: Align::Start,
             outline: None,
@@ -542,6 +579,15 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 }
                 return;
             }
+            Dest::ColorTbl => {
+                match name {
+                    "red" => self.set_rgb(0, param),
+                    "green" => self.set_rgb(1, param),
+                    "blue" => self.set_rgb(2, param),
+                    _ => {}
+                }
+                return;
+            }
             Dest::Pict => {
                 self.pict_media = match name {
                     "pngblip" => "png",
@@ -610,9 +656,44 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             "deleted" => self.g_mut().deleted = param != Some(0),
             "revised" => self.g_mut().inserted = param != Some(0),
             "f" => self.g_mut().font = param.unwrap_or(-1),
+            "cf" => self.g_mut().cf = color_index(param),
+            "highlight" | "cb" | "chcbpat" => self.g_mut().cb = color_index(param),
+            "fs" => {
+                let fs = param.and_then(|n| u16::try_from(n).ok()).unwrap_or(0);
+                if self.base_fs == 0 && fs != 0 {
+                    self.base_fs = fs;
+                }
+                self.g_mut().fs = fs;
+            }
 
             // -- paragraph formatting --
+            "li" | "lin" => self.left = u32::try_from(param.unwrap_or(0).max(0)).unwrap_or(0),
+            "fi" => self.first = i64::from(param.unwrap_or(0)),
+            "sl" => self.line_pct = 0.max(param.unwrap_or(0)).try_into().unwrap_or(0),
+            "slmult" => {
+                // `\slN` in 240ths of a line when multiple; otherwise a fixed height, not kept.
+                if param == Some(1) {
+                    self.line_pct = (self.line_pct.saturating_mul(100) / 240).clamp(50, 500);
+                } else {
+                    self.line_pct = 0;
+                }
+            }
+            "brdrl" => self.border = 0xFF80_8080,
+            "box" => self.boxed = true,
+            "brdrcf" => {
+                if self.border != 0 {
+                    let c = self.color_of(color_index(param));
+                    if c != 0 {
+                        self.border = c;
+                    }
+                }
+            }
             "pard" => {
+                self.left = 0;
+                self.first = 0;
+                self.line_pct = 0;
+                self.border = 0;
+                self.boxed = false;
                 self.align = Align::Start;
                 self.outline = None;
                 self.ilvl = 0;
@@ -686,16 +767,18 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 }
                 return true;
             }
+            "colortbl" => Dest::ColorTbl,
             // Known destinations with nothing to show.
-            "colortbl" | "info" | "private1" | "pgdsctbl" | "listtable" | "listoverridetable"
-            | "revtbl" | "rsidtbl" | "generator" | "xmlnstbl" | "themedata"
-            | "colorschememapping" | "datastore" | "latentstyles" | "fchars" | "lchars"
-            | "objdata" | "result" | "background" | "template" | "defchp" | "defpap" | "pn"
-            | "pnseclvl" | "listpicture" | "docvar" | "sp" | "sn" | "sv" | "shprslt"
-            | "nonshppict" | "bkmkstart" | "bkmkend" | "xe" | "tc" | "txe" | "ftnsep"
-            | "ftnsepc" | "aftnsep" | "aftnsepc" | "datafield" | "mmath" | "wgrffmtfilter"
-            | "fontemb" | "rsidroot" | "protusertbl" | "userprops" | "falt" | "panose"
-            | "factoidname" | "objtime" => Dest::Skip,
+            "info" | "private1" | "pgdsctbl" | "listtable" | "listoverridetable" | "revtbl"
+            | "rsidtbl" | "generator" | "xmlnstbl" | "themedata" | "colorschememapping"
+            | "datastore" | "latentstyles" | "fchars" | "lchars" | "objdata" | "result"
+            | "background" | "template" | "defchp" | "defpap" | "pn" | "pnseclvl"
+            | "listpicture" | "docvar" | "sp" | "sn" | "sv" | "shprslt" | "nonshppict"
+            | "bkmkstart" | "bkmkend" | "xe" | "tc" | "txe" | "ftnsep" | "ftnsepc" | "aftnsep"
+            | "aftnsepc" | "datafield" | "mmath" | "wgrffmtfilter" | "fontemb" | "rsidroot"
+            | "protusertbl" | "userprops" | "falt" | "panose" | "factoidname" | "objtime" => {
+                Dest::Skip
+            }
             // Any other `\*` destination is optional by definition.
             _ if ignorable => Dest::Skip,
             _ => return false,
@@ -783,6 +866,34 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
         }
     }
 
+    /// Sets one channel of the colour being defined.
+    fn set_rgb(&mut self, channel: usize, param: Option<i32>) {
+        if let Some(slot) = self.cur_rgb.get_mut(channel) {
+            *slot = u8::try_from(param.unwrap_or(0).clamp(0, 255)).unwrap_or(0);
+        }
+        self.cur_rgb_set = true;
+    }
+
+    /// A colour of the table as `0xFFRRGGBB`; `0` for "auto" and for an index past the table.
+    fn color_of(&self, index: u16) -> u32 {
+        self.colors.get(usize::from(index)).copied().unwrap_or(0)
+    }
+
+    /// The colours and relative size of a run in group state `g`.
+    fn run_fmt(&self, g: &G) -> crate::model::RunFmt {
+        let scale = if g.fs == 0 || self.base_fs == 0 {
+            0
+        } else {
+            let pct = u32::from(g.fs) * 100 / u32::from(self.base_fs);
+            if (96..=104).contains(&pct) {
+                0
+            } else {
+                u16::try_from(pct.clamp(40, 400)).unwrap_or(0)
+            }
+        };
+        crate::model::RunFmt { fg: self.color_of(g.cf), bg: self.color_of(g.cb), scale }
+    }
+
     fn text_char(&mut self, c: char) {
         let g = self.g();
         match g.dest {
@@ -796,7 +907,26 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 if !self.marker_pending.is_empty() {
                     self.marker = std::mem::take(&mut self.marker_pending);
                 }
-                self.para.text(c.encode_utf8(&mut buf), g.flags(mono), href);
+                let fmt = self.run_fmt(&g);
+                self.para.text_fmt(c.encode_utf8(&mut buf), g.flags(mono), href, fmt);
+            }
+            Dest::ColorTbl => {
+                if c == ';' {
+                    let rgb = self.cur_rgb;
+                    let entry = if self.cur_rgb_set {
+                        0xFF00_0000
+                            | (u32::from(rgb[0]) << 16)
+                            | (u32::from(rgb[1]) << 8)
+                            | u32::from(rgb[2])
+                    } else {
+                        0
+                    };
+                    if self.colors.len() < 256 {
+                        self.colors.push(entry);
+                    }
+                    self.cur_rgb = [0; 3];
+                    self.cur_rgb_set = false;
+                }
             }
             Dest::Marker => {
                 if self.marker_pending.len() < 32 && c != '\t' {
@@ -893,6 +1023,13 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
         };
         let mut p = self.para.take(ps);
         p.align = self.align;
+        p = p.with_fmt(crate::model::ParaFmt {
+            indent_left: u16::try_from((self.left / 20).min(2000)).unwrap_or(0),
+            indent_first: (self.first / 20).clamp(-2000, 2000),
+            line_spacing: self.line_pct,
+            border: self.border,
+            boxed: self.boxed && self.border != 0,
+        });
         if !marker.is_empty() {
             p.marker = marker;
             p.level = self.ilvl.saturating_add(1);
@@ -1449,5 +1586,29 @@ mod tests {
             }
             let _ = run(base.get(..i).unwrap_or_default());
         }
+    }
+
+    #[test]
+    fn colours_sizes_indents_spacing_and_the_left_rule_are_read() {
+        let body = r"{\rtf1\ansi{\colortbl;\red204\green0\blue0;\red255\green255\blue0;\red51\green102\blue204;}\pard\plain\fs24 body\par \pard\li720\fi-360\sl360\slmult1\brdrl\brdrcf3 \cf1\fs48 big red \highlight2 marked\cf0\highlight0\fs24  plain again\par}";
+        let p = ok(body.as_bytes());
+        let paras = paragraphs(crate::testkit::section_of(&p, SectionKind::Body).expect("body"));
+        let plain = paras[0];
+        assert_eq!(plain.runs[0].fmt(), crate::model::RunFmt::default());
+        let styled = paras[1];
+        assert_eq!((styled.indent_left, styled.indent_first), (36, -18));
+        assert_eq!(styled.line_spacing, 150);
+        assert_eq!((styled.border, styled.boxed), (0xFF33_66CC, false));
+        let red = &styled.runs[0];
+        assert!(red.text.starts_with("big red"), "{:?}", red.text);
+        assert_eq!((red.fg, red.scale), (0xFFCC_0000, 200));
+        let marked = styled.runs.iter().find(|r| r.text.contains("marked")).expect("marked");
+        assert_eq!(marked.bg, 0xFFFF_FF00);
+        let tail = styled.runs.last().expect("tail");
+        assert_eq!(
+            (tail.fg, tail.bg, tail.scale),
+            (0, 0, 0),
+            "\\cf0 and \\highlight0 switch them off"
+        );
     }
 }

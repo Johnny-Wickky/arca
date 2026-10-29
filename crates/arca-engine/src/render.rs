@@ -728,6 +728,22 @@ fn para_fields(w: &mut JsonWriter, p: &Paragraph) {
     if !p.marker.is_empty() {
         w.field_str("m", &p.marker);
     }
+    if p.indent_left != 0 {
+        w.field_u64("il", u64::from(p.indent_left));
+    }
+    if p.indent_first != 0 {
+        w.key("if");
+        w.i64(p.indent_first);
+    }
+    if p.line_spacing != 0 {
+        w.field_u64("ls", u64::from(p.line_spacing));
+    }
+    if p.border != 0 {
+        w.field_u64("bd", u64::from(p.border));
+        if p.boxed {
+            w.field_u64("bx", 1);
+        }
+    }
     w.key("r");
     w.begin_array();
     for r in &p.runs {
@@ -736,12 +752,20 @@ fn para_fields(w: &mut JsonWriter, p: &Paragraph) {
     w.end_array();
 }
 
+/// A run is `[text, style]`, `[text, style, href]` or `[text, style, href, fg, bg, scale]`: the
+/// last form only when the document gave the text a colour or a size.
 fn run(w: &mut JsonWriter, r: &Run) {
     w.begin_array();
     w.string(&r.text);
     w.u64(u64::from(r.style));
-    if !r.href.is_empty() {
+    let fmt = r.fmt();
+    if !r.href.is_empty() || fmt != arca_preview::model::RunFmt::default() {
         w.string(&r.href);
+    }
+    if fmt != arca_preview::model::RunFmt::default() {
+        w.u64(u64::from(fmt.fg));
+        w.u64(u64::from(fmt.bg));
+        w.u64(u64::from(fmt.scale));
     }
     w.end_array();
 }

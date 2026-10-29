@@ -744,17 +744,37 @@ impl ParaBuilder {
 
     /// Appends text. Empty text is ignored.
     pub(crate) fn text(&mut self, text: &str, style: u16, href: &str) {
+        self.text_fmt(text, style, href, crate::model::RunFmt::default());
+    }
+
+    /// Appends text with the colours and size the document gives it. Empty text is ignored.
+    pub(crate) fn text_fmt(
+        &mut self,
+        text: &str,
+        style: u16,
+        href: &str,
+        fmt: crate::model::RunFmt,
+    ) {
         if text.is_empty() {
             return;
         }
         if let Some(last) = self.runs.last_mut()
             && last.style == style
             && last.href == href
+            && last.fmt() == fmt
         {
             last.text.push_str(text);
             return;
         }
-        self.runs.push(crate::model::Run { text: text.to_owned(), style, href: href.to_owned() });
+        self.runs.push(crate::model::Run {
+            text: text.to_owned(),
+            style,
+            href: href.to_owned(),
+            fg: fmt.fg,
+            bg: fmt.bg,
+            scale: fmt.scale,
+            ..Default::default()
+        });
     }
 
     /// `true` if nothing at all has been added.
@@ -1037,13 +1057,23 @@ mod tests {
         let sec = sink.open_section(SectionKind::Body, "", false).unwrap();
         let mixed = Paragraph {
             runs: vec![
-                Run { text: "seen ".into(), style: 0, href: String::new() },
-                Run { text: "secret".into(), style: style::HIDDEN, href: String::new() },
+                Run { text: "seen ".into(), style: 0, href: String::new(), ..Run::default() },
+                Run {
+                    text: "secret".into(),
+                    style: style::HIDDEN,
+                    href: String::new(),
+                    ..Run::default()
+                },
             ],
             ..Paragraph::default()
         };
         let only_hidden = Paragraph {
-            runs: vec![Run { text: "gone".into(), style: style::HIDDEN, href: String::new() }],
+            runs: vec![Run {
+                text: "gone".into(),
+                style: style::HIDDEN,
+                href: String::new(),
+                ..Run::default()
+            }],
             ..Paragraph::default()
         };
         assert!(sink.para(sec, mixed));
@@ -1108,6 +1138,7 @@ mod tests {
                 text: "x\u{200B}y".into(),
                 style: style::HIDDEN | 0x8000,
                 href: "http://a\u{0}b".into(),
+                ..Default::default()
             }],
             ..Paragraph::default()
         };

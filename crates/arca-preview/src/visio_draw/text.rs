@@ -71,7 +71,12 @@ fn emit_shapes(
             {
                 let p = Paragraph {
                     level,
-                    runs: vec![Run { text: line.to_owned(), style: 0, href: href.clone() }],
+                    runs: vec![Run {
+                        text: line.to_owned(),
+                        style: 0,
+                        href: href.clone(),
+                        ..Run::default()
+                    }],
                     ..Paragraph::default()
                 };
                 if !sink.para(sec, p) {
@@ -85,6 +90,7 @@ fn emit_shapes(
                     text: label_of(s),
                     style: style::ITALIC | style::SYNTHETIC,
                     href: href.clone(),
+                    ..Run::default()
                 }],
                 ..Paragraph::default()
             };
@@ -99,9 +105,10 @@ fn emit_shapes(
                     text: format!("{label}: "),
                     style: style::BOLD,
                     href: String::new(),
+                    ..Default::default()
                 });
             }
-            runs.push(Run { text: value.clone(), style: 0, href: String::new() });
+            runs.push(Run { text: value.clone(), style: 0, href: String::new(), ..Run::default() });
             let p = Paragraph { style: ParaStyle::Note, level, runs, ..Paragraph::default() };
             if !sink.para(sec, p) {
                 return false;
@@ -116,6 +123,7 @@ fn emit_shapes(
                     text: link.clone(),
                     style: style::SYNTHETIC,
                     href: String::new(),
+                    ..Run::default()
                 }],
                 ..Paragraph::default()
             };
@@ -176,6 +184,7 @@ fn emit_connections(
                 text: format!("{} → {}", name(*begin), name(*end)),
                 style: style::SYNTHETIC,
                 href: String::new(),
+                ..Default::default()
             }],
             ..Paragraph::default()
         };

@@ -782,39 +782,47 @@ vector!(
         r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#
     )
 );
-vector!(
-    dde_under_a_default_namespace_with_no_prefix_at_all,
-    Expect::Active(K::DdeField),
-    {
-        let xml = r#"<?xml version="1.0"?><document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><body><p><r><fldChar fldCharType="begin"/></r><r><instrText> DDEAUTO cmd "/c calc" </instrText></r><r><fldChar fldCharType="end"/></r></p></body></document>"#;
-        docx_with_xml("word/document.xml", xml)
-    }
-);
+vector!(dde_under_a_default_namespace_with_no_prefix_at_all, Expect::Active(K::DdeField), {
+    let xml = r#"<?xml version="1.0"?><document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><body><p><r><fldChar fldCharType="begin"/></r><r><instrText> DDEAUTO cmd "/c calc" </instrText></r><r><fldChar fldCharType="end"/></r></p></body></document>"#;
+    docx_with_xml("word/document.xml", xml)
+});
 
 // A compound file whose small stream lives in a mini stream that its root entry no longer
 // describes: the root says it holds nothing (or a loop), the stream says it holds 300 bytes.
-vector!(cfb_small_stream_with_a_root_entry_that_holds_no_mini_stream, Expect::Unverified(K::MalformedContainer), {
-    let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
-    let root = dir_entry(&d, 0);
-    // The root entry's size (a 64-bit field at +120) is the size of the mini stream.
-    patch(&mut d, root + 120, &0u64.to_le_bytes());
-    d
-});
-vector!(cfb_small_stream_with_a_root_entry_whose_mini_stream_is_one_byte, Expect::Unverified(K::MalformedContainer), {
-    let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
-    let root = dir_entry(&d, 0);
-    patch(&mut d, root + 120, &1u64.to_le_bytes());
-    d
-});
-vector!(cfb_root_entry_chain_loops_through_the_regular_fat, Expect::Unverified(K::MalformedContainer), {
-    let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
-    // The root's chain starts at its own start sector; point that sector at itself in the FAT.
-    let root = dir_entry(&d, 0);
-    let start = u32::from_le_bytes(d[root + 116..root + 120].try_into().unwrap()) as usize;
-    let fat = (u32_at(&d, 76) + 1) * 512;
-    patch(&mut d, fat + 4 * start, &(start as u32).to_le_bytes());
-    d
-});
+vector!(
+    cfb_small_stream_with_a_root_entry_that_holds_no_mini_stream,
+    Expect::Unverified(K::MalformedContainer),
+    {
+        let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
+        let root = dir_entry(&d, 0);
+        // The root entry's size (a 64-bit field at +120) is the size of the mini stream.
+        patch(&mut d, root + 120, &0u64.to_le_bytes());
+        d
+    }
+);
+vector!(
+    cfb_small_stream_with_a_root_entry_whose_mini_stream_is_one_byte,
+    Expect::Unverified(K::MalformedContainer),
+    {
+        let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
+        let root = dir_entry(&d, 0);
+        patch(&mut d, root + 120, &1u64.to_le_bytes());
+        d
+    }
+);
+vector!(
+    cfb_root_entry_chain_loops_through_the_regular_fat,
+    Expect::Unverified(K::MalformedContainer),
+    {
+        let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
+        // The root's chain starts at its own start sector; point that sector at itself in the FAT.
+        let root = dir_entry(&d, 0);
+        let start = u32::from_le_bytes(d[root + 116..root + 120].try_into().unwrap()) as usize;
+        let fat = (u32_at(&d, 76) + 1) * 512;
+        patch(&mut d, fat + 4 * start, &(start as u32).to_le_bytes());
+        d
+    }
+);
 vector!(cfb_root_entry_claims_a_size_beyond_the_file, Expect::Unverified(K::MalformedContainer), {
     let mut d = cfb_with(&[("WordDocument", vec![0x41; 300])]);
     let root = dir_entry(&d, 0);
@@ -828,7 +836,9 @@ fn pdf_with_action_on_the_pages_node(extra: &str) -> Vec<u8> {
     pdf.extend_from_slice(
         format!("2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 {extra} >> endobj\n").as_bytes(),
     );
-    pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n");
+    pdf.extend_from_slice(
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n",
+    );
     pdf.extend_from_slice(b"trailer << /Root 1 0 R >>\n%%EOF\n");
     pdf
 }
@@ -843,18 +853,14 @@ vector!(
     Expect::Active(K::PdfAutoAction),
     pdf_with_action_on_the_pages_node("/#41A << /O << /S /JavaScript /JS (x) >> >>")
 );
-vector!(
-    pdf_additional_actions_on_a_nested_pages_node,
-    Expect::Active(K::PdfAutoAction),
-    {
-        let mut pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n".to_vec();
-        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [4 0 R] /Count 1 >> endobj\n");
-        pdf.extend_from_slice(
+vector!(pdf_additional_actions_on_a_nested_pages_node, Expect::Active(K::PdfAutoAction), {
+    let mut pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n".to_vec();
+    pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [4 0 R] /Count 1 >> endobj\n");
+    pdf.extend_from_slice(
             b"4 0 obj << /Type /Pages /Parent 2 0 R /Kids [3 0 R] /Count 1 /AA << /O 5 0 R >> >> endobj\n",
         );
-        pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 4 0 R /MediaBox [0 0 9 9] >> endobj\n");
-        pdf.extend_from_slice(b"5 0 obj << /S /JavaScript /JS (app.alert\\(1\\)) >> endobj\n");
-        pdf.extend_from_slice(b"trailer << /Root 1 0 R >>\n%%EOF\n");
-        pdf
-    }
-);
+    pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 4 0 R /MediaBox [0 0 9 9] >> endobj\n");
+    pdf.extend_from_slice(b"5 0 obj << /S /JavaScript /JS (app.alert\\(1\\)) >> endobj\n");
+    pdf.extend_from_slice(b"trailer << /Root 1 0 R >>\n%%EOF\n");
+    pdf
+});
