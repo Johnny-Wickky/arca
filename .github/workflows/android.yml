@@ -129,10 +129,11 @@ jobs:
           export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android$api-clang"
           # Shared libraries are laid out for 16 KiB pages (Android 15+ devices, Google Play).
           align="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+          harden="-C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack"
           remap="--remap-path-prefix=$PWD=/arca --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
-          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $remap"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $harden $remap"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
           mkdir -p native
           for entry in aarch64-linux-android:arm64-v8a:aarch64 armv7-linux-androideabi:armeabi-v7a:arm x86_64-linux-android:x86_64:x86_64; do
             IFS=: read -r triple abi machine <<<"$entry"
@@ -140,7 +141,7 @@ jobs:
             mkdir -p "native/$abi"
             cp "target/$triple/release/libarca_jni.so" "native/$abi/"
             # Every PT_LOAD segment must be 16 KiB aligned, and the machine must be the right one.
-            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --machine "$machine"
+            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --harden --machine "$machine"
           done
           sha256sum native/*/libarca_jni.so target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm | tee native/SHA256SUMS
       - name: signing key
@@ -213,10 +214,11 @@ jobs:
           export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android$api-clang"
           # Shared libraries are laid out for 16 KiB pages (Android 15+ devices, Google Play).
           align="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+          harden="-C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack"
           remap="--remap-path-prefix=$PWD=/arca --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
-          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $remap"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $harden $remap"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
           mkdir -p native
           for entry in aarch64-linux-android:arm64-v8a:aarch64 armv7-linux-androideabi:armeabi-v7a:arm x86_64-linux-android:x86_64:x86_64; do
             IFS=: read -r triple abi machine <<<"$entry"
@@ -224,7 +226,7 @@ jobs:
             mkdir -p "native/$abi"
             cp "target/$triple/release/libarca_jni.so" "native/$abi/"
             # Every PT_LOAD segment must be 16 KiB aligned, and the machine must be the right one.
-            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --machine "$machine"
+            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --harden --machine "$machine"
           done
           sha256sum native/*/libarca_jni.so target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm | tee native/SHA256SUMS
       - name: signing key

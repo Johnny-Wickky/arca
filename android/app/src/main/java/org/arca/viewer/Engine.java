@@ -82,6 +82,7 @@ public final class Engine {
             if (status != Native.OK) {
                 error = "init failed: status " + status;
             } else {
+                Isolation.configure(input, memory, 120 * slow, 180 * slow);
                 try {
                     byte[] infoJson = Native.info();
                     if (infoJson == null) {
@@ -112,6 +113,14 @@ public final class Engine {
                 notifyListeners();
             }
         });
+        if (result.isEmpty()) {
+            try {
+                // Decide the level of isolation now, so Diagnostics can name it before any document.
+                Isolation.probe();
+            } catch (RuntimeException ignored) {
+                // a failed probe leaves the level undecided; the first document decides it
+            }
+        }
     }
 
     private static void notifyListeners() {

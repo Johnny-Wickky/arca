@@ -396,7 +396,7 @@ public final class Session {
             return;
         }
 
-        long handle = Native.docNew(limit);
+        long handle = Core.docNew(limit);
         if (handle <= 0) {
             try {
                 pfd.close();
@@ -407,19 +407,19 @@ public final class Session {
             return;
         }
         // The native side takes ownership of the descriptor and closes it.
-        long read = Native.docReadFd(handle, pfd.detachFd());
+        long read = Core.docReadFd(handle, pfd.detachFd());
         if (read < 0) {
-            Native.docFree(handle);
+            Core.docFree(handle);
             fail(ep, (int) -read, "docReadFd");
             return;
         }
         if (read == 0) {
-            Native.docFree(handle);
+            Core.docFree(handle);
             fail(ep, F_EMPTY, "empty file");
             return;
         }
         final long length = read;
-        final long jobHandle = Native.jobNew();
+        final long jobHandle = Core.jobNew();
         final long docHandle = handle;
         boolean stale;
         synchronized (lock) {
@@ -430,8 +430,8 @@ public final class Session {
             }
         }
         if (stale) {
-            Native.jobFree(jobHandle);
-            Native.docFree(docHandle);
+            Core.jobFree(jobHandle);
+            Core.docFree(docHandle);
             return;
         }
         post(new Runnable() {
@@ -445,26 +445,26 @@ public final class Session {
             }
         });
 
-        long outcome = Native.run(jobHandle, docHandle, Native.OP_SCAN, 0);
+        long outcome = Core.run(jobHandle, docHandle, Native.OP_SCAN, 0);
         // The job only lives as long as its run: startPreview/startSanitize replace the field with
         // their own job, and the scan's handle would be lost (and leaked) if it were kept for close().
         clearJob(ep, jobHandle);
-        Native.jobFree(jobHandle);
+        Core.jobFree(jobHandle);
         if (outcome <= 0) {
             fail(ep, (int) -outcome, "run");
             return;
         }
-        int status = Native.outcomeStatus(outcome);
+        int status = Core.outcomeStatus(outcome);
         if (status != Native.OK) {
             String message = describe(outcome);
-            Native.outcomeFree(outcome);
+            Core.outcomeFree(outcome);
             fail(ep, status, message);
             return;
         }
         final int unlockLevel = unlockOf(outcome);
         final Model.Report parsed;
         try {
-            byte[] json = Native.report(outcome);
+            byte[] json = Core.report(outcome);
             if (json == null) {
                 fail(ep, F_PARSE, "no report");
                 return;
@@ -474,7 +474,7 @@ public final class Session {
             fail(ep, F_PARSE, e.toString());
             return;
         } finally {
-            Native.outcomeFree(outcome);
+            Core.outcomeFree(outcome);
         }
         recordStats(app, parsed);
         post(new Runnable() {
@@ -513,7 +513,7 @@ public final class Session {
             public void run() {
                 int st;
                 try {
-                    st = Native.docSetPassword(d, bytes, 0, bytes.length);
+                    st = Core.docSetPassword(d, bytes, 0, bytes.length);
                 } finally {
                     java.util.Arrays.fill(bytes, (byte) 0);
                 }
@@ -521,19 +521,19 @@ public final class Session {
                     fail(ep, st, "docSetPassword");
                     return;
                 }
-                long j = Native.jobNew();
+                long j = Core.jobNew();
                 setJob(ep, j);
-                long outcome = Native.run(j, d, Native.OP_SCAN, 0);
+                long outcome = Core.run(j, d, Native.OP_SCAN, 0);
                 clearJob(ep, j);
-                Native.jobFree(j);
+                Core.jobFree(j);
                 if (outcome <= 0) {
                     fail(ep, (int) -outcome, "run");
                     return;
                 }
-                int status = Native.outcomeStatus(outcome);
+                int status = Core.outcomeStatus(outcome);
                 if (status == Native.WRONG_PASSWORD) {
-                    Native.outcomeFree(outcome);
-                    Native.docSetPassword(d, new byte[0], 0, 0);
+                    Core.outcomeFree(outcome);
+                    Core.docSetPassword(d, new byte[0], 0, 0);
                     post(new Runnable() {
                         @Override
                         public void run() {
@@ -548,14 +548,14 @@ public final class Session {
                 }
                 if (status != Native.OK) {
                     String message = describe(outcome);
-                    Native.outcomeFree(outcome);
+                    Core.outcomeFree(outcome);
                     fail(ep, status, message);
                     return;
                 }
                 final int unlockLevel = unlockOf(outcome);
                 final Model.Report parsed;
                 try {
-                    byte[] json = Native.report(outcome);
+                    byte[] json = Core.report(outcome);
                     if (json == null) {
                         fail(ep, F_PARSE, "no report");
                         return;
@@ -565,7 +565,7 @@ public final class Session {
                     fail(ep, F_PARSE, e.toString());
                     return;
                 } finally {
-                    Native.outcomeFree(outcome);
+                    Core.outcomeFree(outcome);
                 }
                 post(new Runnable() {
                     @Override
@@ -583,10 +583,10 @@ public final class Session {
                                 @Override
                                 public void run() {
                                     if (po > 0) {
-                                        Native.outcomeFree(po);
+                                        Core.outcomeFree(po);
                                     }
                                     if (so > 0) {
-                                        Native.outcomeFree(so);
+                                        Core.outcomeFree(so);
                                     }
                                 }
                             });
@@ -609,7 +609,7 @@ public final class Session {
 
     private static int unlockOf(long outcome) {
         try {
-            byte[] json = Native.outcomeInfo(outcome);
+            byte[] json = Core.outcomeInfo(outcome);
             return json == null ? 0 : Model.parseRunInfo(json).unlock;
         } catch (RuntimeException | OutOfMemoryError e) {
             return 0;
@@ -630,7 +630,7 @@ public final class Session {
 
     private static String describe(long outcome) {
         try {
-            byte[] json = Native.outcomeInfo(outcome);
+            byte[] json = Core.outcomeInfo(outcome);
             return json == null ? "" : Model.parseRunInfo(json).message;
         } catch (RuntimeException | OutOfMemoryError e) {
             return "";
@@ -684,7 +684,7 @@ public final class Session {
             j = job;
         }
         if (j > 0) {
-            Native.jobCancel(j);
+            Core.jobCancel(j);
         }
     }
 
@@ -717,16 +717,16 @@ public final class Session {
                 @Override
                 public void run() {
                     if (po > 0) {
-                        Native.outcomeFree(po);
+                        Core.outcomeFree(po);
                     }
                     if (so > 0) {
-                        Native.outcomeFree(so);
+                        Core.outcomeFree(so);
                     }
                     if (j > 0) {
-                        Native.jobFree(j);
+                        Core.jobFree(j);
                     }
                     if (d > 0) {
-                        Native.docFree(d);
+                        Core.docFree(d);
                     }
                 }
             });
@@ -776,34 +776,34 @@ public final class Session {
             @Override
             public void run() {
                 if (oldOutcome > 0) {
-                    Native.outcomeFree(oldOutcome);
+                    Core.outcomeFree(oldOutcome);
                 }
-                long j = Native.jobNew();
+                long j = Core.jobNew();
                 setJob(ep, j);
-                long outcome = Native.run(j, d, Native.OP_PREVIEW, reveal ? Native.PREVIEW_REVEAL_HIDDEN : 0);
+                long outcome = Core.run(j, d, Native.OP_PREVIEW, reveal ? Native.PREVIEW_REVEAL_HIDDEN : 0);
                 clearJob(ep, j);
-                Native.jobFree(j);
+                Core.jobFree(j);
                 Failure f = null;
                 Model.PreviewMeta meta = null;
                 if (outcome <= 0) {
                     f = new Failure((int) -outcome, "run");
                     outcome = 0;
                 } else {
-                    int status = Native.outcomeStatus(outcome);
+                    int status = Core.outcomeStatus(outcome);
                     if (status != Native.OK) {
                         f = new Failure(status, describe(outcome));
-                        Native.outcomeFree(outcome);
+                        Core.outcomeFree(outcome);
                         outcome = 0;
                     } else {
                         try {
-                            byte[] json = Native.previewMeta(outcome);
+                            byte[] json = Core.previewMeta(outcome);
                             if (json == null) {
                                 throw new IllegalStateException("no preview");
                             }
                             meta = Model.parsePreviewMeta(json);
                         } catch (RuntimeException | OutOfMemoryError e) {
                             f = new Failure(F_PARSE, e.toString());
-                            Native.outcomeFree(outcome);
+                            Core.outcomeFree(outcome);
                             outcome = 0;
                         }
                     }
@@ -820,7 +820,7 @@ public final class Session {
                                 worker.execute(new Runnable() {
                                     @Override
                                     public void run() {
-                                        Native.outcomeFree(stale);
+                                        Core.outcomeFree(stale);
                                     }
                                 });
                             }
@@ -882,22 +882,22 @@ public final class Session {
         worker.execute(guarded(new Runnable() {
             @Override
             public void run() {
-                long j = Native.jobNew();
+                long j = Core.jobNew();
                 setJob(ep, j);
-                long outcome = Native.run(j, d, Native.OP_RENDER, index);
+                long outcome = Core.run(j, d, Native.OP_RENDER, index);
                 clearJob(ep, j);
-                Native.jobFree(j);
+                Core.jobFree(j);
                 Failure f = null;
                 org.arca.viewer.core.PageDrawing drawing = null;
                 if (outcome <= 0) {
                     f = new Failure((int) -outcome, "run");
                 } else {
-                    int status = Native.outcomeStatus(outcome);
+                    int status = Core.outcomeStatus(outcome);
                     if (status != Native.OK) {
                         f = new Failure(status, describe(outcome));
                     } else {
                         try {
-                            byte[] json = Native.page(outcome);
+                            byte[] json = Core.page(outcome);
                             if (json == null) {
                                 throw new IllegalStateException("no page");
                             }
@@ -906,7 +906,7 @@ public final class Session {
                             f = new Failure(F_PARSE, e.toString());
                         }
                     }
-                    Native.outcomeFree(outcome);
+                    Core.outcomeFree(outcome);
                 }
                 final Failure failed = f;
                 final org.arca.viewer.core.PageDrawing shown = drawing;
@@ -944,7 +944,7 @@ public final class Session {
     /** Loads one page of preview items (called on the page executor, blocking). */
     public List<Model.Item> loadItems(long outcome, int section, long from, int count) {
         try {
-            byte[] json = Native.previewItems(outcome, section, from, count);
+            byte[] json = Core.previewItems(outcome, section, from, count);
             if (json == null) {
                 throw new IllegalStateException("page not available");
             }
@@ -971,7 +971,7 @@ public final class Session {
             worker.execute(new Runnable() {
                 @Override
                 public void run() {
-                    Native.outcomeFree(po);
+                    Core.outcomeFree(po);
                 }
             });
         }
@@ -1091,30 +1091,30 @@ public final class Session {
                     }
                     task.started = true;
                 }
-                long j = Native.jobNew();
+                long j = Core.jobNew();
                 synchronized (lock) {
                     if (ep == epoch) {
                         imageJobs.add(j);
                     }
                 }
-                long outcome = Native.run(j, d, Native.OP_IMAGE, id);
+                long outcome = Core.run(j, d, Native.OP_IMAGE, id);
                 synchronized (lock) {
                     imageJobs.remove(j);
                 }
-                Native.jobFree(j);
+                Core.jobFree(j);
                 Failure f = null;
                 android.graphics.Bitmap bitmap = null;
                 ImageFacts facts = null;
                 if (outcome <= 0) {
                     f = new Failure((int) -outcome, "run");
                 } else {
-                    int status = Native.outcomeStatus(outcome);
+                    int status = Core.outcomeStatus(outcome);
                     if (status != Native.OK) {
                         f = new Failure(status, describe(outcome));
                     } else {
                         try {
-                            byte[] info = Native.imageInfo(outcome);
-                            byte[] pixels = Native.imagePixels(outcome);
+                            byte[] info = Core.imageInfo(outcome);
+                            byte[] pixels = Core.imagePixels(outcome);
                             if (info == null || pixels == null) {
                                 throw new IllegalStateException("no picture");
                             }
@@ -1124,7 +1124,7 @@ public final class Session {
                             f = new Failure(F_PARSE, e.toString());
                         }
                     }
-                    Native.outcomeFree(outcome);
+                    Core.outcomeFree(outcome);
                 }
                 final ImageResult result = new ImageResult(bitmap, facts, f);
                 post(new Runnable() {
@@ -1264,7 +1264,7 @@ public final class Session {
             }
         }
         for (long j : running) {
-            Native.jobCancel(j);
+            Core.jobCancel(j);
         }
     }
 
@@ -1301,34 +1301,34 @@ public final class Session {
             @Override
             public void run() {
                 if (oldOutcome > 0) {
-                    Native.outcomeFree(oldOutcome);
+                    Core.outcomeFree(oldOutcome);
                 }
-                long j = Native.jobNew();
+                long j = Core.jobNew();
                 setJob(ep, j);
-                long outcome = Native.run(j, d, Native.OP_SANITIZE, flags);
+                long outcome = Core.run(j, d, Native.OP_SANITIZE, flags);
                 clearJob(ep, j);
-                Native.jobFree(j);
+                Core.jobFree(j);
                 Failure f = null;
                 Model.SanitizedInfo info = null;
                 if (outcome <= 0) {
                     f = new Failure((int) -outcome, "run");
                     outcome = 0;
                 } else {
-                    int status = Native.outcomeStatus(outcome);
+                    int status = Core.outcomeStatus(outcome);
                     if (status != Native.OK) {
                         f = new Failure(status, describe(outcome));
-                        Native.outcomeFree(outcome);
+                        Core.outcomeFree(outcome);
                         outcome = 0;
                     } else {
                         try {
-                            byte[] json = Native.sanitizedInfo(outcome);
+                            byte[] json = Core.sanitizedInfo(outcome);
                             if (json == null) {
                                 throw new IllegalStateException("no description");
                             }
                             info = Model.parseSanitized(json);
                         } catch (RuntimeException | OutOfMemoryError e) {
                             f = new Failure(F_PARSE, e.toString());
-                            Native.outcomeFree(outcome);
+                            Core.outcomeFree(outcome);
                             outcome = 0;
                         }
                     }
@@ -1344,7 +1344,7 @@ public final class Session {
                                 worker.execute(new Runnable() {
                                     @Override
                                     public void run() {
-                                        Native.outcomeFree(out);
+                                        Core.outcomeFree(out);
                                     }
                                 });
                             }
@@ -1400,7 +1400,7 @@ public final class Session {
                     if (pfd == null) {
                         technical = "the provider returned no descriptor";
                     } else {
-                        written = Native.sanitizedWriteFd(outcome, pfd.detachFd());
+                        written = Core.sanitizedWriteFd(outcome, pfd.detachFd());
                     }
                 } catch (FileNotFoundException | SecurityException | IllegalArgumentException e) {
                     technical = e.toString();
@@ -1455,7 +1455,7 @@ public final class Session {
             worker.execute(new Runnable() {
                 @Override
                 public void run() {
-                    Native.outcomeFree(so);
+                    Core.outcomeFree(so);
                 }
             });
         }

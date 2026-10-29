@@ -4,6 +4,9 @@
 package org.arca.viewer.ui;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.os.Build;
 import android.view.View;
 import android.view.Window;
@@ -20,6 +23,18 @@ import android.window.OnBackInvokedDispatcher;
  */
 public final class Compat {
     private Compat() {}
+
+    /**
+     * Binds the sandbox service. From Android 10 each distinct {@code instance} gets a process of its
+     * own, so every document runs in a fresh one; before that, unbinding the previous document has
+     * already ended the old process and the plain bind starts a new one.
+     */
+    public static boolean bindIsolated(Context c, Intent intent, String instance, ServiceConnection conn) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            return Api29.bindIsolated(c, intent, instance, conn);
+        }
+        return c.bindService(intent, conn, Context.BIND_AUTO_CREATE);
+    }
 
     /** Marks a view as a heading for screen readers (API 28+). */
     public static void markHeading(View v) {
@@ -282,6 +297,30 @@ public final class Compat {
 
     /** API 29+ calls, isolated so that older devices never load them. */
     private static final class Api29 {
+        static boolean bindIsolated(Context c, Intent intent, String instance, ServiceConnection conn) {
+            // Callbacks run on the binder thread that delivers them: the waiting thread must not
+            // depend on the main looper.
+            return c.bindIsolatedService(intent, Context.BIND_AUTO_CREATE, instance, new java.util.concurrent.Executor() {
+                @Override
+                public void execute(Runnable r) {
+                    r.run();
+                }
+            }, conn);
+        }
+
+        /**
+         * The app zygote's preload (named in the manifest): loads the engine library once, so the
+         * process of each document starts from a zygote that already has it. Nothing else is done
+         * here on purpose: a zygote must stay single-threaded, and the engine's sandbox is built
+         * per process.
+         */
+        public static final class Preload implements android.app.ZygotePreload {
+            @Override
+            public void doPreload(android.content.pm.ApplicationInfo info) {
+                org.arca.viewer.Native.isLoaded();
+            }
+        }
+
         static void noContrastScrim(Window w) {
             // The app draws its own backgrounds behind the bars; no system scrim on top of them.
             w.setNavigationBarContrastEnforced(false);

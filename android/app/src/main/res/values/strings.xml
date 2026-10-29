@@ -303,6 +303,11 @@
     <string name="diag_guest_hash">Sandbox module SHA-256</string>
     <string name="diag_limits">Limits</string>
     <string name="diag_limits_value">file up to %1$s, sandbox memory up to %2$s</string>
+    <string name="diag_isolation">Isolation</string>
+    <string name="diag_isolation_process">Process (SELinux isolated_app) + Wasm</string>
+    <string name="diag_isolation_separate">Separate process (not isolated by this system) + Wasm</string>
+    <string name="diag_isolation_in_process">In-Process Wasm</string>
+    <string name="diag_isolation_unknown">Decided when the first document is opened</string>
     <string name="diag_build_kind">Build</string>
     <string name="diag_build_release">Release</string>
     <string name="diag_build_dev">Test build</string>

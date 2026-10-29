@@ -10,6 +10,11 @@ public final class App extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        if (Isolation.isIsolatedProcess()) {
+            // The sandbox service runs the engine and nothing else: no storage, no settings, no UI.
+            return;
+        }
+        Isolation.attach(this);
         // Whatever an older version kept (a counter blob while the counter is off, first-use and
         // reminder times) is deleted before anything else runs.
         Prefs.purgeLegacy(this);

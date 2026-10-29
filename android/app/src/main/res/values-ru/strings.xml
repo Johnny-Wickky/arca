@@ -299,6 +299,11 @@
     <string name="diag_guest_hash">SHA-256 модуля песочницы</string>
     <string name="diag_limits">Пределы</string>
     <string name="diag_limits_value">файл до %1$s, память песочницы до %2$s</string>
+    <string name="diag_isolation">Изоляция</string>
+    <string name="diag_isolation_process">Process (SELinux isolated_app) + Wasm</string>
+    <string name="diag_isolation_separate">Отдельный процесс (система его не изолировала) + Wasm</string>
+    <string name="diag_isolation_in_process">In-Process Wasm</string>
+    <string name="diag_isolation_unknown">Определяется при открытии первого документа</string>
     <string name="diag_build_kind">Сборка</string>
     <string name="diag_build_release">Выпуск</string>
     <string name="diag_build_dev">Тестовая сборка</string>

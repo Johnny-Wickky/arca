@@ -74,6 +74,7 @@ public final class DiagnosticsScreen extends Screen {
             card.addView(fact(ui.str(R.string.diag_guest_hash), Fmt.grouped(i.guestSha256), true));
             card.addView(fact(ui.str(R.string.diag_limits),
                 ui.str(R.string.diag_limits_value, Fmt.size(i.maxInputBytes), Fmt.size(i.maxMemoryBytes)), false));
+            card.addView(fact(ui.str(R.string.diag_isolation), isolationLine(), false));
             Model.ReleaseInfo r = Engine.release();
             card.addView(fact(ui.str(R.string.diag_build_kind),
                 ui.str(r.ready ? R.string.diag_build_release : R.string.diag_build_dev), false));
@@ -260,6 +261,21 @@ public final class DiagnosticsScreen extends Screen {
             + (Adaptive.twoPane(act) ? ", two-pane" : "") + "; " + Hinge.describe();
     }
 
+    /** The level of isolation in force, named as it is; never the level the manifest merely asks for. */
+    private String isolationLine() {
+        switch (org.arca.viewer.Isolation.level()) {
+            case PROCESS_ISOLATED:
+                return ui.str(R.string.diag_isolation_process);
+            case PROCESS_SEPARATE:
+                return ui.str(R.string.diag_isolation_separate);
+            case IN_PROCESS:
+                String why = org.arca.viewer.Isolation.detail();
+                return ui.str(R.string.diag_isolation_in_process) + (why.isEmpty() ? "" : " (" + Fmt.clip(Fmt.safe(why), 120) + ")");
+            default:
+                return ui.str(R.string.diag_isolation_unknown);
+        }
+    }
+
     private String report() {
         StringBuilder sb = new StringBuilder();
         sb.append(appLine()).append('\n');
@@ -271,6 +287,7 @@ public final class DiagnosticsScreen extends Screen {
             Model.EngineInfo i = Engine.info();
             sb.append("Engine: ").append(i.engine).append(" ABI ").append(i.abi).append('\n');
             sb.append("Guest SHA-256: ").append(i.guestSha256).append('\n');
+            sb.append("Isolation: ").append(isolationLine()).append('\n');
             sb.append("Release build: ").append(Engine.release().ready ? "yes" : "no").append('\n');
         } else {
             sb.append("Engine: ").append(Engine.state()).append(' ').append(Fmt.safe(Engine.failure())).append('\n');

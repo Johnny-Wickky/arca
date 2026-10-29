@@ -39,6 +39,11 @@
         android:largeHeap="false"
         android:name=".App">
 
+        <!-- The app zygote that starts the sandbox process preloads the engine library (Android 10+;
+             older systems ignore this entry). -->
+        <meta-data android:name="android.app.zygote.preload.name"
+            android:value="org.arca.viewer.ui.Compat$Api29$Preload" />
+
         <!-- Samsung / legacy multi-window hint: the app handles any window size. -->
         <meta-data android:name="android.supports_size_changes" android:value="true" />
 
@@ -190,5 +195,17 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <!--
+          Wall 0: the document engine runs here, under a throw-away uid in the isolated_app SELinux
+          domain with the system seccomp filter, no storage of the app, no network and no
+          permission. It is bound per document and its process ends with the binding. Not exported:
+          only this app can reach it. See Isolation.java.
+        -->
+        <service
+            android:name=".SandboxService"
+            android:isolatedProcess="true"
+            android:useAppZygote="true"
+            android:exported="false" />
     </application>
 </manifest>
