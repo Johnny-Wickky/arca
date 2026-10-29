@@ -498,7 +498,19 @@ fn arrowheads_dashes_and_pictures_are_marked() {
     let r = render_visio_page_noted(&one(&shape), 0, &PreviewPolicy::default()).unwrap();
     assert_eq!(paths(&r.page).len(), 2, "the line and the arrowhead");
     assert!(r.notes.iter().any(|n| n.contains("arrowheads")));
-    assert!(r.notes.iter().any(|n| n.contains("dashed")));
+    assert!(r.notes.iter().any(|n| n.contains("dash patterns")));
+    // The line is cut into dashes: many separate strokes, together shorter than the line.
+    let line = paths(&r.page).into_iter().find(|(_, fill, stroke, _)| *fill == 0 && *stroke != 0).expect("the dashes");
+    let moves = line.0.chunks(3).filter(|c| c[0] == op::MOVE).count();
+    assert!(moves >= 8, "{moves} dashes");
+    let mut on = 0.0f32;
+    for c in line.0.chunks(6) {
+        if c.len() == 6 && c[0] == op::MOVE && c[3] == op::LINE {
+            on += (c[4] - c[1]).hypot(c[5] - c[2]);
+        }
+    }
+    let full = 4.0 * 72.0;
+    assert!(on > full * 0.4 && on < full * 0.7, "dashes cover {on} of {full} points");
     let pic = r#"<Shape ID="1" Type="Foreign"><Cell N="PinX" V="2"/><Cell N="PinY" V="2"/><Cell N="Width" V="2"/><Cell N="Height" V="1"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><ForeignData ForeignType="Bitmap"><Rel r:id="rId9"/></ForeignData></Shape>"#;
     let p = render(&one(pic));
     assert!(p.prims.iter().any(|q| matches!(q, Prim::Image { label, id, .. } if label == "picture (bitmap)" && *id == crate::model::IMAGE_NONE)));
