@@ -30,6 +30,8 @@ public final class Prefs {
 
     private static final String FILE = "arca";
     private static final String K_THEME = "theme";
+    private static final String K_PALETTE = "palette";
+    private static final String K_GLASS = "glass";
     private static final String K_LANG = "lang";
     private static final String K_TEXT = "text_scale";
     private static final String K_ZOOM = "zoom_pct";
@@ -57,6 +59,24 @@ public final class Prefs {
 
     public static void setTheme(Context c, int v) {
         sp(c).edit().putInt(K_THEME, v).apply();
+    }
+
+    /** The colour palette: 0 is the classic light / dark pair, 1 to 6 the named palettes of {@code ui.Theme}. */
+    public static int palette(Context c) {
+        return clamp(sp(c).getInt(K_PALETTE, 0), 0, 6);
+    }
+
+    public static void setPalette(Context c, int v) {
+        sp(c).edit().putInt(K_PALETTE, v).apply();
+    }
+
+    /** Whether the translucent "liquid glass" panels are on (off by default). */
+    public static boolean glass(Context c) {
+        return sp(c).getBoolean(K_GLASS, false);
+    }
+
+    public static void setGlass(Context c, boolean on) {
+        sp(c).edit().putBoolean(K_GLASS, on).apply();
     }
 
     public static int lang(Context c) {
@@ -143,7 +163,8 @@ public final class Prefs {
     public static Context wrap(Context base) {
         int theme = theme(base);
         int lang = lang(base);
-        if (theme == THEME_SYSTEM && lang == LANG_SYSTEM) {
+        int palette = palette(base);
+        if (theme == THEME_SYSTEM && lang == LANG_SYSTEM && palette == 0) {
             return base;
         }
         // Only the fields that are overridden, as a delta: the platform merges it onto the live
@@ -151,7 +172,11 @@ public final class Prefs {
         // orientation and density of this very moment, and the layout would stop following
         // rotation, folding and split-screen. (An unset field is 0 / "undefined" here.)
         Configuration conf = new Configuration();
-        if (theme != THEME_SYSTEM) {
+        Boolean paletteDark = org.arca.viewer.ui.Theme.dark(palette);
+        if (paletteDark != null) {
+            // A named palette is light or dark by itself; the system widgets follow it.
+            conf.uiMode = paletteDark.booleanValue() ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO;
+        } else if (theme != THEME_SYSTEM) {
             conf.uiMode = theme == THEME_DARK ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO;
         }
         if (lang != LANG_SYSTEM) {

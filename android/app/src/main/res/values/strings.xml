@@ -269,6 +269,16 @@
     <string name="theme_system">System</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
+    <string name="settings_palette">Colour palette</string>
+    <string name="palette_classic">Classic</string>
+    <string name="palette_alabaster">Alabaster Studio</string>
+    <string name="palette_obsidian">Obsidian Vault</string>
+    <string name="palette_cashmere">Cashmere &amp; Cappuccino</string>
+    <string name="palette_sierra">Sierra Blue &amp; Slate</string>
+    <string name="palette_emerald">Emerald SecOps</string>
+    <string name="palette_desert">Desert Titanium</string>
+    <string name="settings_glass">Liquid Glass</string>
+    <string name="settings_glass_desc">Translucent glossy panels over a soft colour wash. Off by default; turning it on changes only how the app looks.</string>
     <string name="settings_language">Language</string>
     <string name="lang_system">System</string>
     <string name="lang_ru" translatable="false">Русский</string>

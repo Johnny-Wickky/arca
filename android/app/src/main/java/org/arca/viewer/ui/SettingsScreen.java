@@ -43,6 +43,30 @@ public final class SettingsScreen extends Screen {
                 }
             }));
         look.addView(ui.space(12));
+        look.addView(ui.text(R.string.settings_palette, Ui.SMALL));
+        look.addView(chips(new int[] {R.string.palette_classic, R.string.palette_alabaster,
+                R.string.palette_obsidian, R.string.palette_cashmere, R.string.palette_sierra,
+                R.string.palette_emerald, R.string.palette_desert},
+            Prefs.palette(act), new Choice() {
+                @Override
+                public void chosen(int index) {
+                    if (index != Prefs.palette(act)) {
+                        Prefs.setPalette(act, index);
+                        act.recreate(); // a palette is light or dark by itself
+                    }
+                }
+            }));
+        look.addView(toggle(R.string.settings_glass, R.string.settings_glass_desc, Prefs.glass(act),
+            new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton b, boolean on) {
+                    if (on != Prefs.glass(act)) {
+                        Prefs.setGlass(act, on);
+                        act.recreate();
+                    }
+                }
+            }));
+        look.addView(ui.space(12));
         look.addView(ui.text(R.string.settings_language, Ui.SMALL));
         look.addView(chips(new int[] {R.string.lang_system, R.string.lang_ru, R.string.lang_en},
             Prefs.lang(act), new Choice() {

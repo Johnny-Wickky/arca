@@ -267,6 +267,16 @@
     <string name="theme_system">Как в системе</string>
     <string name="theme_light">Светлая</string>
     <string name="theme_dark">Тёмная</string>
+    <string name="settings_palette">Цветовая палитра</string>
+    <string name="palette_classic">Классическая</string>
+    <string name="palette_alabaster">Alabaster Studio</string>
+    <string name="palette_obsidian">Obsidian Vault</string>
+    <string name="palette_cashmere">Cashmere &amp; Cappuccino</string>
+    <string name="palette_sierra">Sierra Blue &amp; Slate</string>
+    <string name="palette_emerald">Emerald SecOps</string>
+    <string name="palette_desert">Desert Titanium</string>
+    <string name="settings_glass">Жидкое стекло</string>
+    <string name="settings_glass_desc">Полупрозрачные глянцевые панели на мягком цветовом фоне. По умолчанию выключено; меняется только внешний вид приложения.</string>
     <string name="settings_language">Язык</string>
     <string name="lang_system">Как в системе</string>
     <string name="settings_text_size">Размер текста в просмотре</string>
