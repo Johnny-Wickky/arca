@@ -45,10 +45,14 @@ public final class Capabilities {
     /** Visio formats: drawn flat, as the specification describes the shapes (there is no 3-D scene). */
     private static final Set<String> VISIO = set("Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd");
 
-    /** Formats that can be drawn page by page: PDF, slides, sheets, Visio drawings and the relationship diagram of Access databases. */
+    /**
+     * Formats that can be drawn page by page: PDF, slides, sheets, Visio drawings, the relationship
+     * diagram of Access databases, and text documents laid out from their reading view.
+     */
     private static final Set<String> RENDER = set(
         "Pdf",
-        "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm", "Odp",
+        "Docx", "Docm", "Dotx", "Dotm", "Odt", "Rtf", "Doc",
+        "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm", "Odp", "Ppt",
         "Xlsx", "Xlsm", "Xltx", "Xltm", "Ods", "Xls",
         "Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd",
         "AccessJet3", "AccessJet4", "AccessAce");

@@ -343,11 +343,24 @@ public final class Model {
         public final String text;
         public final int style;
         public final String href;
+        /** Text colour as 0xFFRRGGBB, 0 for the viewer's own. */
+        public final int fg;
+        /** Highlight as 0xFFRRGGBB, 0 for none. */
+        public final int bg;
+        /** Size relative to the paragraph's text in percent, 0 for the same. */
+        public final int scale;
 
         Run(String text, int style, String href) {
+            this(text, style, href, 0, 0, 0);
+        }
+
+        Run(String text, int style, String href, int fg, int bg, int scale) {
             this.text = text;
             this.style = style;
             this.href = href;
+            this.fg = fg;
+            this.bg = bg;
+            this.scale = scale;
         }
     }
 
@@ -358,6 +371,14 @@ public final class Model {
         public int align;
         public int level;
         public String marker = "";
+        /** Left indent in points, and the extra indent of the first line (negative: hanging). */
+        public int indentLeft;
+        public int indentFirst;
+        /** Line spacing in percent of single, 0 for single. */
+        public int lineSpacing;
+        /** Colour of the rule down the left edge (or of the frame), 0xFFRRGGBB, 0 for none. */
+        public int border;
+        public boolean boxed;
         public List<Run> runs = new ArrayList<>();
 
         /** Whether any run was composed by the viewer ({@link Model#SYNTHETIC}). */
@@ -501,6 +522,11 @@ public final class Model {
         p.align = Json.integer(m, "a");
         p.level = Json.integer(m, "l");
         p.marker = Json.str(m, "m");
+        p.indentLeft = (int) Math.max(0L, Math.min(2000L, Json.num(m, "il")));
+        p.indentFirst = (int) Math.max(-2000L, Math.min(2000L, Json.num(m, "if")));
+        p.lineSpacing = (int) Math.max(0L, Math.min(500L, Json.num(m, "ls")));
+        p.border = (int) (Json.num(m, "bd") & 0xFFFFFFFFL);
+        p.boxed = p.border != 0 && Json.num(m, "bx") != 0;
         for (Object o : Json.arr(m.get("r"))) {
             List<Object> run = Json.arr(o);
             if (run.isEmpty()) {
@@ -509,7 +535,10 @@ public final class Model {
             String text = Json.str(run.get(0), "");
             int style = run.size() > 1 ? (int) (Json.num(run.get(1), 0L) & STYLE_MASK) : 0;
             String href = run.size() > 2 ? Json.str(run.get(2), "") : "";
-            p.runs.add(new Run(text, style, href));
+            int fg = run.size() > 3 ? (int) (Json.num(run.get(3), 0L) & 0xFFFFFFFFL) : 0;
+            int bg = run.size() > 4 ? (int) (Json.num(run.get(4), 0L) & 0xFFFFFFFFL) : 0;
+            int scale = run.size() > 5 ? (int) Math.max(0L, Math.min(400L, Json.num(run.get(5), 0L))) : 0;
+            p.runs.add(new Run(text, style, href, fg, bg, scale));
         }
         return p;
     }
