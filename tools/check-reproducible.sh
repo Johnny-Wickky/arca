@@ -30,9 +30,13 @@ for dir in "${copies[@]}"; do
     (
         cd "$dir"
         export CARGO_TARGET_DIR="$dir/target"
-        # shellcheck disable=SC2086
-        cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest --locked ${ARCA_CARGO_FLAGS:-} >/dev/null 2>&1
+        . "$dir/tools/guest-env.sh"
+        arca_guest_env "$dir"
+        arca_guest_build >/dev/null 2>&1
         if [ -z "${ARCA_REPRO_GUEST_ONLY:-}" ]; then
+            # The host library is built without the guest flags: its own path remapping is the job
+            # of the Android scripts, and the guest it embeds is the one built above.
+            unset RUSTFLAGS
             # shellcheck disable=SC2086
             ARCA_GUEST_WASM="$dir/$guest" cargo build --release -p arca-jni --locked ${ARCA_CARGO_FLAGS:-} >/dev/null 2>&1
         fi
