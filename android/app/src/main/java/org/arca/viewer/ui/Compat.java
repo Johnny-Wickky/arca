@@ -12,6 +12,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+
+import org.arca.viewer.Prefs;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
@@ -34,6 +36,16 @@ public final class Compat {
             return Api29.bindIsolated(c, intent, instance, conn);
         }
         return c.bindService(intent, conn, Context.BIND_AUTO_CREATE);
+    }
+
+    /**
+     * Blurs what is behind {@code w} (Liquid Glass dialogs and floating panels) where the system
+     * offers it: Android 12+ with cross-window blur enabled (some devices switch it off in battery
+     * saver or developer options). Returns whether a blur is in effect; when it is not, the caller's
+     * translucent panel already reads well without it.
+     */
+    public static boolean blurBehind(Window w, int radiusPx) {
+        return Build.VERSION.SDK_INT >= 31 && Api31.blurBehind(w, radiusPx);
     }
 
     /** Marks a view as a heading for screen readers (API 28+). */
@@ -140,6 +152,21 @@ public final class Compat {
         w.getDecorView().setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         if (Build.VERSION.SDK_INT >= 29) {
             Api29.noContentCapture(w);
+        }
+        if (Theme.glass(owner)) {
+            // Liquid Glass: a glass panel for the dialog, blurred behind where the system allows it.
+            float density = owner.getResources().getDisplayMetrics().density;
+            boolean blurred = blurBehind(w, Math.round(24f * density));
+            Boolean palette = Theme.dark(Prefs.palette(owner));
+            boolean dark = palette != null ? palette : (owner.getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+            int surface = Theme.color(owner, org.arca.viewer.R.color.arca_surface);
+            // Without a blur the panel is made more opaque, so that whatever shows through stays quiet.
+            int body = Theme.withAlpha(surface, blurred ? (dark ? 0xD0 : 0xCC) : 0xF2);
+            android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+            g.setColor(body);
+            g.setCornerRadius(24f * density);
+            w.setBackgroundDrawable(g);
         }
     }
 
@@ -329,6 +356,22 @@ public final class Compat {
 
         static void noContentCapture(Window w) {
             w.getDecorView().setImportantForContentCapture(View.IMPORTANT_FOR_CONTENT_CAPTURE_NO_EXCLUDE_DESCENDANTS);
+        }
+    }
+
+    /** API 31+ calls, isolated so that older devices never load them. */
+    private static final class Api31 {
+        static boolean blurBehind(Window w, int radiusPx) {
+            android.view.WindowManager wm = w.getWindowManager();
+            if (wm == null || !wm.isCrossWindowBlurEnabled()) {
+                return false;
+            }
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
+            android.view.WindowManager.LayoutParams lp = w.getAttributes();
+            lp.setBlurBehindRadius(radiusPx);
+            w.setAttributes(lp);
+            w.setBackgroundBlurRadius(radiusPx);
+            return true;
         }
     }
 

@@ -4,8 +4,17 @@
 package org.arca.viewer.ui;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.PixelFormat;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
 
 import org.arca.viewer.Prefs;
 
@@ -56,7 +65,7 @@ public final class Theme {
             0xFFD6EFE9, 0xFF00201D, 0xFFF1EFE9, 0xFF6E6A62, 0xFF1A5A9E, 0xFFFFE9A8, 0xFFFFB347, 0x66000000},
         // Obsidian Vault: true black
         {0xFF000000, 0xFF0A0A0B, 0xFF161719, 0xFFE9EAEC, 0xFF9EA2A8, 0xFF26282C, 0xFF4FD1C5, 0xFF00201D,
-            0xFF0C3B36, 0xFFCFF5F0, 0xFF111214, 0xFF7F858C, 0xFF8EC1FF, 0xFF5A4A12, 0xFF8F6414, 0xB3000000},
+            0xFF0C3B36, 0xFFCFF5F0, 0xFF111214, 0xFF7F858C, 0xFF8EC1FF, 0xFF5A4A12, 0xFF8A5C0C, 0xB3000000},
         // Cashmere & Cappuccino: cream and coffee
         {0xFFF4EBDD, 0xFFFBF5EA, 0xFFE9DAC6, 0xFF33261B, 0xFF685240, 0xFFD2BEA4, 0xFF7B4A28, 0xFFFFFFFF,
             0xFFEFD7BD, 0xFF2C1507, 0xFFEDE0CD, 0xFF7C6A58, 0xFF1F5C94, 0xFFF6DC93, 0xFFF2A94A, 0x66000000},
@@ -65,10 +74,10 @@ public final class Theme {
             0xFFCFE0F2, 0xFF0A2238, 0xFFE1E8F0, 0xFF66737F, 0xFF1A5A9E, 0xFFFFE9A8, 0xFFFFB347, 0x66000000},
         // Emerald SecOps: dark emerald
         {0xFF05130E, 0xFF0A1F17, 0xFF123027, 0xFFD9F4E7, 0xFF8DB8A2, 0xFF1E4A3B, 0xFF34E0A1, 0xFF00281A,
-            0xFF0F4A36, 0xFFC8F7E1, 0xFF0E2A20, 0xFF78A08C, 0xFF7FD0FF, 0xFF4F4A10, 0xFF8A6C14, 0xB3000000},
+            0xFF0F4A36, 0xFFC8F7E1, 0xFF0E2A20, 0xFF78A08C, 0xFF7FD0FF, 0xFF4F4A10, 0xFF8A5C0C, 0xB3000000},
         // Desert Titanium: warm graphite and bronze
         {0xFF1A1713, 0xFF24201B, 0xFF322C25, 0xFFEEE5D8, 0xFFB5A894, 0xFF483F34, 0xFFDBA466, 0xFF2B1C08,
-            0xFF4A3418, 0xFFF5DDBB, 0xFF2A251F, 0xFF9B8F7D, 0xFF9CC8F0, 0xFF5A4A12, 0xFF8F6414, 0xB3000000},
+            0xFF4A3418, 0xFFF5DDBB, 0xFF2A251F, 0xFF9B8F7D, 0xFF9CC8F0, 0xFF5A4A12, 0xFF8A5C0C, 0xB3000000},
     };
 
     private static final boolean[] DARK = {false, false, true, false, false, true, true};
@@ -183,19 +192,77 @@ public final class Theme {
         return (argb & 0x00FFFFFF) | ((alpha & 0xFF) << 24);
     }
 
+    /** Opacity of the body of a glass panel, light and dark; the contrast test checks text on exactly these. */
+    public static final int GLASS_BODY_LIGHT = 0xA8;
+    public static final int GLASS_BODY_DARK = 0xCC;
+    /** The sheen at the top-left of a glass panel. */
+    public static final int GLASS_SHEEN_LIGHT = 0x99FFFFFF;
+    public static final int GLASS_SHEEN_DARK = 0x14FFFFFF;
+
     /**
      * The fill of a "glass" panel: the surface colour made translucent, with a light sheen from the
-     * top-left corner and a thin bright edge. No blur is applied behind it (the platform offers none
-     * for a view's backdrop on the supported versions); the translucency shows the window gradient.
+     * top-left corner and a half-dp specular edge (a bright gradient that fades along the rim, like
+     * light on the edge of glass). Where the system can blur what is behind a window (Android 12+,
+     * see {@link Compat#blurBehind}) dialogs and floating panels get a real blur; the panels of the
+     * screen itself show the window's soft gradient through their translucency. The body is opaque
+     * enough that text stays readable on every version.
      */
-    public static GradientDrawable glassPanel(Context c, int surface, boolean dark, float radiusPx, int strokePx) {
-        int sheen = dark ? 0x26FFFFFF : 0x99FFFFFF;
-        int body = withAlpha(surface, dark ? 0xB0 : 0xA8);
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+    public static Drawable glassPanel(Context c, int surface, boolean dark, float radiusPx, int strokePx) {
+        int sheen = dark ? GLASS_SHEEN_DARK : GLASS_SHEEN_LIGHT;
+        int body = withAlpha(surface, dark ? GLASS_BODY_DARK : GLASS_BODY_LIGHT);
+        GradientDrawable fill = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
             new int[] {blend(body, sheen), body});
-        g.setCornerRadius(radiusPx);
-        g.setStroke(Math.max(1, strokePx), dark ? 0x40FFFFFF : 0xCCFFFFFF);
-        return g;
+        fill.setCornerRadius(radiusPx);
+        float edge = Math.max(1f, c.getResources().getDisplayMetrics().density * 0.5f);
+        return new LayerDrawable(new Drawable[] {fill, new SpecularEdge(radiusPx, edge, dark)});
+    }
+
+    /** A rim of light: a thin gradient outline, bright at the top-left, faint in the middle, glinting at the bottom-right. */
+    private static final class SpecularEdge extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private final float radius;
+        private final float width;
+        private final int bright;
+        private final int faint;
+
+        SpecularEdge(float radius, float width, boolean dark) {
+            this.radius = radius;
+            this.width = width;
+            this.bright = dark ? 0x99FFFFFF : 0xFFFFFFFF;
+            this.faint = dark ? 0x1AFFFFFF : 0x40FFFFFF;
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(width);
+        }
+
+        @Override
+        protected void onBoundsChange(android.graphics.Rect b) {
+            float half = width / 2f;
+            rect.set(b.left + half, b.top + half, b.right - half, b.bottom - half);
+            paint.setShader(new LinearGradient(b.left, b.top, b.right, b.bottom,
+                new int[] {bright, faint, faint, bright & 0x80FFFFFF | 0x40000000}, new float[] {0f, 0.35f, 0.7f, 1f},
+                Shader.TileMode.CLAMP));
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            canvas.drawRoundRect(rect, radius, radius, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter filter) {
+            paint.setColorFilter(filter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
     }
 
     /** The window background under glass panels: a soft diagonal wash of the brand colour. */
