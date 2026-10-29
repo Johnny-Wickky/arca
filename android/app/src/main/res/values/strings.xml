@@ -341,6 +341,9 @@
     <string name="pages_next">Next page</string>
     <string name="pages_position">Page %1$d of %2$d</string>
     <string name="pages_bar_text">Text</string>
+    <string name="pages_bar_pages">Pages</string>
+    <string name="reading_slider">Position in the section</string>
+    <string name="reading_progress">Section %1$d of %2$d · %3$d%%</string>
     <string name="pages_slider">Page</string>
     <string name="pages_loading">Drawing the page in the sandbox…</string>
     <string name="pages_failed">This page could not be drawn.</string>
