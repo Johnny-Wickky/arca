@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::PreviewError;
 use crate::model::{
-    Align, Block, Cell, IMAGE_NONE, ImageInfo, ParaFmt, ParaStyle, Row, RunFmt, SectionKind, Table,
-    style,
+    Align, Block, Cell, IMAGE_NONE, ImageInfo, PageSetup, ParaFmt, ParaStyle, Paragraph, Row, RunFmt,
+    SectionKind, TabStop, Table, style,
 };
 use crate::opc::Package;
 use crate::sink::{ParaBuilder, SectionId, Sink};
@@ -179,6 +179,7 @@ struct StyleDef {
     num: Option<(u32, u32)>,
     look: Look,
     para: ParaFmt,
+    tabs: Vec<TabStop>,
 }
 
 /// Paragraph styles by id.
@@ -220,6 +221,22 @@ fn para_style_by_name(name: &str) -> Option<ParaStyle> {
 }
 
 impl Styles {
+    /// The tab stops a style chain gives (the nearest style that sets any).
+    fn tabs_of(&self, id: &str) -> Vec<TabStop> {
+        let mut cur = id;
+        for _ in 0..12 {
+            let Some(def) = self.defs.get(cur) else { break };
+            if !def.tabs.is_empty() {
+                return def.tabs.clone();
+            }
+            if def.based_on.is_empty() {
+                break;
+            }
+            cur = &def.based_on;
+        }
+        Vec::new()
+    }
+
     fn resolve(&self, id: &str) -> Resolved {
         let mut out = Resolved::default();
         let mut cur = id;
@@ -372,6 +389,14 @@ impl Handler for StylesHandler<'_> {
             "ind" | "spacing" if self.in_ppr => {
                 if let Some((_, d)) = self.cur.as_mut() {
                     para_prop(tag, &mut d.para, &mut self.borders, false);
+                }
+            }
+            "tab" if self.in_ppr => {
+                if let Some((_, d)) = self.cur.as_mut()
+                    && let Some(t) = tab_stop(tag)
+                    && d.tabs.len() < 64
+                {
+                    d.tabs.push(t);
                 }
             }
             "numPr" if self.in_ppr => {
@@ -673,6 +698,7 @@ struct ParaState {
     page_break: bool,
     fmt: ParaFmt,
     borders: Borders,
+    tabs: Vec<TabStop>,
 }
 
 #[derive(Debug, Default)]
@@ -838,6 +864,9 @@ impl<'a, 'p> Walker<'a, 'p> {
         let mut own = ps.fmt;
         finish_borders(ps.borders, &mut own);
         para = para.with_fmt(own.or(resolved.fmt));
+        let mut tabs = if ps.tabs.is_empty() { self.styles.tabs_of(&ps.style_id) } else { ps.tabs };
+        tabs.sort_by_key(|t| t.pos);
+        para.tabs = tabs;
         // Lists.
         let num = ps.num.or(resolved.num);
         if let Some((num_id, ilvl)) = num
@@ -976,6 +1005,14 @@ impl Handler for Walker<'_, '_> {
             "ind" | "spacing" if self.in_ppr => {
                 if let Some(p) = self.para.as_mut() {
                     para_prop(tag, &mut p.fmt, &mut p.borders, false);
+                }
+            }
+            "tab" if self.in_ppr => {
+                if let Some(p) = self.para.as_mut()
+                    && let Some(t) = tab_stop(tag)
+                    && p.tabs.len() < 64
+                {
+                    p.tabs.push(t);
                 }
             }
             "outlineLvl" if self.in_ppr => {
@@ -1357,6 +1394,149 @@ fn read_xml<'k>(pkg: &mut Package<'k>, part: &str) -> Result<Option<String>, Pre
     Ok(Some(pkg.decode(part, &bytes)?.into_owned()))
 }
 
+// ---------------------------------------------------------------------------
+// Page setup and tab stops
+// ---------------------------------------------------------------------------
+
+/// A `w:tab` of a paragraph's tab stops; `clear` and bar tabs give nothing.
+fn tab_stop(tag: &Tag<'_>) -> Option<TabStop> {
+    let kind = match tag.attr("val").as_deref() {
+        None | Some("left" | "start" | "num") => 0,
+        Some("center") => 1,
+        Some("right" | "end") => 2,
+        Some("decimal") => 3,
+        _ => return None,
+    };
+    let leader = match tag.attr("leader").as_deref() {
+        Some("dot" | "middleDot") => 1,
+        Some("hyphen") => 2,
+        Some("underscore" | "heavy") => 3,
+        _ => 0,
+    };
+    let pos = tag.attr("pos").and_then(|v| v.parse::<i64>().ok())?;
+    Some(TabStop { pos: twips_pt(pos), kind, leader })
+}
+
+/// Reads the first section's page: sheet size, margins, columns and the headers and footers it
+/// names (the relationship ids of the default ones).
+#[derive(Debug, Default)]
+struct PageHandler {
+    page: PageSetup,
+    in_sect: bool,
+    found: bool,
+    header: Option<String>,
+    footer: Option<String>,
+}
+
+impl Handler for PageHandler {
+    fn start(&mut self, tag: &Tag<'_>, _empty: bool) -> Flow {
+        if self.found {
+            return Flow::Continue;
+        }
+        let num = |name: &str| tag.attr(name).and_then(|v| v.parse::<i64>().ok());
+        match tag.local() {
+            "sectPr" => self.in_sect = true,
+            "pgSz" if self.in_sect => {
+                let (mut w, mut h) = (num("w").unwrap_or(0), num("h").unwrap_or(0));
+                if tag.attr("orient").as_deref() == Some("landscape") && w < h {
+                    std::mem::swap(&mut w, &mut h);
+                }
+                self.page.width = twips_pt(w);
+                self.page.height = twips_pt(h);
+            }
+            "pgMar" if self.in_sect => {
+                self.page.left = twips_pt(num("left").or_else(|| num("start")).unwrap_or(0));
+                self.page.right = twips_pt(num("right").or_else(|| num("end")).unwrap_or(0));
+                self.page.top = twips_pt(num("top").unwrap_or(0));
+                self.page.bottom = twips_pt(num("bottom").unwrap_or(0));
+            }
+            "cols" if self.in_sect => {
+                self.page.columns = u8::try_from(num("num").unwrap_or(1).clamp(1, 8)).unwrap_or(1);
+                self.page.gap = twips_pt(num("space").unwrap_or(720));
+            }
+            "headerReference" | "footerReference" if self.in_sect => {
+                let header = tag.local() == "headerReference";
+                let slot = if header { &mut self.header } else { &mut self.footer };
+                let default = tag.attr("type").is_none_or(|t| t == "default");
+                if let Some(id) = tag.attr_rel("id")
+                    && (default || slot.is_none())
+                {
+                    *slot = Some(id.into_owned());
+                }
+            }
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    fn end(&mut self, local: &str) {
+        if local == "sectPr" && self.in_sect {
+            self.in_sect = false;
+            self.found = true;
+        }
+    }
+
+    fn text(&mut self, _raw: &str, _cdata: bool) -> Result<(), XmlError> {
+        Ok(())
+    }
+
+    fn done(&self) -> bool {
+        self.found
+    }
+}
+
+/// The paragraphs of a header or footer part, read in a scratch section of the sink.
+fn running_text(
+    pkg: &mut Package<'_>,
+    sink: &mut Sink<'_>,
+    main: &str,
+    rid: &str,
+    styles: &Styles,
+    numbering: &Numbering,
+    counters: &mut BTreeMap<u32, [u32; 9]>,
+    refs: &mut Vec<String>,
+) -> Result<Vec<Paragraph>, PreviewError> {
+    let Some((part, false)) = pkg.rel_by_id(main, rid)? else { return Ok(Vec::new()) };
+    let Some(text) = read_xml(pkg, &part)? else { return Ok(Vec::new()) };
+    let rels = rel_map(pkg, &part)?;
+    let Some(id) = sink.open_section(SectionKind::Headers, "", false) else {
+        return Ok(Vec::new());
+    };
+    {
+        let mut w = Walker::new(sink, id, Mode::Headers, styles, numbering, counters, rels, refs);
+        let _ = xml::drive(&text, pkg.limits(), &mut w);
+        w.finish_para();
+    }
+    Ok(sink.take_paragraphs(id))
+}
+
+/// Sets the page of the body section from the first `w:sectPr`.
+fn read_page(
+    pkg: &mut Package<'_>,
+    sink: &mut Sink<'_>,
+    main: &str,
+    body: &str,
+    sec: SectionId,
+    styles: &Styles,
+    numbering: &Numbering,
+    counters: &mut BTreeMap<u32, [u32; 9]>,
+    refs: &mut Vec<String>,
+) -> Result<(), PreviewError> {
+    let mut h = PageHandler::default();
+    if xml::drive(body, pkg.limits(), &mut h).is_err() && !h.found {
+        return Ok(());
+    }
+    let mut page = std::mem::take(&mut h.page);
+    if let Some(rid) = h.header.as_deref() {
+        page.header = running_text(pkg, sink, main, rid, styles, numbering, counters, refs)?;
+    }
+    if let Some(rid) = h.footer.as_deref() {
+        page.footer = running_text(pkg, sink, main, rid, styles, numbering, counters, refs)?;
+    }
+    sink.set_page(sec, page);
+    Ok(())
+}
+
 /// Extracts a Word document.
 pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), PreviewError> {
     let main = pkg
@@ -1418,6 +1598,9 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
     };
     if failed {
         sink.skipped(&main);
+    }
+    if matches!(sink.section_kind(sec), Some(SectionKind::Body)) {
+        read_page(pkg, sink, &main, &body, sec, &styles, &numbering, &mut counters, &mut refs)?;
     }
 
     // Footnotes, endnotes, comments.
@@ -1786,6 +1969,53 @@ mod docx_tests {
         assert_eq!(by("tail"), Some(0), "formatting history must not leak into the current run");
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::HiddenShown && n.detail == "text"));
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::TrackedChanges && n.count == 2));
+    }
+
+    #[test]
+    fn page_setup_columns_running_text_and_tab_stops() {
+        let header = format!(
+            r#"<w:hdr {}><w:p><w:r><w:t>Top line</w:t></w:r></w:p></w:hdr>"#,
+            crate::testkit::W_NS
+        );
+        let footer = format!(
+            r#"<w:ftr {}><w:p><w:r><w:t>Bottom line</w:t></w:r></w:p></w:ftr>"#,
+            crate::testkit::W_NS
+        );
+        let r = rels(&[("rH", "header", "header1.xml"), ("rF", "footer", "footer1.xml")]);
+        let body = r#"<w:p><w:pPr><w:tabs><w:tab w:val="clear" w:pos="100"/><w:tab w:val="right" w:leader="dot" w:pos="8000"/><w:tab w:val="left" w:pos="1440"/></w:tabs></w:pPr><w:r><w:t>Chapter</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>7</w:t></w:r></w:p>
+            <w:sectPr><w:headerReference w:type="default" r:id="rH"/><w:footerReference w:type="default" r:id="rF"/>
+            <w:pgSz w:w="12240" w:h="15840" w:orient="landscape"/><w:pgMar w:top="1440" w:right="720" w:bottom="1000" w:left="1080"/>
+            <w:cols w:num="2" w:space="360"/></w:sectPr>"#;
+        let p = ok(&docx_with(
+            body,
+            &[
+                ("word/header1.xml", header.as_str()),
+                ("word/footer1.xml", footer.as_str()),
+                ("word/_rels/document.xml.rels", r.as_str()),
+            ],
+        ));
+        let sec = body_section(&p);
+        let page = &sec.page;
+        assert_eq!((page.width, page.height), (792, 612), "Letter turned to landscape");
+        assert_eq!((page.left, page.right, page.top, page.bottom), (54, 36, 72, 50));
+        assert_eq!((page.columns, page.gap), (2, 18));
+        assert_eq!(page.header.first().map(Paragraph::text).as_deref(), Some("Top line"));
+        assert_eq!(page.footer.first().map(Paragraph::text).as_deref(), Some("Bottom line"));
+        // The reading view still has its own section of headers and footers.
+        assert_eq!(p.sections.iter().filter(|s| s.kind == SectionKind::Headers).count(), 1);
+        let para = paragraphs(sec).into_iter().next().expect("paragraph").clone();
+        assert_eq!(
+            para.tabs,
+            vec![
+                TabStop { pos: 72, kind: 0, leader: 0 },
+                TabStop { pos: 400, kind: 2, leader: 1 },
+            ],
+            "a cleared stop is dropped and the rest are in order"
+        );
+    }
+
+    fn body_section(p: &crate::model::Preview) -> &crate::model::Section {
+        p.sections.iter().find(|s| s.kind == SectionKind::Body).expect("body")
     }
 
     #[test]

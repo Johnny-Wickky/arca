@@ -480,6 +480,35 @@ impl<'p> Sink<'p> {
         self.sections.get(id.0).map_or(0, |s| s.blocks.len())
     }
 
+    /// The kind of a section, if it exists.
+    pub(crate) fn section_kind(&self, id: SectionId) -> Option<SectionKind> {
+        self.sections.get(id.0).map(|s| s.kind)
+    }
+
+    /// Sets the page of a text document\'s body section.
+    pub(crate) fn set_page(&mut self, id: SectionId, page: crate::model::PageSetup) {
+        if let Some(s) = self.sections.get_mut(id.0) {
+            s.page = page;
+        }
+    }
+
+    /// Takes the paragraphs of a scratch section that was the last one opened, and removes it.
+    pub(crate) fn take_paragraphs(&mut self, id: SectionId) -> Vec<Paragraph> {
+        if id.0.saturating_add(1) != self.sections.len() {
+            return Vec::new();
+        }
+        let Some(s) = self.sections.pop() else { return Vec::new() };
+        self.discarded.retain(|d| *d != id.0);
+        s.blocks
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::Para(p) => Some(p),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+
     /// Removes a section that turned out to be empty and was the last one opened.
     pub(crate) fn drop_if_empty(&mut self, id: SectionId) {
         if id.0.saturating_add(1) == self.sections.len()

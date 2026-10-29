@@ -23,8 +23,11 @@
     reason = "text widths are measured in f64 and drawn in f32 points"
 )]
 
+use std::collections::HashMap;
+
 use crate::model::{
-    Align, Block, ImageInfo, ParaStyle, Paragraph, Preview, Run, Section, SectionKind, Table, style,
+    Align, Block, ImageInfo, PageSetup, ParaStyle, Paragraph, Preview, Run, Section, SectionKind,
+    TabStop, Table, style,
 };
 use crate::page::{PageModel, Prim, op, style as ps};
 use crate::slide_draw::{RunStyle, text_width};
@@ -159,6 +162,12 @@ struct Piece {
     space: bool,
     /// An explicit line break.
     br: bool,
+    /// A tab (its width is set when the line is filled).
+    tab: bool,
+    /// Never merged with its neighbours: a tab with or without a leader.
+    fixed: bool,
+    /// Blank space before the text of a piece (a leader is dots right-aligned in its tab).
+    gap: f32,
 }
 
 /// The luminance of `0xAARRGGBB`, 0 to 1.
@@ -266,7 +275,21 @@ fn push_run(run: &Run, role: ParaStyle, para_size: f32, para_bold: bool, out: &m
         }
         let text = std::mem::take(word);
         let width = text_width(&text, &rs) as f32;
-        out.push(Piece { text, width, size, bits, color, bg, underline, strike, space, br: false });
+        out.push(Piece {
+            text,
+            width,
+            size,
+            bits,
+            color,
+            bg,
+            underline,
+            strike,
+            space,
+            br: false,
+            tab: false,
+            fixed: false,
+            gap: 0.0,
+        });
     };
     let mut in_space = false;
     for c in run.text.chars() {
@@ -283,21 +306,40 @@ fn push_run(run: &Run, role: ParaStyle, para_size: f32, para_bold: bool, out: &m
                 strike: false,
                 space: false,
                 br: true,
+                tab: false,
+                fixed: false,
+                gap: 0.0,
             });
             in_space = false;
             continue;
         }
-        let ws = c == ' ' || c == '\t' || c == '\u{a0}';
+        if c == '\t' {
+            // The width of a tab is set when the line is filled, from the tab stops.
+            flush(&mut word, in_space, out);
+            in_space = false;
+            out.push(Piece {
+                text: String::new(),
+                width: 0.0,
+                size,
+                bits,
+                color,
+                bg: 0,
+                underline: false,
+                strike: false,
+                space: false,
+                br: false,
+                tab: true,
+                fixed: true,
+                gap: 0.0,
+            });
+            continue;
+        }
+        let ws = c == ' ' || c == '\u{a0}';
         if ws != in_space {
             flush(&mut word, in_space, out);
             in_space = ws;
         }
-        // A tab is drawn as a few spaces: tab stops are not read.
-        if c == '\t' {
-            word.push_str("    ");
-        } else {
-            word.push(c);
-        }
+        word.push(c);
     }
     flush(&mut word, in_space, out);
 }
@@ -305,6 +347,66 @@ fn push_run(run: &Run, role: ParaStyle, para_size: f32, para_bold: bool, out: &m
 // ---------------------------------------------------------------------------------------------
 // Paragraphs
 // ---------------------------------------------------------------------------------------------
+
+/// Where the next tab stop after `rel` (points from the left edge of the column) is, and what
+/// kind it is: the paragraph's own stops, then a stop every half inch.
+fn next_stop(tabs: &[TabStop], rel: f32) -> (f32, u8, u8) {
+    let own = tabs
+        .iter()
+        .filter(|t| t.kind < 4 && f32::from(t.pos) > rel + 0.5)
+        .min_by_key(|t| t.pos);
+    match own {
+        Some(t) => (f32::from(t.pos), t.kind, t.leader),
+        None => (((rel / 36.0).floor() + 1.0) * 36.0, 0, 0),
+    }
+}
+
+/// The width of the piece of text that follows a tab, up to the next tab or line break; for a
+/// decimal stop only the part before the first point or comma.
+fn after_tab(rest: &[Piece], decimal: bool) -> f32 {
+    let mut w = 0.0f32;
+    for p in rest {
+        if p.tab || p.br {
+            break;
+        }
+        if decimal {
+            if let Some(at) = p.text.find(['.', ',']) {
+                let part = &p.text[..at];
+                let frac = if p.text.is_empty() { 0.0 } else { part.chars().count() as f32 / p.text.chars().count() as f32 };
+                w += p.width * frac;
+                break;
+            }
+        }
+        w += p.width;
+    }
+    w
+}
+
+/// The piece that fills a tab `width` points wide, with its leader if it has one.
+fn tab_piece(from: &Piece, width: f32, leader: u8) -> Piece {
+    let ch = match leader {
+        1 => '.',
+        2 => '-',
+        3 => '_',
+        _ => ' ',
+    };
+    let mut piece = Piece { width, text: String::new(), tab: true, fixed: true, gap: 0.0, ..from.clone() };
+    piece.underline = false;
+    piece.strike = false;
+    piece.bg = 0;
+    if leader != 0 && width > 3.0 {
+        let rs = RunStyle::plain(f64::from(from.size), from.color);
+        let unit = text_width(&ch.to_string(), &rs) as f32;
+        if unit > 0.1 {
+            let n = (width / unit).floor();
+            if n >= 1.0 {
+                piece.text = ch.to_string().repeat(n as usize);
+                piece.gap = width - n * unit;
+            }
+        }
+    }
+    piece
+}
 
 /// Lays out one paragraph in the column `[x0, x0 + width]`.
 fn layout_para(p: &Paragraph, x0: f32, width: f32, base: f32) -> ParaBox {
@@ -344,9 +446,25 @@ fn layout_para(p: &Paragraph, x0: f32, width: f32, base: f32) -> ParaBox {
         line
     };
 
-    for piece in all {
+    for (idx, piece) in all.iter().cloned().enumerate() {
         if piece.br {
             lines.push(finish(&mut cur, &mut cur_w, true, &mut first));
+            continue;
+        }
+        if piece.tab {
+            let rel = indent + if first { first_shift } else { 0.0 } + cur_w;
+            let (pos, kind, leader) = next_stop(&p.tabs, rel);
+            let rest = all.get(idx + 1..).unwrap_or(&[]);
+            let width = match kind {
+                1 => pos - rel - after_tab(rest, false) / 2.0,
+                2 => pos - rel - after_tab(rest, false),
+                3 => pos - rel - after_tab(rest, true),
+                _ => pos - rel,
+            };
+            let room = (line_limit(first) - cur_w).max(0.0);
+            let width = width.clamp(0.0, room);
+            cur_w += width;
+            cur.push(tab_piece(&piece, width, leader));
             continue;
         }
         if piece.space && cur.is_empty() {
@@ -488,6 +606,22 @@ fn build_line(
     };
     for item in items {
         let w = item.width + if item.space { extra } else { 0.0 };
+        if item.fixed {
+            flush(&mut run, &mut decos);
+            if !item.text.is_empty() {
+                decos.push(Deco::Text {
+                    x: x + item.gap,
+                    y: baseline,
+                    size: item.size,
+                    width: (w - item.gap).max(0.0),
+                    bits: item.bits,
+                    color: item.color,
+                    text: item.text.clone(),
+                });
+            }
+            x += w;
+            continue;
+        }
         let same = run.as_ref().is_some_and(|(_, _, p, _)| {
             p.size.to_bits() == item.size.to_bits()
                 && p.bits == item.bits
@@ -515,9 +649,25 @@ fn build_line(
 // Pages
 // ---------------------------------------------------------------------------------------------
 
+/// A header or footer laid out once for the width of the text area.
+#[derive(Debug, Default)]
+struct Running {
+    header: Vec<ParaBox>,
+    footer: Vec<ParaBox>,
+}
+
+fn boxes_height(boxes: &[ParaBox]) -> f32 {
+    boxes.iter().map(|b| b.lines.iter().map(|l| l.h).sum::<f32>() + b.after).sum()
+}
+
 struct Pager {
     size: (f32, f32),
-    margin: f32,
+    /// Margins: left, right, top, bottom.
+    m: [f32; 4],
+    /// Number of text columns, the gap between them and the one being filled.
+    cols: usize,
+    gap: f32,
+    col: usize,
     pages: Vec<Vec<Prim>>,
     cur: Vec<Prim>,
     y: f32,
@@ -525,37 +675,168 @@ struct Pager {
     /// Only one page may be made (a slide): whatever does not fit is dropped.
     single: bool,
     overflow: bool,
+    /// Running header and footer, and whether pages are numbered.
+    running: Running,
+    numbered: bool,
+    /// Pixel sizes of pictures whose size the document did not give, by picture id.
+    natural: HashMap<u32, (u32, u32)>,
 }
 
 impl Pager {
     fn new(size: (f32, f32), margin: f32, single: bool) -> Self {
         Self {
             size,
-            margin,
+            m: [margin; 4],
+            cols: 1,
+            gap: 0.0,
+            col: 0,
             pages: Vec::new(),
             cur: Vec::new(),
             y: margin,
             truncated: false,
             single,
             overflow: false,
+            running: Running::default(),
+            numbered: false,
+            natural: HashMap::new(),
         }
     }
 
-    fn bottom(&self) -> f32 {
-        self.size.1 - self.margin
+    /// A pager for the page the document describes (A4 and the viewer's margins where it says
+    /// nothing).
+    fn for_page(setup: &PageSetup, base: f32) -> Self {
+        let sane = |v: u16, lo: f32, hi: f32| {
+            let v = f32::from(v);
+            if v >= lo && v <= hi { Some(v) } else { None }
+        };
+        let w = sane(setup.width, 200.0, 2000.0);
+        let h = sane(setup.height, 200.0, 2000.0);
+        let size = match (w, h) {
+            (Some(w), Some(h)) => (w, h),
+            _ => A4,
+        };
+        let any_margin = setup.left | setup.right | setup.top | setup.bottom != 0;
+        let margin = |v: u16, dim: f32| {
+            if any_margin { f32::from(v).clamp(14.0, dim * 0.35) } else { MARGIN }
+        };
+        let mut p = Self::new(size, MARGIN, false);
+        p.m = [
+            margin(setup.left, size.0),
+            margin(setup.right, size.0),
+            margin(setup.top, size.1),
+            margin(setup.bottom, size.1),
+        ];
+        p.y = p.m[2];
+        p.numbered = true;
+        let text_w = size.0 - p.m[0] - p.m[1];
+        let cols = usize::from(setup.columns.clamp(1, 6));
+        let gap = if setup.gap > 0 { f32::from(setup.gap).min(80.0) } else { 18.0 };
+        if cols > 1 && (text_w - gap * (cols as f32 - 1.0)) / cols as f32 >= 80.0 {
+            p.cols = cols;
+            p.gap = gap;
+        }
+        let lay = |paras: &[Paragraph]| -> Vec<ParaBox> {
+            paras.iter().take(6).map(|q| layout_para(q, p.m[0], text_w, base)).collect()
+        };
+        p.running = Running { header: lay(&setup.header), footer: lay(&setup.footer) };
+        p
     }
 
+    fn top(&self) -> f32 {
+        self.m[2]
+    }
+
+    fn bottom(&self) -> f32 {
+        self.size.1 - self.m[3]
+    }
+
+    /// The width of a column.
+    fn col_width(&self) -> f32 {
+        let text = self.size.0 - self.m[0] - self.m[1];
+        (text - self.gap * (self.cols as f32 - 1.0)) / self.cols as f32
+    }
+
+    /// How far the column being filled lies right of the first one.
+    fn dx(&self) -> f32 {
+        self.col as f32 * (self.col_width() + self.gap)
+    }
+
+    /// Draws the running header, the footer and the page number on the page being closed.
+    fn seal(&mut self) {
+        if self.single {
+            return;
+        }
+        let number = self.pages.len() + 1;
+        let (left, right) = (self.m[0], self.size.0 - self.m[1]);
+        let head_h = boxes_height(&self.running.header);
+        let mut y = ((self.m[2] - head_h) / 2.0).max(6.0);
+        for b in &self.running.header {
+            for line in &b.lines {
+                for d in &line.decos {
+                    d.emit(0.0, y, &mut self.cur);
+                }
+                y += line.h;
+            }
+            y += b.after;
+        }
+        let foot_h = boxes_height(&self.running.footer);
+        let zone_top = self.size.1 - self.m[3];
+        let mut fy = if foot_h + 4.0 < self.m[3] {
+            zone_top + ((self.m[3] - foot_h) / 2.0).max(2.0)
+        } else {
+            (self.size.1 - foot_h - 2.0).max(zone_top - 40.0)
+        };
+        let first_line = fy;
+        for b in &self.running.footer {
+            for line in &b.lines {
+                for d in &line.decos {
+                    d.emit(0.0, fy, &mut self.cur);
+                }
+                fy += line.h;
+            }
+            fy += b.after;
+        }
+        if self.numbered {
+            let label = number.to_string();
+            let st = RunStyle::plain(9.0, DIM);
+            let w = text_width(&label, &st) as f32;
+            let (x, ny) = if self.running.footer.is_empty() {
+                ((left + right - w) / 2.0, zone_top + (self.m[3] / 2.0 - 4.0).max(2.0))
+            } else {
+                (right - w, first_line)
+            };
+            self.cur.push(Prim::Text {
+                x,
+                y: ny + 9.0 * 0.95,
+                size: 9.0,
+                angle: 0.0,
+                width: w,
+                style: 0,
+                color: DIM,
+                text: label,
+            });
+        }
+    }
+
+    /// Moves to the next column, or to the next page after the last column.
     fn page_break(&mut self) {
         if self.single {
             self.overflow = true;
+            return;
+        }
+        if self.col + 1 < self.cols {
+            self.col += 1;
+            self.y = self.top();
             return;
         }
         if self.pages.len() >= MAX_PAGES {
             self.truncated = true;
             return;
         }
+        self.seal();
         self.pages.push(std::mem::take(&mut self.cur));
-        self.y = self.margin;
+        self.col = 0;
+        self.y = self.top();
     }
 
     fn full(&self) -> bool {
@@ -564,7 +845,7 @@ impl Pager {
 
     /// Puts a paragraph on the page(s), a line at a time.
     fn put_para(&mut self, b: &ParaBox, x0: f32, width: f32) {
-        if self.y > self.margin {
+        if self.y > self.top() {
             self.y += b.before;
         }
         let mut seg_top = self.y;
@@ -573,7 +854,7 @@ impl Pager {
             if self.full() {
                 return;
             }
-            if self.y + line.h > self.bottom() && self.y > self.margin {
+            if self.y + line.h > self.bottom() && self.y > self.top() {
                 self.close_border(b, x0, width, seg_top);
                 self.page_break();
                 if self.full() {
@@ -582,8 +863,9 @@ impl Pager {
                 seg_top = self.y;
             }
             seg_open = true;
+            let dx = self.dx();
             for d in &line.decos {
-                d.emit(0.0, self.y, &mut self.cur);
+                d.emit(dx, self.y, &mut self.cur);
             }
             self.y += line.h;
         }
@@ -598,6 +880,7 @@ impl Pager {
         if b.border == 0 || self.y <= top {
             return;
         }
+        let dx = self.dx();
         if b.boxed {
             Deco::Rect {
                 x: x0 - 2.0,
@@ -607,7 +890,7 @@ impl Pager {
                 fill: 0,
                 stroke: b.border,
             }
-            .emit(0.0, 0.0, &mut self.cur);
+            .emit(dx, 0.0, &mut self.cur);
         } else {
             Deco::Rect {
                 x: b.text_left - 7.0,
@@ -617,24 +900,44 @@ impl Pager {
                 fill: b.border,
                 stroke: 0,
             }
-            .emit(0.0, 0.0, &mut self.cur);
+            .emit(dx, 0.0, &mut self.cur);
         }
     }
 
-    fn put_picture(&mut self, info: &ImageInfo, x0: f32, width: f32) {
-        let (mut w, mut h) = PICTURE;
+    /// The size a picture is drawn at: what the document says, else what its header says
+    /// (pixels at 96 per inch), else a placeholder; never wider than the column or taller than
+    /// the page.
+    fn picture_size(&self, info: &ImageInfo, width: f32) -> (f32, f32) {
+        let (mut w, mut h) = if info.width > 0 && info.height > 0 {
+            (f32::from(info.width), f32::from(info.height))
+        } else if let Some(&(pw, ph)) = self.natural.get(&info.id) {
+            (pw as f32 * 0.75, ph as f32 * 0.75)
+        } else {
+            PICTURE
+        };
         if w > width {
             h *= width / w;
             w = width;
         }
-        if self.y + h > self.bottom() && self.y > self.margin {
+        let room = (self.size.1 - self.m[2] - self.m[3]).max(40.0);
+        if h > room {
+            w *= room / h;
+            h = room;
+        }
+        (w.max(2.0), h.max(2.0))
+    }
+
+    fn put_picture(&mut self, info: &ImageInfo, x0: f32, width: f32) {
+        let (w, h) = self.picture_size(info, width);
+        if self.y + h > self.bottom() && self.y > self.top() {
             self.page_break();
         }
         if self.full() {
             return;
         }
         let label = if info.alt.is_empty() { info.media.clone() } else { info.alt.clone() };
-        Deco::Image { x: x0, y: 0.0, w, h, label, id: info.id }.emit(0.0, self.y, &mut self.cur);
+        let dx = self.dx();
+        Deco::Image { x: x0, y: 0.0, w, h, label, id: info.id }.emit(dx, self.y, &mut self.cur);
         self.y += h + 6.0;
     }
 
@@ -681,13 +984,14 @@ impl Pager {
                 laid.push((cx, cw, boxes, cell.header));
                 col += span;
             }
-            if self.y + height > self.bottom() && self.y > self.margin {
+            if self.y + height > self.bottom() && self.y > self.top() {
                 self.page_break();
                 if self.full() {
                     return;
                 }
             }
             let top = self.y;
+            let dx = self.dx();
             for (cx, cw, boxes, header) in &laid {
                 Deco::Rect {
                     x: *cx,
@@ -697,12 +1001,12 @@ impl Pager {
                     fill: if *header { 0xFFEE_EEEE } else { 0 },
                     stroke: 0xFF99_9999,
                 }
-                .emit(0.0, top, &mut self.cur);
+                .emit(dx, top, &mut self.cur);
                 let mut y = top + PAD;
                 for b in boxes {
                     for line in &b.lines {
                         for d in &line.decos {
-                            d.emit(0.0, y, &mut self.cur);
+                            d.emit(dx, y, &mut self.cur);
                         }
                         y += line.h;
                     }
@@ -715,8 +1019,8 @@ impl Pager {
     }
 
     fn blocks(&mut self, blocks: &[Block], base: f32) {
-        let x0 = self.margin;
-        let width = self.size.0 - 2.0 * self.margin;
+        let x0 = self.m[0];
+        let width = self.col_width();
         for block in blocks {
             if self.full() {
                 return;
@@ -735,7 +1039,9 @@ impl Pager {
                 }
                 Block::Image(info) => self.put_picture(info, x0, width),
                 Block::Rule => {
-                    if self.y > self.margin {
+                    if self.y > self.top() || self.col > 0 {
+                        // A page break ends the column too.
+                        self.col = self.cols.saturating_sub(1);
                         self.page_break();
                     }
                 }
@@ -744,21 +1050,35 @@ impl Pager {
     }
 
     fn finish(mut self) -> (Vec<Vec<Prim>>, bool) {
+        self.seal();
         self.pages.push(std::mem::take(&mut self.cur));
         (self.pages, self.truncated)
     }
 }
 
-/// The text pages of a document: every body section, one after the other.
-fn text_pages(p: &Preview) -> (Vec<Vec<Prim>>, bool) {
-    let mut pager = Pager::new(A4, MARGIN, false);
+/// The text pages of a document: every body section, one after the other, set on the page the
+/// first one describes. Returns the pages, whether they were cut, and the sheet size.
+fn text_pages(
+    p: &Preview,
+    natural: HashMap<u32, (u32, u32)>,
+) -> (Vec<Vec<Prim>>, bool, (f32, f32)) {
+    let setup = p
+        .sections
+        .iter()
+        .find(|s| s.kind == SectionKind::Body)
+        .map(|s| s.page.clone())
+        .unwrap_or_default();
+    let mut pager = Pager::for_page(&setup, BODY);
+    pager.natural = natural;
+    let size = pager.size;
     for section in p.sections.iter().filter(|s| s.kind == SectionKind::Body) {
         pager.blocks(&section.blocks, BODY);
         if pager.truncated {
             break;
         }
     }
-    pager.finish()
+    let (pages, cut) = pager.finish();
+    (pages, cut, size)
 }
 
 /// One slide as one page; the text shrinks until it fits.
@@ -832,13 +1152,34 @@ pub(crate) fn render_text_page(
     policy: &PreviewPolicy,
 ) -> Result<PageModel, PreviewError> {
     let preview = crate::preview(data, policy)?;
-    let (mut pages, cut) = text_pages(&preview);
+    // Pictures whose size the document did not give are sized by their own headers.
+    let mut ids: Vec<u32> = Vec::new();
+    for s in preview.sections.iter().filter(|s| s.kind == SectionKind::Body) {
+        for b in &s.blocks {
+            if let Block::Image(i) = b
+                && (i.width == 0 || i.height == 0)
+                && i.id != crate::model::IMAGE_NONE
+                && ids.len() < 512
+            {
+                ids.push(i.id);
+            }
+        }
+    }
+    let natural: HashMap<u32, (u32, u32)> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        crate::picture::natural_sizes(data, &ids, policy)
+            .into_iter()
+            .map(|(id, w, h)| (id, (w, h)))
+            .collect()
+    };
+    let (mut pages, cut, size) = text_pages(&preview, natural);
     let count = pages.len();
     if index >= count {
         return Err(PreviewError::Malformed("the document has no such page".into()));
     }
     let prims = pages.swap_remove(index);
-    Ok(model(A4.0, A4.1, index, count, prims, cut))
+    Ok(model(size.0, size.1, index, count, prims, cut))
 }
 
 /// Slide `index` (from 0) of a binary presentation, laid out from its reading view.

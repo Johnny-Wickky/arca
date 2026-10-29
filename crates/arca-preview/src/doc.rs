@@ -26,7 +26,7 @@ use crate::PreviewError;
 use crate::listfmt;
 use crate::model::{
     Align, Block, Cell, ImageInfo, NoticeKind, ParaFmt, ParaStyle, Paragraph, Row, RunFmt,
-    SectionKind, Table, style,
+    SectionKind, TabStop, Table, style,
 };
 use crate::sink::{ParaBuilder, SectionId, Sink};
 
@@ -72,6 +72,7 @@ mod pair {
     pub(super) const PLCF_FND_REF: usize = 2;
     pub(super) const PLCF_AND_REF: usize = 4;
     pub(super) const PLCF_AND_TXT: usize = 5;
+    pub(super) const PLCF_SED: usize = 6;
     pub(super) const PLCF_HDD: usize = 11;
     pub(super) const PLCF_BTE_CHPX: usize = 12;
     pub(super) const PLCF_BTE_PAPX: usize = 13;
@@ -698,6 +699,7 @@ mod has {
     pub(super) const LINE: u8 = 8;
     pub(super) const BRC_LEFT: u8 = 16;
     pub(super) const BRC_OTHER: u8 = 32;
+    pub(super) const TABS: u8 = 64;
 }
 
 /// Paragraph properties that matter for a text preview.
@@ -729,6 +731,9 @@ struct Pap {
     brc_left: u32,
     /// A border on another side too (the paragraph is framed).
     brc_other: bool,
+    /// Tab stops (at most eight kept) and how many.
+    tabs: [TabStop; 8],
+    ntabs: u8,
 }
 
 /// Twips to whole points as the model keeps them.
@@ -818,6 +823,10 @@ impl Pap {
         if !pick(has::BRC_OTHER) {
             p.brc_other = base.brc_other;
         }
+        if !pick(has::TABS) {
+            p.tabs = base.tabs;
+            p.ntabs = base.ntabs;
+        }
         p.set = self.set | base.set;
         p
     }
@@ -897,6 +906,12 @@ fn parse_pap_into(p: &mut Pap, prl: &[u8]) {
                 p.brc_other |= border_rgb(arg.get(1).copied().unwrap_or(0), 0) != 0;
                 p.set |= has::BRC_OTHER;
             }
+            // Tab stops: added stops of a direct list, or of a style (no deletions there).
+            0xC615 => {
+                let del = usize::from(arg.get(1).copied().unwrap_or(0));
+                read_tabs(p, arg, 2 + del * 4);
+            }
+            0xC60D => read_tabs(p, arg, 1),
             0xC64E | 0xC650 | 0xC651 => {
                 p.brc_other |= border_rgb(arg.get(6).copied().unwrap_or(0), 0) != 0;
                 p.set |= has::BRC_OTHER;
@@ -904,6 +919,42 @@ fn parse_pap_into(p: &mut Pap, prl: &[u8]) {
             _ => {}
         }
     }
+}
+
+/// Reads the tabs added by a `sprmPChgTabs`: a count at `at`, the positions, then one
+/// descriptor (alignment and leader) for each.
+fn read_tabs(p: &mut Pap, arg: &[u8], at: usize) {
+    let n = usize::from(arg.get(at).copied().unwrap_or(0)).min(8);
+    let mut out = [TabStop::default(); 8];
+    let mut count = 0usize;
+    for i in 0..n {
+        let (Some(pos), Some(&tbd)) = (
+            arg.get(at + 1 + i * 2..at + 3 + i * 2).map(|s| i16::from_le_bytes([s[0], s[1]])),
+            arg.get(at + 1 + n * 2 + i),
+        ) else {
+            break;
+        };
+        let kind = match tbd & 7 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            _ => continue,
+        };
+        let leader = match (tbd >> 3) & 7 {
+            1 | 5 => 1,
+            2 => 2,
+            3 | 4 => 3,
+            _ => 0,
+        };
+        if let Some(slot) = out.get_mut(count) {
+            *slot = TabStop { pos: u16::try_from(pt_of(i32::from(pos)).max(0)).unwrap_or(0), kind, leader };
+            count += 1;
+        }
+    }
+    p.tabs = out;
+    p.ntabs = u8::try_from(count).unwrap_or(0);
+    p.set |= has::TABS;
 }
 
 fn parse_pap(istd: u16, prl: &[u8]) -> Pap {
@@ -1082,6 +1133,51 @@ fn sprm6_to_97(prl: &[u8]) -> Vec<u8> {
     out
 }
 
+
+/// The page of the first section: `PlcfSed` names where its properties are stored (`Sepx`).
+fn read_page(wd: &[u8], table: &[u8], fib: &Fib) -> crate::model::PageSetup {
+    let mut page = crate::model::PageSetup::default();
+    if !fib.modern {
+        return page;
+    }
+    let Some((fc, lcb)) = fib.pair(pair::PLCF_SED) else { return page };
+    let Some(plc) = slice(table, fc, lcb) else { return page };
+    let n = plc.len().saturating_sub(4) / 16;
+    if n == 0 {
+        return page;
+    }
+    // n + 1 character positions, then n `Sed`s of 12 bytes: fn, fcSepx, fnMpr, fcMpr.
+    let Some(fc_sepx) = u32_le(plc, (n + 1) * 4 + 2) else { return page };
+    if fc_sepx == u32::MAX {
+        return page;
+    }
+    let at = usz(fc_sepx);
+    let cb = usize::from(u16_le(wd, at).unwrap_or(0));
+    let Some(prl) = slice(wd, at.saturating_add(2), cb) else { return page };
+    let (mut landscape, mut cols) = (false, 1u16);
+    for (op, arg) in Sprms::new(prl) {
+        let v = u16_le(arg, 0).unwrap_or(0);
+        let pt = |t: u16| u16::try_from(pt_of(i32::from(t)).max(0)).unwrap_or(0);
+        match op {
+            0xB01F => page.width = pt(v),
+            0xB020 => page.height = pt(v),
+            0xB021 => page.left = pt(v),
+            0xB022 => page.right = pt(v),
+            0x9023 => page.top = pt(v),
+            0x9024 => page.bottom = pt(v),
+            0x500B => cols = v.saturating_add(1),
+            0x900C => page.gap = pt(v),
+            0x301D => landscape = arg.first() == Some(&2),
+            _ => {}
+        }
+    }
+    page.columns = u8::try_from(cols.clamp(1, 8)).unwrap_or(1);
+    if landscape && page.width < page.height {
+        std::mem::swap(&mut page.width, &mut page.height);
+    }
+    page
+}
+
 // ---------------------------------------------------------------------------------------------
 // Style sheet and lists
 // ---------------------------------------------------------------------------------------------
@@ -1116,6 +1212,8 @@ impl StyleInfo {
             mult: false,
             brc_left: 0,
             brc_other: false,
+            tabs: [TabStop { pos: 0, kind: 0, leader: 0 }; 8],
+            ntabs: 0,
         },
         chp: Chp {
             on: 0,
@@ -1904,6 +2002,7 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
         };
         let mut para = self.para.take(style).with_fmt(pap.para_fmt());
         para.align = pap.align();
+        para.tabs = pap.tabs.iter().take(usize::from(pap.ntabs)).copied().collect();
         if self.mode == Mode::Body
             && pap.ilfo != 0
             && pap.ilfo < 0x8000
@@ -1987,6 +2086,35 @@ fn parse_xst_list(table: &[u8], fc: usize, lcb: usize) -> Vec<String> {
 fn plc_cps(table: &[u8], fc: usize, lcb: usize) -> Vec<u32> {
     let Some(blob) = slice(table, fc, lcb) else { return Vec::new() };
     (0..(blob.len() / 4).min(65_536)).filter_map(|i| u32_le(blob, i * 4)).collect()
+}
+
+/// The paragraphs of the first of the header or footer stories `which` that holds text, read in
+/// a scratch section of the sink.
+fn running_story(
+    env: &Env,
+    sink: &mut Sink<'_>,
+    start: usize,
+    cps: &[u32],
+    hdd: usize,
+    which: &[usize],
+) -> Vec<Paragraph> {
+    for &i in which {
+        let (Some(&a), Some(&b)) = (cps.get(i), cps.get(i + 1)) else { continue };
+        let (a, b) = (usz(a).min(hdd), usz(b).min(hdd));
+        if a >= b {
+            continue;
+        }
+        let Some(scratch) = sink.open_section(SectionKind::Headers, "", false) else { break };
+        {
+            let mut w = Walker::new(env, sink, scratch, Mode::Header);
+            w.run(start.saturating_add(a), start.saturating_add(b));
+        }
+        let got = sink.take_paragraphs(scratch);
+        if got.iter().any(|p| !p.is_blank()) {
+            return got;
+        }
+    }
+    Vec::new()
 }
 
 /// Extracts a Word 97–2003 (or Word 6/95) document.
@@ -2087,7 +2215,9 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
     };
 
     // Main text.
-    if let Some(sec) = sink.open_section(SectionKind::Body, "", false) {
+    let mut page = read_page(&wd, &table, &fib);
+    let body_sec = sink.open_section(SectionKind::Body, "", false);
+    if let Some(sec) = body_sec {
         let mut w = Walker::new(&env, sink, sec, Mode::Body);
         w.run(0, fib.ccp(Story::Main));
         merge(w.found);
@@ -2170,6 +2300,20 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
 
     // Headers and footers.
     let hdd = fib.ccp(Story::Headers);
+    if hdd > 0 && fib.modern && !sink.is_full() {
+        // The first six stories hold the note separators; then come the even, odd and first
+        // page headers and footers of the first section.
+        let start = fib.story_start(Story::Headers);
+        let cps = fib
+            .pair(pair::PLCF_HDD)
+            .map(|(fc, lcb)| plc_cps(&table, fc, lcb))
+            .unwrap_or_default();
+        page.header = running_story(&env, sink, start, &cps, hdd, &[7, 6, 10]);
+        page.footer = running_story(&env, sink, start, &cps, hdd, &[9, 8, 11]);
+    }
+    if let Some(sec) = body_sec {
+        sink.set_page(sec, page);
+    }
     if hdd > 0 && !sink.is_full() {
         let start = fib.story_start(Story::Headers);
         let cps =
@@ -2987,6 +3131,52 @@ mod tests {
         let f = p.para_fmt();
         assert_eq!((f.indent_left, f.indent_first, f.line_spacing), (36, -18, 250));
         assert!(sprm6_to_97(&[85]).is_empty(), "a sprm without its operand is dropped");
+    }
+
+
+    #[test]
+    fn real_documents_say_their_page() {
+        for (name, w, h) in [("report.doc", 595, 841), ("lo-rich.doc", 595, 841), ("nested.doc", 612, 792)] {
+            let data = std::fs::read(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/").to_owned() + name,
+            )
+            .expect("a fixture");
+            let p = ok(&data);
+            let page = &body(&p).page;
+            assert_eq!((page.width, page.height), (w, h), "{name}: the sheet");
+            assert!(page.left > 20 && page.right > 20 && page.top > 20 && page.bottom > 20, "{name}");
+        }
+        let rich = ok(&std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/lo-rich.doc")).expect("a fixture"));
+        let page = &body(&rich).page;
+        assert!(page.header[0].text().contains("ACME Confidential"));
+        assert!(page.footer[0].text().contains("Нижний колонтитул"));
+    }
+
+
+    #[test]
+    fn tab_stops_of_a_binary_paragraph_and_its_style() {
+        // sprmPChgTabs: no deletions, two added stops (1440 and 800 twips), right with dots, left.
+        let mut direct = 0xC615u16.to_le_bytes().to_vec();
+        direct.extend([8, 0, 2, 0xA0, 0x05, 0x20, 0x03, 0x0A, 0x00]);
+        // sprmPChgTabsPapx in a style: one centred stop at 2000 twips.
+        let mut styled = 0xC60Du16.to_le_bytes().to_vec();
+        styled.extend([4, 1, 0xD0, 0x07, 0x01]);
+        let stsh = stsh_of(&[
+            std_with(0, 0x0FFF, 1, &[], &[]),
+            std_with(1, 0, 1, &styled, &[]),
+        ]);
+        let w = W::new()
+            .piece("direct\rstyled\r", true)
+            .extra(pair::STSHF, stsh)
+            .pap(0, 7, 0, direct)
+            .pap(7, 14, 1, vec![]);
+        let p = ok(&w.build());
+        let paras = paragraphs(body(&p));
+        let got = |q: &Paragraph| -> Vec<(u16, u8, u8)> {
+            q.tabs.iter().map(|t| (t.pos, t.kind, t.leader)).collect()
+        };
+        assert_eq!(got(paras[0]), vec![(72, 2, 1), (40, 0, 0)]);
+        assert_eq!(got(paras[1]), vec![(100, 1, 0)], "inherited from the paragraph style");
     }
 
     fn list_tables(nfc: u8, text: &[u16], start: i32) -> (Vec<u8>, Vec<u8>) {

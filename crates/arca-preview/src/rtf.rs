@@ -221,6 +221,14 @@ struct Parser<'a, 's, 'p> {
     note_b: ParaBuilder,
     side_b: ParaBuilder,
     headers: Vec<Paragraph>,
+    /// The page the document sets (`paperw`, `margl`, `ls`, ...) and its running text.
+    page: crate::model::PageSetup,
+    /// The group read is a footer, not a header.
+    side_footer: bool,
+    /// Tab stops of the paragraph, and the kind and leader said for the next `	x`.
+    tabs: Vec<crate::model::TabStop>,
+    tab_kind: u8,
+    tab_leader: u8,
     pict_media: String,
     /// `picwgoal` and `pichgoal` of the picture being read, in twips.
     pict_goal: (i32, i32),
@@ -297,6 +305,11 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             note_b: ParaBuilder::new(),
             side_b: ParaBuilder::new(),
             headers: Vec::new(),
+            page: crate::model::PageSetup::default(),
+            side_footer: false,
+            tabs: Vec::new(),
+            tab_kind: 0,
+            tab_leader: 0,
             pict_media: String::new(),
             pict_goal: (0, 0),
             pict_bin: 0,
@@ -418,6 +431,10 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             Dest::Side => {
                 let mut p = self.side_b.take(ParaStyle::HeaderFooter);
                 trim_end(&mut p);
+                let slot = if self.side_footer { &mut self.page.footer } else { &mut self.page.header };
+                if slot.is_empty() && !p.is_blank() {
+                    slot.push(p.clone());
+                }
                 if !p.is_blank() && !self.headers.iter().any(|h| h.text() == p.text()) {
                     self.headers.push(p);
                 }
@@ -683,6 +700,37 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 self.g_mut().fs = fs;
             }
 
+            // -- page and section --
+            "paperw" => self.page.width = pt_of_twips(param.unwrap_or(0)),
+            "paperh" => self.page.height = pt_of_twips(param.unwrap_or(0)),
+            "margl" => self.page.left = pt_of_twips(param.unwrap_or(0)),
+            "margr" => self.page.right = pt_of_twips(param.unwrap_or(0)),
+            "margt" => self.page.top = pt_of_twips(param.unwrap_or(0)),
+            "margb" => self.page.bottom = pt_of_twips(param.unwrap_or(0)),
+            "cols" => {
+                self.page.columns = u8::try_from(param.unwrap_or(1).clamp(1, 8)).unwrap_or(1);
+            }
+            "colsx" => self.page.gap = pt_of_twips(param.unwrap_or(0)),
+
+            // -- tab stops --
+            "tqc" => self.tab_kind = 1,
+            "tqr" => self.tab_kind = 2,
+            "tqdec" => self.tab_kind = 3,
+            "tldot" | "tlmdot" => self.tab_leader = 1,
+            "tlhyph" => self.tab_leader = 2,
+            "tlul" | "tlth" | "tleq" => self.tab_leader = 3,
+            "tx" => {
+                if self.tabs.len() < 64 {
+                    self.tabs.push(crate::model::TabStop {
+                        pos: pt_of_twips(param.unwrap_or(0)),
+                        kind: self.tab_kind,
+                        leader: self.tab_leader,
+                    });
+                }
+                self.tab_kind = 0;
+                self.tab_leader = 0;
+            }
+
             // -- paragraph formatting --
             "li" | "lin" => self.left = u32::try_from(param.unwrap_or(0).max(0)).unwrap_or(0),
             "fi" => self.first = i64::from(param.unwrap_or(0)),
@@ -707,6 +755,9 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             }
             "pard" => {
                 self.left = 0;
+                self.tabs.clear();
+                self.tab_kind = 0;
+                self.tab_leader = 0;
                 self.first = 0;
                 self.line_pct = 0;
                 self.border = 0;
@@ -802,7 +853,10 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
         };
         match dest {
             Dest::Footnote => self.note_b = ParaBuilder::new(),
-            Dest::Side => self.side_b = ParaBuilder::new(),
+            Dest::Side => {
+                self.side_b = ParaBuilder::new();
+                self.side_footer = name.starts_with("footer");
+            }
             Dest::Marker => self.marker_pending.clear(),
             Dest::StyleSheet => {
                 self.style_id = -1;
@@ -1041,6 +1095,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
         };
         let mut p = self.para.take(ps);
         p.align = self.align;
+        p.tabs = self.tabs.clone();
         p = p.with_fmt(crate::model::ParaFmt {
             indent_left: u16::try_from((self.left / 20).min(2000)).unwrap_or(0),
             indent_first: (self.first / 20).clamp(-2000, 2000),
@@ -1328,11 +1383,12 @@ pub(crate) fn extract(data: &[u8], sink: &mut Sink<'_>) -> Result<(), PreviewErr
     let Some(sec) = sink.open_section(SectionKind::Body, "", false) else {
         return Err(PreviewError::Malformed("no room for a section".into()));
     };
-    let (headers, objects, lossy) = {
+    let (headers, objects, lossy, page) = {
         let mut p = Parser::new(data, sink, sec);
         p.run();
-        (std::mem::take(&mut p.headers), p.objects, p.lossy_codepage)
+        (std::mem::take(&mut p.headers), p.objects, p.lossy_codepage, std::mem::take(&mut p.page))
     };
+    sink.set_page(sec, page);
     if !headers.is_empty()
         && let Some(hs) = sink.open_section(SectionKind::Headers, "", false)
     {
@@ -1359,6 +1415,33 @@ mod tests {
 
     fn rtf(body: &str) -> Preview {
         ok(format!("{{\\rtf1\\ansi\\ansicpg1252\\deff0 {body}}}").as_bytes())
+    }
+
+    #[test]
+    fn page_size_margins_columns_tab_stops_and_picture_size_are_read() {
+        let p = rtf(
+            r"{\rtf1\ansi\paperw15840\paperh12240\margl1440\margr720\margt1000\margb900\cols2\colsx360{\header Top}{\footer Bottom}\pard\tqr\tldot\tx9000\tx2880 Chapter\tab 7\par {\pict\pngblip\picwgoal3000\pichgoal1500 89504e47}\par}",
+        );
+        let sec = p.sections.iter().find(|s| s.kind == SectionKind::Body).expect("body");
+        let page = &sec.page;
+        assert_eq!((page.width, page.height), (792, 612));
+        assert_eq!((page.left, page.right, page.top, page.bottom), (72, 36, 50, 45));
+        assert_eq!((page.columns, page.gap), (2, 18));
+        assert_eq!(page.header.first().map(Paragraph::text).as_deref(), Some("Top"));
+        assert_eq!(page.footer.first().map(Paragraph::text).as_deref(), Some("Bottom"));
+        let para = paragraphs(sec).into_iter().next().expect("paragraph").clone();
+        assert_eq!(
+            para.tabs,
+            vec![
+                crate::model::TabStop { pos: 450, kind: 2, leader: 1 },
+                crate::model::TabStop { pos: 144, kind: 0, leader: 0 },
+            ]
+        );
+        let image = sec.blocks.iter().find_map(|b| match b {
+            Block::Image(i) => Some(i.clone()),
+            _ => None,
+        });
+        assert_eq!(image.map(|i| (i.width, i.height)), Some((150, 75)));
     }
 
     fn lines(p: &Preview) -> Vec<String> {
