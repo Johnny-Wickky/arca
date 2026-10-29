@@ -205,6 +205,8 @@
     <string name="image_placeholder">Picture (not shown)</string>
     <string name="image_remote">Would load from the internet</string>
     <string name="cell_dialog_title">Cell content</string>
+    <string name="row_dialog_title">Row %1$d</string>
+    <string name="row_dialog_empty">This row has no values.</string>
 
     <!-- Sterile copy -->
     <string name="sanitize_title">Sterile copy</string>

@@ -115,6 +115,8 @@ public final class PreviewScreen extends Screen {
     private ItemAdapter adapter;
     private ListView list;
     private int[] gridWidths;
+    /** The column names of an Access table (its first row), for the card of a row; empty otherwise. */
+    private String[] gridNames = new String[0];
     private float charWidth;
 
     public PreviewScreen(MainActivity act) {
@@ -912,13 +914,25 @@ public final class PreviewScreen extends Screen {
 
         // A spreadsheet section starts with a grid header, which carries the column widths.
         gridWidths = null;
+        gridNames = new String[0];
         try {
-            List<Model.Item> first = s.loadItems(outcome, sectionIndex, 0, 1);
+            List<Model.Item> first = s.loadItems(outcome, sectionIndex, 0, 2);
             if (!first.isEmpty() && first.get(0) instanceof Model.GridHeader) {
                 gridWidths = ((Model.GridHeader) first.get(0)).widths;
+                // The first row of a database table holds the names of its columns.
+                if (meta.format != null && meta.format.startsWith("Access") && first.size() > 1
+                    && first.get(1) instanceof Model.GridRow) {
+                    gridNames = new String[Math.min(gridWidths.length, MAX_GRID_COLS)];
+                    for (Model.GridCell cell : ((Model.GridRow) first.get(1)).cells) {
+                        if (cell.col >= 0 && cell.col < gridNames.length) {
+                            gridNames[cell.col] = Fmt.safe(cell.text);
+                        }
+                    }
+                }
             }
         } catch (RuntimeException e) {
             gridWidths = null;
+            gridNames = new String[0];
         }
 
         cache = new PageCache(new PageCache.Loader() {
@@ -1529,6 +1543,24 @@ public final class PreviewScreen extends Screen {
         return row;
     }
 
+    /** The cells of {@code r} as "column: value" lines in a dialog. */
+    private void showRowCard(Model.GridRow r) {
+        StringBuilder sb = new StringBuilder();
+        for (Model.GridCell cell : r.cells) {
+            if (cell.text.isEmpty()) {
+                continue;
+            }
+            String name = cell.col >= 0 && cell.col < gridNames.length && gridNames[cell.col] != null
+                && !gridNames[cell.col].isEmpty() ? gridNames[cell.col] : columnName(Math.max(0, cell.col));
+            if (sb.length() > 0) {
+                sb.append("\n\n");
+            }
+            sb.append(name).append('\n').append(Fmt.safe(cell.text));
+        }
+        ui.showText(act, ui.str(R.string.row_dialog_title, r.index + 1), sb.length() == 0
+            ? ui.str(R.string.row_dialog_empty) : sb.toString(), "row");
+    }
+
     private View gridRow(View reuse, Model.GridRow r) {
         int cols = gridWidths == null ? 0 : Math.min(gridWidths.length, MAX_GRID_COLS);
         LinearLayout row;
@@ -1547,6 +1579,15 @@ public final class PreviewScreen extends Screen {
         TextView label = (TextView) row.getChildAt(0);
         label.setText(Long.toString(r.index + 1));
         label.setAlpha(r.hidden ? 0.5f : 1f);
+        // Tapping the number of a row opens the whole row as a card: long values and many columns
+        // read better there than in a cell that is cut to its width.
+        final Model.GridRow shownRow = r;
+        label.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showRowCard(shownRow);
+            }
+        });
         for (int i = 0; i < cols; i++) {
             TextView c = (TextView) row.getChildAt(i + 1);
             c.setText("");

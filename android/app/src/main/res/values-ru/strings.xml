@@ -203,6 +203,8 @@
     <string name="image_placeholder">Рисунок (не показан)</string>
     <string name="image_remote">Загружался бы из интернета</string>
     <string name="cell_dialog_title">Содержимое ячейки</string>
+    <string name="row_dialog_title">Строка %1$d</string>
+    <string name="row_dialog_empty">В этой строке нет значений.</string>
 
     <!-- Стерильная копия -->
     <string name="sanitize_title">Стерильная копия</string>
