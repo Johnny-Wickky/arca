@@ -880,7 +880,7 @@ mod tests {
         assert!(decode_preview(PayloadKind::Preview, &[0xFF; 64]).is_err());
         assert!(decode_preview(PayloadKind::Preview, &[]).is_err());
         assert!(decode(PayloadKind::Error, &[0xFF; 8]).is_err());
-        assert_eq!(abi_version(), arca_abi::ABI_VERSION);
+        assert_eq!(abi_version(), ABI_VERSION);
     }
 
     #[test]
