@@ -27,7 +27,7 @@ public final class Capabilities {
         "Docx", "Docm", "Dotx", "Dotm",
         "Xlsx", "Xlsm", "Xltx", "Xltm", "Xlam",
         "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm",
-        // Visio: the text, data, links and connections of the shapes; no geometry
+        // Visio: the text, data, links and connections of the shapes (the page view draws the geometry)
         "Vsdx", "Vsdm", "VisioTemplateOrStencil",
         // OpenDocument
         "Odt", "Ods", "Odp",
@@ -42,8 +42,15 @@ public final class Capabilities {
         // Text
         "Rtf", "PlainText", "Csv", "Tsv", "Markdown");
 
-    /** Formats that can be drawn page by page: PDF so far (slides, sheets and pictures follow). */
-    private static final Set<String> RENDER = set("Pdf");
+    /** Visio formats: drawn flat, as the specification describes the shapes (there is no 3-D scene). */
+    private static final Set<String> VISIO = set("Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd");
+
+    /** Formats that can be drawn page by page: PDF, slides, sheets and Visio drawings. */
+    private static final Set<String> RENDER = set(
+        "Pdf",
+        "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm", "Odp",
+        "Xlsx", "Xlsm", "Xltx", "Xltm", "Ods", "Xls",
+        "Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd");
 
     private static final Set<String> SANITIZE = set(
         "Docx", "Docm", "Dotx", "Dotm",
@@ -72,6 +79,11 @@ public final class Capabilities {
     /** Whether the engine can draw {@code format} page by page. */
     public static boolean canRender(String format) {
         return RENDER.contains(format);
+    }
+
+    /** Whether {@code format} is a Visio drawing (its page view says that 3-D effects are not drawn). */
+    public static boolean isVisio(String format) {
+        return VISIO.contains(format);
     }
 
     /** Formats with a page view (for tests and diagnostics). */

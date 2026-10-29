@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Additional terms under AGPLv3 section 7: see LICENSE_ADDITIONAL_TERMS.md in the repository root.
+#
+# Refuses a commit that stages a signing key or keystore (.p12 .pfx .jks .keystore .key .pem).
+# Install once:  git config core.hooksPath tools/hooks
+set -euo pipefail
+bad="$(git diff --cached --name-only --diff-filter=ACMR | grep -iE '\.(p12|pfx|jks|keystore|key|pem)$' || true)"
+if [ -n "$bad" ]; then
+    printf 'pre-commit: refusing to commit key material:
+%s
+' "$bad" >&2
+    exit 1
+fi
+bash tools/check-unsafe.sh

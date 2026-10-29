@@ -7,7 +7,7 @@
 ```text
 android/
 ├── app/src/main/
-│   ├── AndroidManifest.xml          # одно разрешение (POST_NOTIFICATIONS); фильтры «Открыть с помощью» (content://, 31 расширение)
+│   ├── AndroidManifest.xml          # без разрешений; фильтры «Открыть с помощью» (content://, 31 расширение)
 │   ├── res/                         # values (en), values-ru, values-night, drawable, mipmap-anydpi-v26, xml
 │   └── java/org/arca/viewer/
 │       ├── App.java, MainActivity.java, Session.java, Engine.java, Native.java, Prefs.java

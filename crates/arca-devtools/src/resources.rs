@@ -19,7 +19,7 @@
 //! * no string is dead (unused and not reachable through the dynamic `Labels` lookups);
 //! * `android:` attributes of the XML exist in the minimum SDK's `android.R.attr` (given
 //!   `--android-jar`), except the few that are newer on purpose and ignored by older systems;
-//! * the manifest: only `POST_NOTIFICATIONS` is requested, no `INTERNET`, `android:debuggable`
+//! * the manifest: no permission at all is requested, `android:debuggable`
 //!   is absent, `android:allowBackup="false"`, and every component declares `android:exported`
 //!   explicitly, with only the allow-listed ones exported.
 
@@ -55,9 +55,6 @@ const DYNAMIC_PREFIXES: &[&str] = &[
     "notice_",
     "push_",
 ];
-
-/// The only permission the app may request: it shows the local, offline support reminder.
-const ALLOWED_PERMISSION: &str = "android.permission.POST_NOTIFICATIONS";
 
 /// Components that may be exported (reachable by other apps): the launcher / VIEW / SEND
 /// activity. Everything else must say `android:exported="false"`.
@@ -516,11 +513,9 @@ pub fn check_manifest(root: &Element, text_without_comments: &str, problems: &mu
         let tag = el.name.as_str();
         if tag.starts_with("uses-permission") || tag.starts_with("permission") {
             let p = el.attr("android:name").unwrap_or("(none)");
-            if tag != "uses-permission" || p != ALLOWED_PERMISSION {
-                problems.push(format!(
-                    "AndroidManifest.xml declares <{tag} {p}>; Arca only allows <uses-permission {ALLOWED_PERMISSION}>"
-                ));
-            }
+            problems.push(format!(
+                "AndroidManifest.xml declares <{tag} {p}>; Arca requests no permission at all"
+            ));
         }
         if el.attr("android:debuggable").is_some() {
             problems.push(format!(
@@ -1015,7 +1010,7 @@ mod tests {
         p
     }
 
-    const GOOD: &str = "<manifest xmlns:android=\"u\"><uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/><application android:allowBackup=\"false\"><activity android:name=\".MainActivity\" android:exported=\"true\"/><receiver android:name=\".R\" android:exported=\"false\"/></application></manifest>";
+    const GOOD: &str = "<manifest xmlns:android=\"u\"><application android:allowBackup=\"false\"><activity android:name=\".MainActivity\" android:exported=\"true\"/><receiver android:name=\".R\" android:exported=\"false\"/></application></manifest>";
 
     #[test]
     fn a_good_manifest_passes() {
@@ -1025,9 +1020,12 @@ mod tests {
     #[test]
     fn manifest_policy_violations_are_reported() {
         let bad = |from: &str, to: &str| manifest_problems(&GOOD.replace(from, to));
-        assert!(bad("POST_NOTIFICATIONS", "CAMERA")[0].contains("CAMERA"));
         assert!(
-            bad("<uses-permission ", "<uses-permission-sdk-23 ")[0]
+            bad("<application ", "<uses-permission android:name=\"android.permission.CAMERA\"/><application ")[0]
+                .contains("CAMERA")
+        );
+        assert!(
+            bad("<application ", "<uses-permission-sdk-23 android:name=\"x\"/><application ")[0]
                 .contains("uses-permission-sdk-23")
         );
         assert!(

@@ -129,32 +129,11 @@ public final class SettingsScreen extends Screen {
         LinearLayout notif = ui.card();
         notif.addView(ui.heading(ui.str(R.string.settings_reminders_title), Ui.LABEL));
         notif.addView(ui.space(4));
-        // On from Android 13 only with the permission the person granted; before that, notifications
-        // are allowed by default and the system switch is the only gate.
-        boolean remindersOn = Prefs.reminders(act)
-            && (android.os.Build.VERSION.SDK_INT < 33 || Compat.hasNotificationPermission(act));
-        notif.addView(toggle(R.string.settings_reminders, R.string.settings_reminders_desc, remindersOn,
+        notif.addView(toggle(R.string.settings_reminders, R.string.settings_reminders_desc, Prefs.reminders(act),
             new CompoundButton.OnCheckedChangeListener() {
                 @Override
                 public void onCheckedChanged(CompoundButton b, boolean on) {
-                    if (on) {
-                        if (android.os.Build.VERSION.SDK_INT >= 33 && !Compat.hasNotificationPermission(act)) {
-                            // The only permission the app ever asks for, and only now, on this tap.
-                            Compat.requestNotificationPermission(act, MainActivity.REQ_NOTIF_PERMISSION);
-                            return;
-                        }
-                        Prefs.setReminders(act, true);
-                        org.arca.viewer.Reminders.ensureChannel(act);
-                        org.arca.viewer.Reminders.schedule(act);
-                        if (!Compat.hasNotificationPermission(act)) {
-                            // Before Android 13 there is nothing to ask: say where to allow them.
-                            android.widget.Toast.makeText(act, R.string.settings_reminders_blocked,
-                                android.widget.Toast.LENGTH_LONG).show();
-                        }
-                    } else {
-                        Prefs.setReminders(act, false);
-                        org.arca.viewer.Reminders.cancel(act);
-                    }
+                    Prefs.setReminders(act, on);
                 }
             }));
         col.addView(notif, ui.fillWidth());

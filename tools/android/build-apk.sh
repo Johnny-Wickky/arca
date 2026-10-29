@@ -181,17 +181,13 @@ need "package org.arca.viewer $VERSION_CODE/$VERSION_NAME" \
     badging_has "^package: name='org.arca.viewer' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
 need "minSdk $MIN_SDK" badging_has "^\(min\)\{0,1\}[sS]dkVersion:'$MIN_SDK'"
 need "targetSdk $TARGET_SDK" badging_has "^targetSdkVersion:'$TARGET_SDK'"
-# Every uses-permission* / uses-implied-permission line of the badging must be exactly
-# POST_NOTIFICATIONS (a lookahead does not exist in grep's basic or extended syntax, so the
-# earlier single-pattern test could never fail).
-only_notifications() {
-    local lines extra
+# The package requests no permission at all: no uses-permission* / uses-implied-permission line.
+no_permissions() {
+    local lines
     lines="$(grep -E '^uses-[a-z0-9-]*permission' <<<"$BADGING" || true)"
-    extra="$(grep -vxE "uses-permission: name='android\.permission\.POST_NOTIFICATIONS'" <<<"$lines" || true)"
-    if [ -n "$extra" ]; then echo "unexpected permission line(s): $extra" >&2; return 1; fi
-    grep -qx "uses-permission: name='android.permission.POST_NOTIFICATIONS'" <<<"$lines"
+    if [ -n "$lines" ]; then echo "unexpected permission line(s): $lines" >&2; return 1; fi
 }
-need "only POST_NOTIFICATIONS is requested" only_notifications
+need "no permission is requested" no_permissions
 need "no INTERNET permission" badging_lacks "android.permission.INTERNET"
 for abi in "${ABIS[@]}"; do
     need "native code for $abi" badging_has "^native-code:.*'$abi'"

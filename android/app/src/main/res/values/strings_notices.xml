@@ -9,7 +9,7 @@
 <resources>
     <!-- BestEffort -->
     <string name="notice_d_best_effort_a_quoted_field_is_never_closed_the_rest_is_one_cell">a quoted field is never closed, so the rest of the file is one cell</string>
-    <string name="notice_d_best_effort_access_select_text_is_reconstructed_from_msysqueries_and">the text of SELECT queries is rebuilt from the database system tables and was not checked against Access</string>
+    <string name="notice_d_best_effort_access_query_sql_is_rebuilt_from_the_stored_rows_for_dis">the SQL of saved queries is rebuilt from the database system tables for display; it is equivalent to, not necessarily identical to, the text Access shows, and is never run</string>
     <string name="notice_d_best_effort_binary_visio">binary Visio file</string>
     <string name="notice_d_best_effort_code_page">some characters could not be converted from the code page of the document</string>
     <string name="notice_d_best_effort_damaged_presentation_structure">damaged presentation structure</string>
@@ -22,6 +22,9 @@
     <string name="notice_d_best_effort_text_encoding_cp_n">the text is not UTF-8; it was read as code page %1$s</string>
     <string name="notice_d_best_effort_word_6_95_or_damaged_structure">Word 6/95 file or damaged structure</string>
 
+    <!-- FormulasNotEvaluated -->
+    <string name="notice_d_formulas_not_evaluated_access_calculated_columns_show_the_stored_result">calculated columns show the result that Access stored; their expressions are not evaluated</string>
+
     <!-- HiddenShown, HiddenOmitted -->
     <string name="notice_d_hidden_columns">columns</string>
     <string name="notice_d_hidden_objects">database objects</string>
@@ -32,29 +35,44 @@
     <string name="notice_d_hidden_text">text</string>
 
     <!-- Skipped -->
+    <string name="notice_d_skipped_3_d_effects_of_shapes_bevel_extrusion_rotation_are_not_d">3-D effects of shapes (bevel, extrusion, rotation) are not displayed; the shapes are drawn flat</string>
+    <string name="notice_d_skipped_a_polyline_or_curve_formula_that_is_not_plain_numbers_is">a polyline or curve whose formula is not plain numbers is drawn as a straight line</string>
+    <string name="notice_d_skipped_arrowheads_are_drawn_as_plain_triangles">arrowheads are drawn as plain triangles</string>
     <string name="notice_d_skipped_content_types_xml">the list of part types of the package ([Content_Types].xml)</string>
     <string name="notice_d_skipped_content_xml">the body of the document (content.xml)</string>
     <string name="notice_d_skipped_content_xml_styles">styles inside content.xml</string>
+    <string name="notice_d_skipped_curves_of_a_degree_above_8_are_drawn_with_degree_8">curves of a degree above 8 are drawn with degree 8</string>
     <string name="notice_d_skipped_damaged_pdf_stream">a damaged PDF stream</string>
     <string name="notice_d_skipped_damaged_word_text">damaged Word text</string>
+    <string name="notice_d_skipped_dashed_and_dotted_lines_are_drawn_solid">dashed and dotted lines are drawn solid</string>
+    <string name="notice_d_skipped_fill_patterns_and_gradients_are_drawn_as_flat_colours">fill patterns and gradients are drawn as flat colours</string>
     <string name="notice_d_skipped_macro_text">the text of macros (macros are never run)</string>
     <string name="notice_d_skipped_n_slide_part_s_that_the_presentation_does_not_list">%1$s slide part(s) that the presentation does not list</string>
     <string name="notice_d_skipped_n_worksheet_part_s_that_the_workbook_does_not_list">%1$s worksheet part(s) that the workbook does not list</string>
+    <string name="notice_d_skipped_nurbs_curves_are_drawn_as_sampled_polylines">NURBS curves are drawn as polylines</string>
     <string name="notice_d_skipped_object_stream">a PDF object stream</string>
     <string name="notice_d_skipped_older_revisions_of_slides_n">older revisions of slides: %1$s</string>
     <string name="notice_d_skipped_pdf_objects_beyond_the_first_2000000">PDF objects beyond the first 2000000</string>
+    <string name="notice_d_skipped_pictures_and_embedded_objects_are_shown_as_placeholders">pictures and embedded objects are shown as placeholders</string>
     <string name="notice_d_skipped_query_n_no_definition_rows">query %1$s (the file holds no definition of it)</string>
+    <string name="notice_d_skipped_rounded_corners_are_not_drawn">rounded corners are not drawn</string>
     <string name="notice_d_skipped_rtf_body">the RTF body of a message</string>
+    <string name="notice_d_skipped_shadows_are_not_drawn">shadows are not drawn</string>
+    <string name="notice_d_skipped_shape_effects_glow_soft_edges_reflection_are_not_drawn">shape effects (glow, soft edges, reflection) are not drawn</string>
+    <string name="notice_d_skipped_splines_are_drawn_as_sampled_polylines">splines are drawn as polylines</string>
     <string name="notice_d_skipped_styles_xml">styles (styles.xml)</string>
     <string name="notice_d_skipped_table_n">table %1$s</string>
 
     <!-- Truncated -->
     <string name="notice_d_truncated_attached_messages_inside_attached_messages">attached messages inside attached messages</string>
     <string name="notice_d_truncated_blocks">paragraphs, tables and other blocks beyond the limit</string>
+    <string name="notice_d_truncated_catalog">database objects beyond the limit</string>
     <string name="notice_d_truncated_character_formatting">character formatting of the old Word format</string>
     <string name="notice_d_truncated_characters">text beyond the limit on characters</string>
+    <string name="notice_d_truncated_complex_values">values of complex columns beyond the limit</string>
     <string name="notice_d_truncated_grid">cells beyond the limit on rows and columns</string>
     <string name="notice_d_truncated_hyperlinks">hyperlinks beyond the limit</string>
+    <string name="notice_d_truncated_indexes">indexes beyond the limit</string>
     <string name="notice_d_truncated_items">items beyond the limit</string>
     <string name="notice_d_truncated_link_address_too_long_link_dropped">a link address was too long and the link was dropped</string>
     <string name="notice_d_truncated_list_marker">a list marker was too long</string>
@@ -66,6 +84,7 @@
     <string name="notice_d_truncated_pdf_content_limits">content of PDF pages beyond the processing limits</string>
     <string name="notice_d_truncated_picture_description">a picture description was too long</string>
     <string name="notice_d_truncated_queries">database queries beyond the limit</string>
+    <string name="notice_d_truncated_relationships">table relationships beyond the limit</string>
     <string name="notice_d_truncated_repeated_cells">repeated cells beyond the limit</string>
     <string name="notice_d_truncated_repeated_rows">repeated rows beyond the limit</string>
     <string name="notice_d_truncated_runs_per_paragraph">pieces of formatted text in a paragraph beyond the limit</string>
@@ -78,12 +97,11 @@
     <string name="notice_d_truncated_text_length">a text was too long</string>
 
     <!-- Unsupported -->
-    <string name="notice_d_unsupported_access_queries_other_than_plain_select_are_shown_as_thei">queries other than plain SELECT as SQL (their stored rows are shown)</string>
+    <string name="notice_d_unsupported_access_queries_that_do_not_fit_the_documented_layout_are">queries that do not fit the known layout are shown as their stored rows, not as SQL</string>
+    <string name="notice_d_unsupported_access_the_database_names_a_n_n_it_is_never_opened_or_ru">the database names a %1$s (%2$s); it is never opened or run</string>
     <string name="notice_d_unsupported_attachments_are_listed_not_opened">opening attachments (they are only listed)</string>
     <string name="notice_d_unsupported_charts">charts</string>
     <string name="notice_d_unsupported_charts_smartart_and_embedded_objects">charts, SmartArt and embedded objects</string>
-    <string name="notice_d_unsupported_drawing_geometry">drawing geometry</string>
-    <string name="notice_d_unsupported_drawing_geometry_stencils_and_pictures">drawing geometry, stencils and pictures</string>
     <string name="notice_d_unsupported_drawings_and_charts">drawings and charts</string>
     <string name="notice_d_unsupported_drawings_and_shapes">drawings and shapes</string>
     <string name="notice_d_unsupported_elements_in_a_foreign_namespace_were_ignored">elements from a foreign XML namespace (they were ignored)</string>
@@ -91,13 +109,9 @@
     <string name="notice_d_unsupported_embedded_objects_and_drawings">embedded objects and drawings</string>
     <string name="notice_d_unsupported_embedded_objects_and_macros">embedded objects and macros</string>
     <string name="notice_d_unsupported_excel_4_0_macro_sheets_formulas_not_shown">Excel 4.0 macro sheets (their formulas are not shown)</string>
-    <string name="notice_d_unsupported_forms_reports_macros_and_modules_are_listed_not_shown_or">forms, reports, macros and modules: they are listed, not shown or run; queries are shown as stored rows and, for plain SELECT, also as reconstructed text that is never run</string>
+    <string name="notice_d_unsupported_forms_reports_macros_modules_and_data_access_pages_are_l">forms, reports, macros, modules and data access pages: they are listed by name, not shown or run; queries are shown as SQL text that is never run</string>
     <string name="notice_d_unsupported_macros_and_modules_are_code_and_are_never_run">running macros and modules (they are code and are never run)</string>
     <string name="notice_d_unsupported_pdf_fonts_without_a_text_mapping">PDF fonts without a text mapping (their text cannot be read)</string>
     <string name="notice_d_unsupported_pictures_and_embedded_objects">pictures and embedded objects</string>
     <string name="notice_d_unsupported_shared_formulas_too_long_to_be_shown_for_every_cell">shared formulas too long to be shown in every cell</string>
-    <string name="notice_d_unsupported_visio_connections_between_shapes_are_not_read">Visio connections between shapes</string>
-    <string name="notice_d_unsupported_visio_hyperlinks_are_not_read">Visio hyperlinks</string>
-    <string name="notice_d_unsupported_visio_masters_stencils_are_not_read">Visio masters (stencils)</string>
-    <string name="notice_d_unsupported_visio_shape_data_are_not_read">Visio shape data</string>
 </resources>
