@@ -171,7 +171,7 @@ pub(crate) fn extract(
     if calculated {
         sink.note(
             NoticeKind::FormulasNotEvaluated,
-            "access: calculated columns show the result Access stored; their expressions are not evaluated",
+            "access: calculated columns show the stored result",
         );
     }
 

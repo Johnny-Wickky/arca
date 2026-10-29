@@ -215,7 +215,8 @@ pub fn sanitize_pdf(
 
 /// Draws page `index` (from 0) of a document: what is on it, as a list of things to draw.
 ///
-/// Only PDF pages are drawn so far. The format is determined from content only.
+/// PDF pages, presentation slides (PPTX family, ODP), workbook pages (XLSX family, ODS, XLS) and
+/// Visio pages (VSDX family, VSD) are drawn. The format is determined from content only.
 ///
 /// # Errors
 /// See [`PreviewError`]; [`PreviewError::Unsupported`] for formats that have no page drawing,
@@ -231,7 +232,14 @@ pub fn render_page(
     match arca_xray::format::sniff(data) {
         arca_xray::format::Magic::Pdf => pdf::render(data, index, policy),
         arca_xray::format::Magic::Zip => match slide_draw::render_slide(data, index, policy) {
-            // Not a presentation: a Visio drawing is drawn by its own module.
+            // Not a presentation: a workbook or a Visio drawing is drawn by its own module.
+            Err(PreviewError::Unsupported(
+                FileFormat::Xlsx
+                | FileFormat::Xlsm
+                | FileFormat::Xltx
+                | FileFormat::Xltm
+                | FileFormat::Ods,
+            )) => sheet_draw::render_workbook_page(data, index, policy),
             Err(PreviewError::Unsupported(
                 FileFormat::Vsdx | FileFormat::Vsdm | FileFormat::VisioTemplateOrStencil,
             )) => visio_draw::render_visio_page(data, index, policy),
@@ -239,6 +247,7 @@ pub fn render_page(
         },
         arca_xray::format::Magic::Ole2 => match detect::format_of(data, policy) {
             FileFormat::Vsd => visio_draw::render_visio_page(data, index, policy),
+            FileFormat::Xls => sheet_draw::render_workbook_page(data, index, policy),
             other => Err(PreviewError::Unsupported(other)),
         },
         _ => Err(PreviewError::Unsupported(detect::format_of(data, policy))),

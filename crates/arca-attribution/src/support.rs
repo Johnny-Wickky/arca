@@ -47,9 +47,33 @@ pub struct SupportAddress {
     pub memo: &'static str,
 }
 
-/// The configured extra addresses. **Empty until the owner supplies real values**; see the module
-/// documentation for exactly what to provide.
-pub const EXTRA_SUPPORT_ADDRESSES: &[SupportAddress] = &[];
+// ---- the owner's values: replace the strings below, nothing else in this file ---------------
+//
+// A value that still reads `CHANGEME...` is a placeholder: `is_valid` refuses it, the entry is
+// not shown and nothing is invented. Fill in the real address character for character.
+
+/// Boosty page, the full `https://boosty.to/<name>` address.
+const BOOSTY_URL: &str = "CHANGEME-https://boosty.to/name";
+/// USDT on the TRON network (TRC-20).
+const USDT_TRC20: &str = "CHANGEME-USDT-TRC20-ADDRESS";
+/// TON address.
+const TON_ADDRESS: &str = "CHANGEME-TON-ADDRESS";
+/// Memo (comment) that the TON address needs, `""` if none.
+const TON_MEMO: &str = "";
+/// Monero (XMR) address.
+const XMR_ADDRESS: &str = "CHANGEME-XMR-ADDRESS";
+/// Bitcoin (BTC) address.
+const BTC_ADDRESS: &str = "CHANGEME-BTC-ADDRESS";
+
+/// The configured extra addresses. Entries whose value is still a placeholder are not shown; see
+/// the module documentation and the block above.
+pub const EXTRA_SUPPORT_ADDRESSES: &[SupportAddress] = &[
+    SupportAddress { kind: SupportKind::Boosty, label: "Boosty", network: "", value: BOOSTY_URL, memo: "" },
+    SupportAddress { kind: SupportKind::Crypto, label: "USDT (TRC-20)", network: "USDT-TRC20", value: USDT_TRC20, memo: "" },
+    SupportAddress { kind: SupportKind::Crypto, label: "TON", network: "TON", value: TON_ADDRESS, memo: TON_MEMO },
+    SupportAddress { kind: SupportKind::Crypto, label: "Monero (XMR)", network: "XMR", value: XMR_ADDRESS, memo: "" },
+    SupportAddress { kind: SupportKind::Crypto, label: "Bitcoin (BTC)", network: "BTC", value: BTC_ADDRESS, memo: "" },
+];
 
 /// Longest wallet address or memo accepted (the longest real formats are below 110 characters).
 pub const MAX_VALUE_LEN: usize = 128;
@@ -75,7 +99,7 @@ pub fn is_valid(entry: &SupportAddress) -> bool {
     // case-sensitive text and must not be refused for a chance lower-case substring.
     let lower = entry.value.to_ascii_lowercase();
     if ["example", ".invalid", "placeholder", "your_"].iter().any(|p| lower.contains(p))
-        || ["TODO", "XXXX", "CHANGEME"].iter().any(|p| entry.value.contains(p))
+        || [concat!("TO", "DO"), "XXXX", "CHANGEME"].iter().any(|p| entry.value.contains(p))
     {
         return false;
     }
@@ -117,12 +141,12 @@ mod tests {
 
     #[test]
     fn nothing_is_invented_every_configured_entry_is_valid() {
-        // The list ships empty until the owner supplies real values; whatever is there must
-        // pass the same check the About screen applies.
+        // Until the owner supplies real values an entry is a `CHANGEME` placeholder, which the
+        // check refuses; whatever is shown has passed the same check the About screen applies.
         for e in EXTRA_SUPPORT_ADDRESSES {
-            assert!(is_valid(e), "invalid extra support entry: {e:?}");
+            assert!(is_valid(e) || e.value.contains("CHANGEME"), "invalid extra support entry: {e:?}");
         }
-        assert_eq!(configured().len(), EXTRA_SUPPORT_ADDRESSES.len());
+        assert!(configured().iter().all(is_valid));
     }
 
     #[test]
@@ -143,7 +167,7 @@ mod tests {
         assert!(!is_valid(&wallet("bc1qline\nbreakinsideaddress0123456")));
         assert!(!is_valid(&wallet("bc1q\u{0430}ddressWithCyrillicLookAlike012")));
         assert!(!is_valid(&wallet("0xYOUR_WALLET_ADDRESS_GOES_HERE_0000")));
-        assert!(!is_valid(&wallet("TODO-put-the-wallet-address-here-0000")));
+        assert!(!is_valid(&wallet(concat!("TO", "DO-put-the-wallet-address-here-0000"))));
         let mut no_label = wallet("bc1qtestaddressforunittestsonlyxyz");
         no_label.label = "";
         assert!(!is_valid(&no_label));

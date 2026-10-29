@@ -190,6 +190,7 @@ impl Sheet {
     }
 
     /// Whether the shape is one-dimensional (a connector): it has begin and end points.
+    #[allow(dead_code)]
     pub(crate) fn is_1d(&self) -> bool {
         cell(&self.cells, "BeginX").is_some() && cell(&self.cells, "EndX").is_some()
     }
@@ -204,6 +205,7 @@ impl Sheet {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Master {
     pub(crate) id: u32,
+    #[allow(dead_code)]
     pub(crate) name: String,
     /// A virtual group that holds the top-level shapes of the master.
     pub(crate) root: Sheet,

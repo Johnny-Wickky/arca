@@ -215,6 +215,41 @@ pub fn page_count(data: &[u8], sheet: usize, policy: &PreviewPolicy) -> Result<u
     Ok(u32::try_from(pages.count).unwrap_or(u32::MAX))
 }
 
+/// Most sheets that are counted to number the pages of one workbook.
+const MAX_FLAT_SHEETS: usize = 256;
+
+/// Draws page `index` (from 0) of a whole workbook: the pages of its sheets one after another, in
+/// the order of [`sheet_list`]. `pages` of the result is the number of pages of the workbook.
+///
+/// # Errors
+/// See [`PreviewError`]; [`PreviewError::Unsupported`] for other formats,
+/// [`PreviewError::Malformed`] for a page that does not exist.
+pub fn render_workbook_page(
+    data: &[u8],
+    index: usize,
+    policy: &PreviewPolicy,
+) -> Result<PageModel, PreviewError> {
+    let list = sheet_list(data, policy)?;
+    let mut counts: Vec<usize> = Vec::new();
+    let mut total = 0usize;
+    for sheet in 0..list.sheets.len().min(MAX_FLAT_SHEETS) {
+        let n = page_count(data, sheet, policy).map_or(0, |n| n as usize);
+        counts.push(n);
+        total = total.saturating_add(n);
+    }
+    let mut rest = index;
+    for (sheet, n) in counts.iter().enumerate() {
+        if rest < *n {
+            let mut page = render_sheet_page(data, sheet, rest, policy)?.page;
+            page.index = u32::try_from(index).unwrap_or(u32::MAX);
+            page.pages = u32::try_from(total).unwrap_or(u32::MAX);
+            return Ok(page);
+        }
+        rest -= *n;
+    }
+    Err(PreviewError::Malformed("the workbook has no such page".into()))
+}
+
 fn notices_of(sheet: &Sheet, pages: &Pages, reveal: bool, painted_truncated: bool) -> Vec<Notice> {
     let mut out: Vec<Notice> = Vec::new();
     for what in &sheet.notes.items {

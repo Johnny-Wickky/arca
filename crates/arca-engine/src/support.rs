@@ -38,9 +38,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_list_is_valid_json_and_empty_until_the_owner_fills_it() {
+    fn the_list_is_valid_json_and_empty_while_only_placeholders_are_set() {
         let json = String::from_utf8(extra_support_json()).expect("utf-8");
-        if arca_attribution::support::EXTRA_SUPPORT_ADDRESSES.is_empty() {
+        if configured().is_empty() {
             assert_eq!(json, "{\"items\":[]}");
         } else {
             assert!(json.starts_with("{\"items\":[{\"kind\":"), "{json}");

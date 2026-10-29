@@ -7,6 +7,15 @@
 //! `PropertyMaps`, `TableImpl`); the vectors here were worked out from those descriptions by
 //! hand, not produced by this reader.
 
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::type_complexity,
+    reason = "test code with small constants and hand-made byte vectors"
+)]
+
 use super::testdb::{Cv, ColSpec, IndexSpec, TestDb, int, t, text};
 use super::*;
 
@@ -267,8 +276,10 @@ fn a_calculated_column_shows_the_result_access_stored() {
         ColSpec::new("calc_bool", t::BOOL).ext(calc).length(39),
         ColSpec::new("calc_num", t::NUMERIC).ext(calc).length(39).scale(3),
     ];
-    let mut num = vec![0u8; 17];
-    num[13..17].copy_from_slice(&1250u32.to_le_bytes());
+    // The result of a calculated decimal: the length of what follows (the scale, the sign and one
+    // word), the scale, the sign and the magnitude as little-endian words.
+    let mut num = vec![6u8, 0, 3, 0];
+    num.extend(1250u32.to_le_bytes());
     let rows = vec![
         vec![
             int(1),
@@ -285,7 +296,7 @@ fn a_calculated_column_shows_the_result_access_stored() {
             Cv::Raw(wrapped(&[], 0)),
             Cv::Long(wrapped(&[], 0)),
             Cv::Raw(wrapped(&[0], 39)),
-            Cv::Raw(wrapped(&[0u8; 17], 39)),
+            Cv::Raw(wrapped(&[6, 0, 3, 0, 0, 0, 0, 0], 39)),
         ],
     ];
     let mut tdb = TestDb::new(3);
@@ -552,15 +563,14 @@ fn a_complex_column_that_the_registry_does_not_describe_has_no_data() {
     let mut other = files.clone();
     other.complex_id = 999;
     assert!(db.complex_data(&objects, u32::try_from(main).unwrap(), &other).is_none());
-    drop(db);
     // Damage to the pages of the registry or of the flat tables is a refusal, never a panic.
     for page in 3..data.len() / 4096 {
         let saved = data[page * 4096..(page + 1) * 4096].to_vec();
         data[page * 4096..(page + 1) * 4096].fill(0xA5);
-        if let Ok(db) = Db::open(&data) {
-            if let Some(objects) = db.catalog() {
-                let _ = db.complex_data(&objects, u32::try_from(main).unwrap(), &files);
-            }
+        if let Ok(db) = Db::open(&data)
+            && let Some(objects) = db.catalog()
+        {
+            let _ = db.complex_data(&objects, u32::try_from(main).unwrap(), &files);
         }
         data[page * 4096..(page + 1) * 4096].copy_from_slice(&saved);
     }

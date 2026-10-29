@@ -872,6 +872,7 @@ fn merge_geom(base: &Geom, own: &Geom) -> Geom {
     }
 }
 
+#[allow(unused_assignments)]
 fn is_closed(segs: &[Seg]) -> bool {
     let mut start = (0.0f64, 0.0f64);
     let mut cur = (0.0f64, 0.0f64);

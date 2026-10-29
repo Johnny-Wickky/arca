@@ -390,6 +390,142 @@ fn real_files_read_like_libvisio() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Chunk layouts (see the table in `read.rs`): a test-only writer that follows them, and the
+// drawing and reading tests built on it.
+// ---------------------------------------------------------------------------------------------
+
+const NONE: u32 = u32::MAX;
+
+/// A number: a tag byte and a little-endian `f64`.
+fn num(v: f64) -> Vec<u8> {
+    let mut b = vec![0x40];
+    b.extend_from_slice(&v.to_le_bytes());
+    b
+}
+
+fn nums(v: &[f64]) -> Vec<u8> {
+    v.iter().flat_map(|x| num(*x)).collect()
+}
+
+fn put_u32(b: &mut [u8], at: usize, v: u32) {
+    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// The data of a shape chunk: parent at 10, master page at 18, master shape at 26, fill style at
+/// 34, line style at 42, text style at 50.
+fn shape_body(parent: u32, master: u32, master_shape: u32, styles: (u32, u32, u32)) -> Vec<u8> {
+    let mut b = vec![0u8; 54];
+    put_u32(&mut b, 10, parent);
+    put_u32(&mut b, 18, master);
+    put_u32(&mut b, 26, master_shape);
+    put_u32(&mut b, 34, styles.0);
+    put_u32(&mut b, 42, styles.1);
+    put_u32(&mut b, 50, styles.2);
+    b
+}
+
+/// XForm: PinX, PinY, Width, Height, LocPinX, LocPinY, Angle, then the flip bytes at 63, 64.
+fn xform_body(pin: (f64, f64), size: (f64, f64), loc: (f64, f64), angle: f64, flips: (u8, u8)) -> Vec<u8> {
+    let mut b = nums(&[pin.0, pin.1, size.0, size.1, loc.0, loc.1, angle]);
+    b.extend([flips.0, flips.1]);
+    b
+}
+
+/// Line: weight, RGBA at 10, pattern at 14, rounding at 15 (as a number), arrows at 25 and 26.
+fn line_body(weight: f64, rgb: u32, pattern: u8, arrows: (u8, u8)) -> Vec<u8> {
+    let mut b = vec![0u8; 28];
+    b[..9].copy_from_slice(&num(weight));
+    b[9] = 0x40;
+    b[10] = u8::try_from(rgb >> 16 & 0xff).unwrap();
+    b[11] = u8::try_from(rgb >> 8 & 0xff).unwrap();
+    b[12] = u8::try_from(rgb & 0xff).unwrap();
+    b[14] = pattern;
+    b[15] = 0x40;
+    b[25] = arrows.0;
+    b[26] = arrows.1;
+    b
+}
+
+/// Fill: index and RGBA of the foreground at 0, of the background at 5, pattern at 10.
+fn fill_body(fg: Option<u32>, fg_index: u8, bg: Option<u32>, bg_index: u8, pattern: u8) -> Vec<u8> {
+    let mut b = vec![0u8; 22];
+    let rgba = |b: &mut [u8], at: usize, c: Option<u32>| {
+        if let Some(c) = c {
+            b[at] = u8::try_from(c >> 16 & 0xff).unwrap();
+            b[at + 1] = u8::try_from(c >> 8 & 0xff).unwrap();
+            b[at + 2] = u8::try_from(c & 0xff).unwrap();
+        }
+    };
+    b[0] = fg_index;
+    rgba(&mut b, 1, fg);
+    b[5] = bg_index;
+    rgba(&mut b, 6, bg);
+    b[10] = pattern;
+    b
+}
+
+fn page_props(width: f64, height: f64) -> Vec<u8> {
+    let mut b = nums(&[width, height, 0.0, 0.0, 1.0]);
+    b.push(0);
+    b.extend_from_slice(&1.0f64.to_le_bytes());
+    b
+}
+
+fn rows(version: u16, geometry: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut out = chunk(version, 0x6c, 0, &[]);
+    out.extend(chunk(version, 0x89, 0, &[0]));
+    for (i, (ty, body)) in geometry.iter().enumerate() {
+        out.extend(chunk(version, *ty, u32::try_from(i).unwrap(), body));
+    }
+    out
+}
+
+fn move_to(x: f64, y: f64) -> (u32, Vec<u8>) {
+    (0x8a, nums(&[x, y]))
+}
+
+fn line_to(x: f64, y: f64) -> (u32, Vec<u8>) {
+    (0x8b, nums(&[x, y]))
+}
+
+/// A page with a rectangle of 2 x 1 inches whose local pin (1, 0.5) is at (3, 4), as in the
+/// `.vsdx` tests.
+fn rect_page(version: u16, style: (u32, u32, u32), extra: &[u8]) -> Vec<u8> {
+    let mut p = chunk(version, 0x15, NONE, &[0u8; 80]);
+    p.extend(chunk(version, 0x92, 0, &page_props(8.5, 11.0)));
+    p.extend(chunk(version, 0x48, 1, &shape_body(0, NONE, NONE, style)));
+    p.extend(chunk(version, 0x9b, 0, &xform_body((3.0, 4.0), (2.0, 1.0), (1.0, 0.5), 0.0, (0, 0))));
+    p.extend_from_slice(extra);
+    p.extend(rows(
+        version,
+        &[move_to(0.0, 0.0), line_to(2.0, 0.0), line_to(2.0, 1.0), line_to(0.0, 1.0), line_to(0.0, 0.0)],
+    ));
+    p
+}
+
+fn fg(data: Vec<u8>) -> TestPage {
+    TestPage { data, foreground: true }
+}
+
+fn render(data: &[u8]) -> crate::page::PageModel {
+    crate::visio_draw::render_visio_page(data, 0, &PreviewPolicy::default()).unwrap()
+}
+
+fn path_points(p: &crate::page::PageModel) -> Vec<Vec<(f32, f32)>> {
+    p.prims
+        .iter()
+        .filter_map(|q| match q {
+            crate::page::Prim::Path { ops, .. } => Some(crate::visio_draw::tests::points(ops)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn close(a: (f32, f32), b: (f32, f32)) -> bool {
+    (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02
+}
+
 #[test]
 fn a_binary_page_is_drawn_from_xform_line_fill_and_geometry() {
     for version in [11u16, 6] {
