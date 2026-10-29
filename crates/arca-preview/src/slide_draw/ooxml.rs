@@ -207,6 +207,32 @@ enum Paint {
     Unset,
     None,
     Color(u32),
+    /// A picture fill (`blipFill`): the caller reads the picture from the element and draws it,
+    /// or says that it cannot.
+    Picture,
+}
+
+/// Whether the picture fill of the first property element in `chain` that has one is tiled or
+/// cropped (`a:tile`, or an `a:srcRect` with an edge), which is not applied.
+fn tiled_or_cropped(chain: &[&Node]) -> bool {
+    chain.iter().find_map(|p| p.child("blipFill")).is_some_and(|b| {
+        b.child("tile").is_some()
+            || b.child("srcRect").is_some_and(|r| {
+                ["l", "t", "r", "b"].iter().any(|k| r.attr(k).is_some_and(|v| v != "0"))
+            })
+    })
+}
+
+/// The picture a fill element holds: `holder` is the node whose child is `blipFill` (a shape's
+/// `spPr`, a background's `bgPr`); [`IMAGE_NONE`] if there is none, it is not embedded, or the
+/// relationship does not lead to a picture of the package.
+fn fill_picture(holder: &Node, rels: &RelTab) -> u32 {
+    holder
+        .child("blipFill")
+        .and_then(|b| b.child("blip"))
+        .and_then(|b| b.rel("embed").or_else(|| b.rel("link")))
+        .and_then(|rid| rels.get(rid).copied().flatten())
+        .unwrap_or(IMAGE_NONE)
 }
 
 impl Look {
@@ -325,10 +351,7 @@ impl Look {
                     .and_then(|c| self.color_in(c, ph))
                     .map_or(Paint::Unset, Paint::Color)
             }
-            "blipFill" => {
-                cv.approximated("a picture fill is not drawn");
-                Paint::None
-            }
+            "blipFill" => Paint::Picture,
             "grpFill" => Paint::Unset,
             _ => return None,
         })
@@ -823,19 +846,31 @@ impl<'a> Pass<'a> {
 
     // ---- paint of a shape ------------------------------------------------------------------
 
-    /// The fill colour (0 for none) from the property elements in `chain`, then the style.
-    fn fill_of(&mut self, chain: &[&Node], style: Option<&Node>) -> u32 {
+    /// The fill colour (0 for none) from the property elements in `chain`, then the style; and,
+    /// when the fill is a picture the shape itself holds, its id (else [`IMAGE_NONE`]).
+    fn fill_of(&mut self, chain: &[&Node], style: Option<&Node>) -> (u32, u32) {
         let look = self.look;
         for sp_pr in chain {
             match look.paint_in(sp_pr, None, self.cv) {
                 Paint::Unset => {}
-                Paint::None => return 0,
-                Paint::Color(c) => return c,
+                Paint::None => return (0, IMAGE_NONE),
+                Paint::Color(c) => return (c, IMAGE_NONE),
+                Paint::Picture => {
+                    let id = fill_picture(sp_pr, self.rels);
+                    if id == IMAGE_NONE {
+                        self.cv.approximated("a picture fill that is not in the file is not drawn");
+                    }
+                    return (0, id);
+                }
             }
         }
         match style.and_then(|s| s.child("fillRef")).map(|r| look.ref_fill(r, self.cv)) {
-            Some(Paint::Color(c)) => c,
-            _ => 0,
+            Some(Paint::Color(c)) => (c, IMAGE_NONE),
+            Some(Paint::Picture) => {
+                self.cv.approximated("a picture fill from the theme is not drawn");
+                (0, IMAGE_NONE)
+            }
+            _ => (0, IMAGE_NONE),
         }
     }
 
@@ -872,6 +907,10 @@ impl<'a> Pass<'a> {
             Paint::Color(c) => {
                 let w = width.unwrap_or(0.75);
                 (c, if w < 0.25 { 0.5 } else { w })
+            }
+            Paint::Picture => {
+                self.cv.approximated("a line filled with a picture is not drawn");
+                (0, 0.0)
             }
             _ => (0, 0.0),
         }
@@ -945,7 +984,17 @@ impl<'a> Pass<'a> {
             }
             None => vec![GPath { segs: presets::rect(xf.w, xf.h), fill: true, stroke: true }],
         };
-        let fill = if connector { 0 } else { self.fill_of(&chain, style) };
+        let (fill, picture) = if connector { (0, IMAGE_NONE) } else { self.fill_of(&chain, style) };
+        if picture != IMAGE_NONE {
+            // The picture takes the place of the fill: under the outline and the text.
+            let rect = geom
+                .is_none_or(|g| g.name == "prstGeom" && g.attr("prst").is_none_or(|p| p == "rect"));
+            if !rect || tiled_or_cropped(&chain) {
+                self.cv
+                    .approximated("a picture fill is drawn stretched over the frame of the shape");
+            }
+            self.cv.image(&m, xf.w, xf.h, "", picture);
+        }
         let (mut stroke, mut width) = self.line_of(&chain, style);
         if outline_only && stroke >> 24 == 0 {
             // The frame is the only trace of the shape: keep it visible.
@@ -1498,6 +1547,10 @@ impl<'a> Pass<'a> {
             let fill = match tcpr.map(|p| look.paint_in(p, None, self.cv)) {
                 Some(Paint::Color(c)) => c,
                 Some(Paint::None) => 0,
+                Some(Paint::Picture) => {
+                    self.cv.approximated("a picture fill of a table cell is not drawn");
+                    reg.fill.unwrap_or(0)
+                }
                 _ => reg.fill.unwrap_or(0),
             };
             let mut borders = [None; 4];
@@ -1509,7 +1562,7 @@ impl<'a> Pass<'a> {
                             Some((c, ln.attr("w").map_or(0.75, |w| emu_pt(Some(w)).max(0.25))))
                         }
                         Paint::None => None,
-                        Paint::Unset => reg.border,
+                        Paint::Unset | Paint::Picture => reg.border,
                     },
                     None => reg.border,
                 };
@@ -1844,29 +1897,56 @@ fn slide_size(pres: &Node, cv: &mut Canvas) -> (f64, f64) {
     }
 }
 
-/// The background paint of the slide: its own, else the layout's, else the master's.
-fn background(look: &Look, parts: &Parts, cv: &mut Canvas) -> u32 {
-    for tree in
-        [Some(&parts.slide), parts.layout.as_ref(), parts.master.as_ref()].into_iter().flatten()
+/// What the slide is painted with before its shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Background {
+    /// A colour (`0` for none).
+    Color(u32),
+    /// A picture of the package, stretched over the slide.
+    Picture(u32),
+}
+
+/// The background paint of the slide: its own, else the layout's, else the master's. `rels` are
+/// the relationship tables of the slide, the layout and the master, in that order.
+fn background(look: &Look, parts: &Parts, rels: &[RelTab; 3], cv: &mut Canvas) -> Background {
+    for (tree, rels) in [Some(&parts.slide), parts.layout.as_ref(), parts.master.as_ref()]
+        .into_iter()
+        .zip(rels)
+        .filter_map(|(t, r)| t.map(|t| (t, r)))
     {
         let Some(bg) = tree.root.child("cSld").and_then(|c| c.child("bg")) else { continue };
         if let Some(pr) = bg.child("bgPr") {
             match look.paint_in(pr, None, cv) {
-                Paint::Color(c) => return c,
-                Paint::None => return 0,
+                Paint::Color(c) => return Background::Color(c),
+                Paint::None => return Background::Color(0),
+                Paint::Picture => {
+                    let id = fill_picture(pr, rels);
+                    if id != IMAGE_NONE {
+                        if pr.child("blipFill").is_some_and(|b| b.child("tile").is_some()) {
+                            cv.approximated("a tiled picture background is drawn stretched");
+                        }
+                        return Background::Picture(id);
+                    }
+                    cv.approximated("a picture background that is not in the file is not drawn");
+                    return Background::Color(0);
+                }
                 Paint::Unset => {}
             }
         }
         if let Some(r) = bg.child("bgRef") {
-            if let Paint::Color(c) = look.ref_fill(r, cv) {
-                return c;
+            match look.ref_fill(r, cv) {
+                Paint::Color(c) => return Background::Color(c),
+                Paint::Picture => {
+                    cv.approximated("a picture background from the theme is not drawn")
+                }
+                Paint::None | Paint::Unset => {}
             }
             if let Some(c) = look.color_in(r, None) {
-                return c;
+                return Background::Color(c);
             }
         }
     }
-    0
+    Background::Color(0)
 }
 
 /// Runs the deck: counts the slides and, if `want` is given, draws that slide.
@@ -1922,9 +2002,12 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
     let look = build_look(&loaded, &pres.root);
     cv.push(Prim::Save);
     cv.push(Prim::Clip { x: 0.0, y: 0.0, w: f32c(w), h: f32c(h) });
-    let bg = background(&look, &loaded, &mut cv);
-    if bg >> 24 != 0 && bg != 0xFFFF_FFFF {
-        cv.path(&presets::rect(w, h), &Mat::ID, bg, 0, 0.0, false);
+    match background(&look, &loaded, &tabs, &mut cv) {
+        Background::Color(bg) if bg >> 24 != 0 && bg != 0xFFFF_FFFF => {
+            cv.path(&presets::rect(w, h), &Mat::ID, bg, 0, 0.0, false);
+        }
+        Background::Picture(id) => cv.image(&Mat::ID, w, h, "", id),
+        Background::Color(_) => {}
     }
     fn tree(p: &super::Parsed) -> Option<&Node> {
         p.root.child("cSld").and_then(|c| c.child("spTree"))
