@@ -55,6 +55,26 @@ public abstract class Screen {
     /** Called when the screen is removed from the stack. */
     public void onLeave() {}
 
+    // ---- commands from a hardware keyboard or a mouse (Samsung DeX, Chromebooks, tablets) ---------
+
+    /** Ctrl+F: open the search of the document; {@code true} if this screen has one. */
+    public boolean onFind() {
+        return false;
+    }
+
+    /** Ctrl+Plus / Ctrl+Minus / Ctrl+wheel: zoom by {@code steps} (positive = larger); {@code true} if handled. */
+    public boolean onZoom(int steps) {
+        return false;
+    }
+
+    /** PageUp / PageDown / arrows: move by {@code delta} pages (or one screenful); {@code true} if handled. */
+    public boolean onPage(int delta) {
+        return false;
+    }
+
+    /** The app is out of sight or the system is short of memory: drop caches that hold document content. */
+    public void onTrim() {}
+
     // ---- common building blocks -------------------------------------------------------------
 
     /** The header row: optional back arrow, title and action buttons. */

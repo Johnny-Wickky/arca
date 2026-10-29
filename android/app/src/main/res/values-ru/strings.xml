@@ -331,6 +331,8 @@
     <string name="pages_prev">Предыдущая страница</string>
     <string name="pages_next">Следующая страница</string>
     <string name="pages_position">Страница %1$d из %2$d</string>
+    <string name="pages_bar_text">Текст</string>
+    <string name="pages_slider">Страница</string>
     <string name="pages_loading">Рисуем страницу в песочнице…</string>
     <string name="pages_failed">Эту страницу нарисовать не вышло.</string>
     <string name="pages_too_large">Страница слишком велика для показа</string>

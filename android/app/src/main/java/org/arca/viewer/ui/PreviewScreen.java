@@ -1677,6 +1677,41 @@ public final class PreviewScreen extends Screen {
     }
 
     @Override
+    public boolean onFind() {
+        if (metaShown == null) {
+            return false;
+        }
+        searchOpen = true;
+        focusSearch = true;
+        act.refresh();
+        return true;
+    }
+
+    @Override
+    public boolean onZoom(int steps) {
+        Prefs.setZoom(act, Zoom.step(Prefs.zoom(act), steps));
+        act.refresh();
+        return true;
+    }
+
+    @Override
+    public boolean onPage(int delta) {
+        if (list == null) {
+            return false;
+        }
+        // A screenful less a little, so the last line stays in view.
+        list.smoothScrollBy((delta > 0 ? 1 : -1) * list.getHeight() * 9 / 10, 150);
+        return true;
+    }
+
+    @Override
+    public void onTrim() {
+        if (cache != null) {
+            cache.clear();
+        }
+    }
+
+    @Override
     public void onLeave() {
         resetSearch();
         resetOutline();
