@@ -173,21 +173,6 @@ public final class Compat {
         return type.isInstance(p) ? (T) p : null;
     }
 
-    public static boolean hasNotificationPermission(android.content.Context c) {
-        if (Build.VERSION.SDK_INT >= 33) {
-            return Api33.hasNotificationPermission(c);
-        }
-        android.app.NotificationManager nm =
-            (android.app.NotificationManager) c.getSystemService(android.content.Context.NOTIFICATION_SERVICE);
-        return nm != null && nm.areNotificationsEnabled();
-    }
-
-    public static void requestNotificationPermission(Activity a, int reqCode) {
-        if (Build.VERSION.SDK_INT >= 33) {
-            Api33.requestNotificationPermission(a, reqCode);
-        }
-    }
-
     /** A registered predictive-back callback; {@link #unregister()} removes it. */
     public static final class Back {
         private final Activity activity;
@@ -397,15 +382,6 @@ public final class Compat {
 
         static void unregister(Activity a, Object cb) {
             a.getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((OnBackInvokedCallback) cb);
-        }
-
-        static boolean hasNotificationPermission(android.content.Context context) {
-            return context.checkSelfPermission("android.permission.POST_NOTIFICATIONS")
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
-        }
-
-        static void requestNotificationPermission(Activity a, int reqCode) {
-            a.requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, reqCode);
         }
     }
 }

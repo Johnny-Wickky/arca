@@ -319,6 +319,7 @@
     <string name="pages_too_large">Страница слишком велика для показа</string>
     <string name="pages_note_truncated">Страница очень сложная, часть её не показана.</string>
     <string name="pages_note_approx">Градиенты и узоры показаны плоским цветом, картинки — серыми прямоугольниками (нажмите, чтобы открыть), шрифты заменены.</string>
+    <string name="pages_note_visio">Эффекты 3D не отображаются: фигуры показаны плоскими.</string>
     <string name="fold_dock_label">Элементы управления у сгиба</string>
     <string name="image_show">Показать картинку</string>
     <string name="image_hide">Скрыть картинку</string>
@@ -347,13 +348,12 @@
     <string name="settings_images_desc">Картинки внутри документов раскодируются в песочнице только по нажатию. Включите, чтобы они показывались сразу при открытии документа.</string>
 
     <!-- Local Support Reminders (Zero-Network, Local Only) -->
-    <string name="notif_channel_reminders">Напоминания</string>
-    <string name="notif_channel_reminders_desc">Периодические напоминания о поддержке проекта</string>
-    <string name="notif_public_text">Напоминание от Arca</string>
+    <string name="support_card_open">Поддержать</string>
+    <string name="support_card_later">Позже</string>
+    <string name="support_card_fallback">Arca бесплатна и без рекламы. Если она вам полезна, можно поддержать разработчиков.</string>
     <string name="settings_reminders_title">Напоминания</string>
     <string name="settings_reminders">Напоминать о поддержке</string>
-    <string name="settings_reminders_desc">Ненавязчивое напоминание раз в неделю о поддержке студентов-разработчиков. Не беспокоит ночью.</string>
-    <string name="settings_reminders_perm_denied">Разрешение на уведомления отклонено. Вы можете включить его в системных настройках.</string>
+    <string name="settings_reminders_desc">Ненавязчивая карточка на главном экране примерно раз в неделю с просьбой поддержать разработчиков. Без уведомлений и разрешений; ничего никуда не отправляется.</string>
     <string name="push_student_ramen_fuel_title">Разработчики перешли на воду и хлеб 🍜</string>
     <string name="push_student_ramen_fuel_body">Вы открыли уже %1$d док. в полной безопасности, а наши студенты всё ещё компилируют Rust на голодный желудок. Угостите ребят дошираком на lava.top/pharosteam!</string>
     <string name="push_student_finals_vs_macros_title">Сдали лабы, обезвредили %1$d угроз 🎓</string>
@@ -456,7 +456,6 @@
     <string name="settings_stats_reset_message">Счётчики, которые хранятся на этом устройстве, будут удалены. Ваши документы не затрагиваются. Это нельзя отменить.</string>
     <string name="settings_stats_reset_confirm">Удалить</string>
     <string name="settings_stats_reset_done">Статистика удалена</string>
-    <string name="settings_reminders_blocked">Уведомления для Arca заблокированы в настройках системы. Напоминание появится, когда вы их разрешите.</string>
 
     <!-- Other ways to support (wallets, Boosty): the list is empty until the owner provides the addresses -->
     <string name="about_extra_title">Другие способы поддержки</string>

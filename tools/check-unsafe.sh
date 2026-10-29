@@ -116,6 +116,17 @@ if grep -rInE --exclude-dir=fixtures --exclude=check-unsafe.sh '(^|[^[:alnum:]_]
 fi
 find tools android -name '*.py' -not -path 'tools/fixtures/*' | grep . && violation "Python scripts outside tools/fixtures"
 
+# 8. No signing keys or keystores in the repository (Zero-Trust: the release key lives outside it).
+#    Files tracked by git (or staged) are checked by name; .gitignore keeps the rest out.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+    keys="$(git ls-files --cached --others --exclude-standard | grep -iE '\.(p12|pfx|jks|keystore|key|pem)$' || true)"
+    if [[ -n $keys ]]; then
+        printf '%s
+' "$keys"
+        violation "signing key or keystore file in the repository (lines above); keep keys outside it"
+    fi
+fi
+
 if [[ $fail == 0 ]]; then
     echo "check-unsafe: policy holds"
 fi

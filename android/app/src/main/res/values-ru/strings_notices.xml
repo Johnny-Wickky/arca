@@ -10,7 +10,7 @@
 <resources>
     <!-- BestEffort -->
     <string name="notice_d_best_effort_a_quoted_field_is_never_closed_the_rest_is_one_cell">поле в кавычках не закрыто, поэтому остаток файла стал одной ячейкой</string>
-    <string name="notice_d_best_effort_access_select_text_is_reconstructed_from_msysqueries_and">текст запросов SELECT восстановлен из системных таблиц базы и не сверен с Access</string>
+    <string name="notice_d_best_effort_access_query_sql_is_rebuilt_from_the_stored_rows_for_dis">SQL сохранённых запросов восстановлен из системных таблиц базы только для показа; он равнозначен тексту Access, но не обязательно совпадает с ним, и никогда не выполняется</string>
     <string name="notice_d_best_effort_binary_visio">двоичный файл Visio</string>
     <string name="notice_d_best_effort_code_page">часть символов не удалось перевести из кодовой страницы документа</string>
     <string name="notice_d_best_effort_damaged_presentation_structure">повреждённая структура презентации</string>
@@ -23,6 +23,9 @@
     <string name="notice_d_best_effort_text_encoding_cp_n">текст не в UTF-8; он прочитан как кодовая страница %1$s</string>
     <string name="notice_d_best_effort_word_6_95_or_damaged_structure">файл Word 6/95 или повреждённая структура</string>
 
+    <!-- FormulasNotEvaluated -->
+    <string name="notice_d_formulas_not_evaluated_access_calculated_columns_show_the_stored_result">вычисляемые столбцы показывают результат, сохранённый Access; их выражения не вычисляются</string>
+
     <!-- HiddenShown, HiddenOmitted -->
     <string name="notice_d_hidden_columns">столбцы</string>
     <string name="notice_d_hidden_objects">объекты базы</string>
@@ -33,29 +36,44 @@
     <string name="notice_d_hidden_text">текст</string>
 
     <!-- Skipped -->
+    <string name="notice_d_skipped_3_d_effects_of_shapes_bevel_extrusion_rotation_are_not_d">эффекты 3D у фигур (скос, выдавливание, поворот) не отображаются; фигуры показаны плоскими</string>
+    <string name="notice_d_skipped_a_polyline_or_curve_formula_that_is_not_plain_numbers_is">ломаная или кривая, формула которой не состоит из простых чисел, показана прямой линией</string>
+    <string name="notice_d_skipped_arrowheads_are_drawn_as_plain_triangles">наконечники стрелок показаны простыми треугольниками</string>
     <string name="notice_d_skipped_content_types_xml">список типов частей пакета ([Content_Types].xml)</string>
     <string name="notice_d_skipped_content_xml">тело документа (content.xml)</string>
     <string name="notice_d_skipped_content_xml_styles">стили внутри content.xml</string>
+    <string name="notice_d_skipped_curves_of_a_degree_above_8_are_drawn_with_degree_8">кривые степени выше 8 показаны со степенью 8</string>
     <string name="notice_d_skipped_damaged_pdf_stream">повреждённый поток PDF</string>
     <string name="notice_d_skipped_damaged_word_text">повреждённый текст Word</string>
+    <string name="notice_d_skipped_dashed_and_dotted_lines_are_drawn_solid">пунктирные линии показаны сплошными</string>
+    <string name="notice_d_skipped_fill_patterns_and_gradients_are_drawn_as_flat_colours">узорные и градиентные заливки показаны плоским цветом</string>
     <string name="notice_d_skipped_macro_text">текст макросов (макросы никогда не запускаются)</string>
     <string name="notice_d_skipped_n_slide_part_s_that_the_presentation_does_not_list">части слайдов, которых нет в списке презентации: %1$s</string>
     <string name="notice_d_skipped_n_worksheet_part_s_that_the_workbook_does_not_list">части листов, которых нет в списке книги: %1$s</string>
+    <string name="notice_d_skipped_nurbs_curves_are_drawn_as_sampled_polylines">кривые NURBS показаны ломаными линиями</string>
     <string name="notice_d_skipped_object_stream">поток объектов PDF</string>
     <string name="notice_d_skipped_older_revisions_of_slides_n">старые версии слайдов: %1$s</string>
     <string name="notice_d_skipped_pdf_objects_beyond_the_first_2000000">объекты PDF после первых 2000000</string>
+    <string name="notice_d_skipped_pictures_and_embedded_objects_are_shown_as_placeholders">картинки и встроенные объекты показаны заглушками</string>
     <string name="notice_d_skipped_query_n_no_definition_rows">запрос %1$s (в файле нет его определения)</string>
+    <string name="notice_d_skipped_rounded_corners_are_not_drawn">скруглённые углы не показаны</string>
     <string name="notice_d_skipped_rtf_body">тело письма в формате RTF</string>
+    <string name="notice_d_skipped_shadows_are_not_drawn">тени не показаны</string>
+    <string name="notice_d_skipped_shape_effects_glow_soft_edges_reflection_are_not_drawn">эффекты фигур (свечение, мягкие края, отражение) не показаны</string>
+    <string name="notice_d_skipped_splines_are_drawn_as_sampled_polylines">сплайны показаны ломаными линиями</string>
     <string name="notice_d_skipped_styles_xml">стили (styles.xml)</string>
     <string name="notice_d_skipped_table_n">таблица %1$s</string>
 
     <!-- Truncated -->
     <string name="notice_d_truncated_attached_messages_inside_attached_messages">вложенные письма внутри вложенных писем</string>
     <string name="notice_d_truncated_blocks">абзацы, таблицы и другие блоки сверх предела</string>
+    <string name="notice_d_truncated_catalog">объекты базы сверх лимита</string>
     <string name="notice_d_truncated_character_formatting">форматирование символов старого формата Word</string>
     <string name="notice_d_truncated_characters">текст сверх предела по числу символов</string>
+    <string name="notice_d_truncated_complex_values">значения сложных столбцов сверх лимита</string>
     <string name="notice_d_truncated_grid">ячейки сверх предела по строкам и столбцам</string>
     <string name="notice_d_truncated_hyperlinks">гиперссылки сверх предела</string>
+    <string name="notice_d_truncated_indexes">индексы сверх лимита</string>
     <string name="notice_d_truncated_items">элементы сверх предела</string>
     <string name="notice_d_truncated_link_address_too_long_link_dropped">адрес ссылки был слишком длинным, ссылка отброшена</string>
     <string name="notice_d_truncated_list_marker">слишком длинный маркер списка</string>
@@ -67,6 +85,7 @@
     <string name="notice_d_truncated_pdf_content_limits">содержимое страниц PDF сверх пределов обработки</string>
     <string name="notice_d_truncated_picture_description">слишком длинное описание картинки</string>
     <string name="notice_d_truncated_queries">запросы базы сверх предела</string>
+    <string name="notice_d_truncated_relationships">связи между таблицами сверх лимита</string>
     <string name="notice_d_truncated_repeated_cells">повторяющиеся ячейки сверх предела</string>
     <string name="notice_d_truncated_repeated_rows">повторяющиеся строки сверх предела</string>
     <string name="notice_d_truncated_runs_per_paragraph">фрагменты форматированного текста в абзаце сверх предела</string>
@@ -79,12 +98,11 @@
     <string name="notice_d_truncated_text_length">слишком длинный текст</string>
 
     <!-- Unsupported -->
-    <string name="notice_d_unsupported_access_queries_other_than_plain_select_are_shown_as_thei">запросы, кроме простого SELECT, как SQL (показаны их сохранённые строки)</string>
+    <string name="notice_d_unsupported_access_queries_that_do_not_fit_the_documented_layout_are">запросы, не укладывающиеся в известную схему, показаны сохранёнными строками, а не как SQL</string>
+    <string name="notice_d_unsupported_access_the_database_names_a_n_n_it_is_never_opened_or_ru">база задаёт при открытии (%1$s): %2$s; это никогда не открывается и не запускается</string>
     <string name="notice_d_unsupported_attachments_are_listed_not_opened">открытие вложений (они только перечислены)</string>
     <string name="notice_d_unsupported_charts">диаграммы</string>
     <string name="notice_d_unsupported_charts_smartart_and_embedded_objects">диаграммы, SmartArt и встроенные объекты</string>
-    <string name="notice_d_unsupported_drawing_geometry">геометрия рисунков</string>
-    <string name="notice_d_unsupported_drawing_geometry_stencils_and_pictures">геометрия рисунков, трафареты и картинки</string>
     <string name="notice_d_unsupported_drawings_and_charts">рисунки и диаграммы</string>
     <string name="notice_d_unsupported_drawings_and_shapes">рисунки и фигуры</string>
     <string name="notice_d_unsupported_elements_in_a_foreign_namespace_were_ignored">элементы из чужого пространства имён XML (они пропущены)</string>
@@ -92,13 +110,9 @@
     <string name="notice_d_unsupported_embedded_objects_and_drawings">встроенные объекты и рисунки</string>
     <string name="notice_d_unsupported_embedded_objects_and_macros">встроенные объекты и макросы</string>
     <string name="notice_d_unsupported_excel_4_0_macro_sheets_formulas_not_shown">листы макросов Excel 4.0 (их формулы не показаны)</string>
-    <string name="notice_d_unsupported_forms_reports_macros_and_modules_are_listed_not_shown_or">формы, отчёты, макросы и модули: они только перечислены, не показываются и не запускаются; запросы показаны как сохранённые строки, а простой SELECT — ещё и как восстановленный текст, который никогда не выполняется</string>
+    <string name="notice_d_unsupported_forms_reports_macros_modules_and_data_access_pages_are_l">формы, отчёты, макросы, модули и страницы доступа к данным: они только перечислены по имени, не показываются и не запускаются; запросы показаны как текст SQL, который никогда не выполняется</string>
     <string name="notice_d_unsupported_macros_and_modules_are_code_and_are_never_run">запуск макросов и модулей (это код, он никогда не выполняется)</string>
     <string name="notice_d_unsupported_pdf_fonts_without_a_text_mapping">шрифты PDF без таблицы соответствия тексту (их текст не прочитать)</string>
     <string name="notice_d_unsupported_pictures_and_embedded_objects">картинки и встроенные объекты</string>
     <string name="notice_d_unsupported_shared_formulas_too_long_to_be_shown_for_every_cell">общие формулы, слишком длинные, чтобы показывать их в каждой ячейке</string>
-    <string name="notice_d_unsupported_visio_connections_between_shapes_are_not_read">связи между фигурами Visio</string>
-    <string name="notice_d_unsupported_visio_hyperlinks_are_not_read">гиперссылки Visio</string>
-    <string name="notice_d_unsupported_visio_masters_stencils_are_not_read">мастера (трафареты) Visio</string>
-    <string name="notice_d_unsupported_visio_shape_data_are_not_read">данные фигур Visio</string>
 </resources>

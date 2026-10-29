@@ -85,6 +85,10 @@ public final class PagesScreen extends Screen {
                 col.addView(ui.text(R.string.pages_note_truncated, Ui.SMALL));
             }
             col.addView(ui.text(R.string.pages_note_approx, Ui.CAPTION));
+            org.arca.viewer.core.Model.Report rep = org.arca.viewer.Session.get().report();
+            if (rep != null && org.arca.viewer.core.Capabilities.isVisio(rep.format)) {
+                col.addView(ui.text(R.string.pages_note_visio, Ui.CAPTION));
+            }
             col.addView(ui.space(8));
             col.addView(new PageView(act, d, 0xFFD5DAE0, 0xFF46515E), ui.fillWidth());
         }

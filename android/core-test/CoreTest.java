@@ -1206,8 +1206,10 @@ public final class CoreTest {
                 check(true, "rejects " + bad);
             }
         }
-        check(Capabilities.canRender("Pdf") && !Capabilities.canRender("Docx") && !Capabilities.canRender(""),
-            "only PDF has a page view");
+        check(Capabilities.canRender("Pdf") && Capabilities.canRender("Pptx") && Capabilities.canRender("Xlsx")
+                && Capabilities.canRender("Vsdx") && !Capabilities.canRender("Docx") && !Capabilities.canRender(""),
+            "PDF, slides, sheets and Visio have a page view; text documents do not");
+        check(Capabilities.isVisio("Vsd") && !Capabilities.isVisio("Pdf"), "only Visio carries the 3-D notice");
     }
 
     // ---------------------------------------------------------------------------------------

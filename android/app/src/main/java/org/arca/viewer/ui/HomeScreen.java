@@ -53,6 +53,7 @@ public final class HomeScreen extends Screen {
 
         View hero = hero();
         View open = openCard();
+        View reminder = reminderCard();
         View status = statusCard();
         View statistics = statsCard();
         View passport = passportCard();
@@ -67,6 +68,10 @@ public final class HomeScreen extends Screen {
             left.addView(ui.space(16));
             left.addView(open);
             left.addView(ui.space(16));
+            if (reminder != null) {
+                left.addView(reminder);
+                left.addView(ui.space(16));
+            }
             left.addView(statistics);
             LinearLayout right = ui.vbox();
             right.addView(status);
@@ -84,6 +89,10 @@ public final class HomeScreen extends Screen {
             col.addView(ui.space(16));
             col.addView(open);
             col.addView(ui.space(16));
+            if (reminder != null) {
+                col.addView(reminder);
+                col.addView(ui.space(16));
+            }
             col.addView(statistics);
             col.addView(ui.space(16));
             col.addView(status);
@@ -134,6 +143,40 @@ public final class HomeScreen extends Screen {
             hint.setGravity(Gravity.CENTER);
             card.addView(hint, ui.fillWidth());
         }
+        return card;
+    }
+
+    /**
+     * The support reminder, inside the app only (no notification, no permission). The core decides
+     * when one is due; the card leads to the About screen and goes away for the next interval.
+     */
+    private View reminderCard() {
+        final org.arca.viewer.Reminders.Card due = org.arca.viewer.Reminders.due(act);
+        if (due == null) {
+            return null;
+        }
+        LinearLayout card = ui.card();
+        card.addView(ui.heading(due.title, Ui.TITLE));
+        card.addView(ui.space(4));
+        card.addView(ui.text(due.body, Ui.SMALL));
+        card.addView(ui.space(12));
+        LinearLayout row = ui.hbox();
+        row.addView(ui.button(R.string.support_card_open, Ui.TONAL, R.drawable.ic_heart, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                org.arca.viewer.Reminders.dismiss(act);
+                act.push(MainActivity.Route.ABOUT);
+            }
+        }), ui.weight(1f));
+        row.addView(ui.hspace(8));
+        row.addView(ui.button(R.string.support_card_later, Ui.TONAL, 0, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                org.arca.viewer.Reminders.dismiss(act);
+                act.refresh();
+            }
+        }), ui.weight(1f));
+        card.addView(row, ui.fillWidth());
         return card;
     }
 

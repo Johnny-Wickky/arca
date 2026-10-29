@@ -56,6 +56,8 @@ public final class NoticeDetails {
         new Dynamic("Skipped", "older revisions of slides: (.{1,40})", "older revisions of slides: {}"),
         new Dynamic("Skipped", "query (.{1,300}): no definition rows", "query {}: no definition rows"),
         new Dynamic("Skipped", "table (.{1,300})", "table {}"),
+        new Dynamic("Unsupported", "access: the database names a (startup form|startup menu bar|7) \\((.{1,300})\\); it is never opened or run",
+            "access: the database names a {} ({}); it is never opened or run"),
         new Dynamic("Skipped", "(\\d{1,12}) slide part\\(s\\) that the presentation does not list",
             "{} slide part(s) that the presentation does not list"),
         new Dynamic("Skipped", "(\\d{1,12}) worksheet part\\(s\\) that the workbook does not list",
@@ -78,7 +80,11 @@ public final class NoticeDetails {
             if (d.kind.equals(kind)) {
                 Matcher m = d.pattern.matcher(detail);
                 if (m.matches()) {
-                    return new Lookup(key(kind, d.template), m.group(1));
+                    String[] values = new String[m.groupCount()];
+                    for (int i = 0; i < values.length; i++) {
+                        values[i] = m.group(i + 1);
+                    }
+                    return new Lookup(key(kind, d.template), values);
                 }
             }
         }

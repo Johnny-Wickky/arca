@@ -323,6 +323,7 @@
     <string name="pages_too_large">Page too large to show</string>
     <string name="pages_note_truncated">The page is very complex; part of it is not shown.</string>
     <string name="pages_note_approx">Gradients and patterns are shown as flat colours, pictures as grey boxes (tap one to open it), fonts are replaced.</string>
+    <string name="pages_note_visio">3-D effects are not displayed: the shapes are drawn flat.</string>
     <string name="fold_dock_label">Controls beside the fold</string>
     <string name="image_show">Show picture</string>
     <string name="image_hide">Hide picture</string>
@@ -351,13 +352,12 @@
     <string name="settings_images_desc">Pictures inside documents are decoded in the sandbox only when you tap them. Turn on to show them as soon as a document opens.</string>
 
     <!-- Local Support Reminders (Zero-Network, Local Only) -->
-    <string name="notif_channel_reminders">Reminders</string>
-    <string name="notif_channel_reminders_desc">Periodic reminders to support Arca</string>
-    <string name="notif_public_text">A reminder from Arca</string>
+    <string name="support_card_open">Support</string>
+    <string name="support_card_later">Later</string>
+    <string name="support_card_fallback">Arca is free and has no ads. If it helps you, you can support the developers.</string>
     <string name="settings_reminders_title">Reminders</string>
     <string name="settings_reminders">Support reminders</string>
-    <string name="settings_reminders_desc">A gentle reminder once a week to support student developers. Never disturbs at night.</string>
-    <string name="settings_reminders_perm_denied">Notification permission was denied. You can enable it in system settings.</string>
+    <string name="settings_reminders_desc">A gentle card on the home screen about once a week, asking you to support the developers. No notifications and no permissions; nothing is sent anywhere.</string>
     <string name="push_student_ramen_fuel_title">Developers are running on tap water 🍜</string>
     <string name="push_student_ramen_fuel_body">You’ve opened %1$d documents in total safety, while our student team is compiling Rust on an empty stomach. Buy the devs some instant ramen on lava.top/pharosteam!</string>
     <string name="push_student_finals_vs_macros_title">Passed finals, neutralized %1$d threats 🎓</string>
@@ -460,7 +460,6 @@
     <string name="settings_stats_reset_message">The counters stored on this device are deleted. Your documents are not affected. This cannot be undone.</string>
     <string name="settings_stats_reset_confirm">Delete</string>
     <string name="settings_stats_reset_done">Statistics deleted</string>
-    <string name="settings_reminders_blocked">Notifications are blocked for Arca in the system settings. The reminder will appear once you allow them.</string>
 
     <!-- Other ways to support (wallets, Boosty): the list is empty until the owner provides the addresses -->
     <string name="about_extra_title">Other ways to support</string>

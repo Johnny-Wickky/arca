@@ -43,7 +43,6 @@ public final class MainActivity extends Activity implements Session.Listener, En
     public enum Route { HOME, SCAN, RESULT, PREVIEW, PAGES, SANITIZE, ABOUT, LICENSES, SETTINGS, DIAGNOSTICS }
 
     public static final String ACTION_SHOW_ABOUT = "org.arca.viewer.action.ABOUT";
-    public static final int REQ_NOTIF_PERMISSION = 101;
     private static final int REQ_OPEN = 1;
     private static final int REQ_SAVE = 2;
     private static final String STATE_ROUTES = "routes";
@@ -71,7 +70,6 @@ public final class MainActivity extends Activity implements Session.Listener, En
         Compat.edgeToEdge(this, night);
         Compat.setSecure(this, Prefs.secureScreen(this));
         Compat.noAutofill(this);
-        Reminders.init(this);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(getColor(R.color.arca_bg));
@@ -379,22 +377,6 @@ public final class MainActivity extends Activity implements Session.Listener, En
         ROUTES.add(Route.HOME);
         ROUTES.add(Route.SCAN);
         show();
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_NOTIF_PERMISSION) {
-            boolean granted = grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
-            Prefs.setReminders(this, granted);
-            if (granted) {
-                Reminders.schedule(this);
-            } else {
-                Reminders.cancel(this);
-                Toast.makeText(this, R.string.settings_reminders_perm_denied, Toast.LENGTH_SHORT).show();
-            }
-            refresh();
-        }
     }
 
     private void handleIntent(Intent intent) {
