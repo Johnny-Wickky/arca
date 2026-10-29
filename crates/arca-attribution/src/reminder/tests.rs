@@ -189,12 +189,12 @@ fn a_time_zone_change_is_judged_by_the_zone_at_fire_time() {
 }
 
 #[test]
-fn two_reminders_are_never_closer_than_six_days() {
+fn two_reminders_are_never_closer_than_seven_days() {
     let now = T0 + 13 * HOUR;
     assert_eq!(fire(now, 0, now - 1, true, true).action, FireAction::TooSoon);
     assert_eq!(fire(now, 0, now - 3 * DAY_MS, true, true).action, FireAction::TooSoon);
-    assert_eq!(fire(now, 0, now - 6 * DAY_MS + 1, true, true).action, FireAction::TooSoon);
-    assert_eq!(fire(now, 0, now - 6 * DAY_MS, true, true).action, FireAction::Show);
+    assert_eq!(fire(now, 0, now - 7 * DAY_MS + 1, true, true).action, FireAction::TooSoon);
+    assert_eq!(fire(now, 0, now - 7 * DAY_MS, true, true).action, FireAction::Show);
     let d = fire(now, 0, now - DAY_MS, true, true);
     assert!(d.next_at_ms > now + 6 * DAY_MS);
 }
@@ -275,70 +275,36 @@ fn start_runs_a_slightly_overdue_reminder_soon_and_replans_an_old_one() {
 }
 
 #[test]
-fn the_text_table_has_a_text_for_every_counter_state() {
-    assert_eq!(ITEM_COUNT, 38);
-    assert!((0..ITEM_COUNT).any(|i| item_uses(i) == Some(Nothing)));
-    assert_eq!(item_uses(ITEM_COUNT), None);
-    assert_eq!(item_uses(usize::MAX), None);
-}
-
-#[test]
-fn with_no_counters_only_texts_without_a_number_are_picked() {
-    for seq in (0..200u32).chain([u32::MAX, u32::MAX - 1]) {
-        let p = pick_item(seq, 0, 0);
-        assert_eq!(p.uses, Nothing);
-        assert_eq!(item_uses(p.index), Some(Nothing));
+fn there_are_thirty_texts_and_they_go_round_in_order() {
+    assert_eq!(MESSAGE_COUNT, 30);
+    for seq in 0..120u32 {
+        assert_eq!(next_index(seq), usize::try_from(seq).unwrap() % MESSAGE_COUNT);
     }
-}
-
-#[test]
-fn texts_with_numbers_need_those_numbers() {
-    for seq in 0..200u32 {
-        let p = pick_item(seq, 5, 0);
-        assert!(matches!(p.uses, Nothing | Documents), "{p:?}");
-        let p = pick_item(seq, 0, 5);
-        assert!(matches!(p.uses, Nothing | Threats), "{p:?}");
-        let p = pick_item(seq, 5, 5);
-        assert_eq!(item_uses(p.index), Some(p.uses));
-    }
-}
-
-#[test]
-fn picking_walks_forward_and_wraps() {
-    // With every counter positive, every text is usable in turn.
+    assert!(next_index(u32::MAX) < MESSAGE_COUNT);
+    let mut seen = [false; MESSAGE_COUNT];
     let mut seq = 0u32;
-    let mut seen = [false; ITEM_COUNT];
-    for _ in 0..ITEM_COUNT {
-        let p = pick_item(seq, 1, 1);
-        assert_eq!(p.index, usize::try_from(seq).unwrap() % ITEM_COUNT);
-        seen[p.index] = true;
-        seq = u32::try_from(p.index + 1).unwrap();
+    for _ in 0..MESSAGE_COUNT {
+        let i = next_index(seq);
+        seen[i] = true;
+        seq = u32::try_from(i + 1).unwrap();
     }
     assert!(seen.iter().all(|s| *s));
-    assert_eq!(pick_item(u32::try_from(ITEM_COUNT).unwrap(), 1, 1).index, 0);
-    assert_eq!(pick_item(0, u64::MAX, u64::MAX).index, 0);
 }
 
 // ------------------------------------------------------------------------------------------
-// The Android table must agree with the Rust table (count, order and placeholders).
+// The Android table must agree with the Rust table (count, order, wording and privacy note).
 
 const JAVA: &str =
     include_str!("../../../../android/app/src/main/java/org/arca/viewer/Reminders.java");
 const STRINGS_EN: &str = include_str!("../../../../android/app/src/main/res/values/strings.xml");
 const STRINGS_RU: &str = include_str!("../../../../android/app/src/main/res/values-ru/strings.xml");
 
-fn java_items() -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for line in JAVA.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("new Item(R.string.") {
-            let mut parts = rest.split(", R.string.");
-            let title = parts.next().unwrap().to_owned();
-            let body = parts.next().unwrap().trim_end_matches("),").to_owned();
-            out.push((title, body));
-        }
-    }
-    out
+fn java_items() -> Vec<String> {
+    JAVA.lines()
+        .filter_map(|l| l.trim().strip_prefix("R.string.support_msg_"))
+        .filter(|rest| rest.as_bytes().first().is_some_and(u8::is_ascii_digit))
+        .map(|rest| format!("support_msg_{}", rest.trim_end_matches(',')))
+        .collect()
 }
 
 fn string_of<'a>(xml: &'a str, name: &str) -> &'a str {
@@ -351,36 +317,40 @@ fn string_of<'a>(xml: &'a str, name: &str) -> &'a str {
 #[test]
 fn the_java_table_matches_the_rust_table() {
     let items = java_items();
-    assert_eq!(items.len(), ITEM_COUNT, "Reminders.java and reminder.rs disagree on the count");
-    for (i, (title, body)) in items.iter().enumerate() {
-        assert!(title.ends_with("_title") && body.ends_with("_body"), "{title} {body}");
-        assert_eq!(title.trim_end_matches("_title"), body.trim_end_matches("_body"));
-        let uses = item_uses(i).unwrap();
-        for xml in [STRINGS_EN, STRINGS_RU] {
-            let (t, b) = (string_of(xml, title), string_of(xml, body));
-            let one = t.contains("%1$d") || b.contains("%1$d");
-            let two = t.contains("%2$d") || b.contains("%2$d");
-            let stray =
-                |s: &str| s.replace("%1$d", "").replace("%2$d", "").replace("%%", "").contains('%');
-            assert!(!stray(t) && !stray(b), "{title}: unknown format specifier");
-            match uses {
-                Nothing => assert!(!one && !two, "{title} quotes a number but the table says none"),
-                Documents | Threats => assert!(one && !two, "{title}: expected exactly %1$d"),
-                Both => assert!(one && two, "{title}: expected %1$d and %2$d"),
-            }
+    assert_eq!(items.len(), MESSAGE_COUNT, "Reminders.java and reminder.rs disagree on the count");
+    for (i, name) in items.iter().enumerate() {
+        assert_eq!(*name, format!("support_msg_{:02}", i + 1), "order of the table");
+    }
+}
+
+#[test]
+fn every_text_exists_in_both_languages_and_is_unique() {
+    let items = java_items();
+    for xml in [STRINGS_EN, STRINGS_RU] {
+        let mut seen = std::collections::HashSet::new();
+        for name in &items {
+            let s = string_of(xml, name);
+            assert!(s.chars().count() > 40, "{name} is too short to be a message");
+            assert!(seen.insert(s.to_owned()), "{name} repeats another message");
+            // No counter is quoted (the text never depends on how the app was used): the only
+            // percent sign allowed is the escaped literal "%%".
+            assert!(!s.replace("%%", "").contains('%'), "{name}: format specifier");
+            // The reminder only points at the About screen, where the full address is shown first.
+            assert!(!s.contains("0x") && !s.contains("bc1") && !s.contains("http"), "{name}");
         }
     }
 }
 
 #[test]
-fn the_reminder_texts_carry_no_wallet_address() {
-    // The reminder only points at the About screen, where the full address is shown first.
-    for (title, body) in java_items() {
-        for xml in [STRINGS_EN, STRINGS_RU] {
-            for name in [&title, &body] {
-                let s = string_of(xml, name);
-                assert!(!s.contains("0x") && !s.contains("bc1"), "{name}");
-            }
+fn the_privacy_note_states_the_zero_telemetry_promise() {
+    let en = string_of(STRINGS_EN, "support_msg_privacy");
+    let ru = string_of(STRINGS_RU, "support_msg_privacy");
+    for (text, words) in [
+        (en, ["no internet access", "zero telemetry", "zero ads"]),
+        (ru, ["не имеет доступа к интернету", "не собирает телеметрию", "не показывает рекламу"]),
+    ] {
+        for w in words {
+            assert!(text.contains(w), "privacy note lacks {w:?}: {text}");
         }
     }
 }

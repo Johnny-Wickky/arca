@@ -26,9 +26,6 @@ import org.arca.viewer.core.StatsView;
 
 /** The start screen: open a file, see that the sandbox is up, reach the other screens. */
 public final class HomeScreen extends Screen {
-    /** The period shown on the statistics card; kept while the screen is rebuilt (rotation, folding). */
-    private static int statsWindow = StatsView.WEEK;
-
     public HomeScreen(MainActivity act) {
         super(act);
     }
@@ -72,7 +69,9 @@ public final class HomeScreen extends Screen {
                 left.addView(reminder);
                 left.addView(ui.space(16));
             }
-            left.addView(statistics);
+            if (statistics != null) {
+                left.addView(statistics);
+            }
             LinearLayout right = ui.vbox();
             right.addView(status);
             right.addView(ui.space(16));
@@ -93,8 +92,10 @@ public final class HomeScreen extends Screen {
                 col.addView(reminder);
                 col.addView(ui.space(16));
             }
-            col.addView(statistics);
-            col.addView(ui.space(16));
+            if (statistics != null) {
+                col.addView(statistics);
+                col.addView(ui.space(16));
+            }
             col.addView(status);
             col.addView(ui.space(16));
             col.addView(passport);
@@ -159,6 +160,8 @@ public final class HomeScreen extends Screen {
         card.addView(ui.heading(due.title, Ui.TITLE));
         card.addView(ui.space(4));
         card.addView(ui.text(due.body, Ui.SMALL));
+        card.addView(ui.space(8));
+        card.addView(ui.text(due.privacy, Ui.CAPTION));
         card.addView(ui.space(12));
         LinearLayout row = ui.hbox();
         row.addView(ui.button(R.string.support_card_open, Ui.TONAL, R.drawable.ic_heart, new View.OnClickListener() {
@@ -261,22 +264,19 @@ public final class HomeScreen extends Screen {
     }
 
     /**
-     * What Arca did on this device: a card with a Week / Month / All time toggle. The numbers are
+     * What Arca did on this device, from the optional local counter (off by default, so the card
+     * does not exist until the person turns the counter on). The numbers are flat all-time totals
      * counted by the Rust core and kept only on the device; the text says so.
      */
     private View statsCard() {
+        if (!Stats.enabled(act)) {
+            return null;
+        }
         LinearLayout card = ui.card();
         card.addView(ui.heading(ui.str(R.string.stats_title), Ui.TITLE));
         card.addView(ui.space(8));
-        if (!Stats.enabled(act)) {
-            card.addView(ui.text(R.string.stats_off_note, Ui.SMALL));
-            return card;
-        }
-        final StatsView.Summary summary = Stats.summary(act);
-        card.addView(periodToggle());
-        card.addView(ui.space(12));
-        StatsView.Totals t = summary.window(statsWindow);
-        if (summary.empty || t.isZero()) {
+        StatsView.Totals t = Stats.summary(act).all;
+        if (t.isZero()) {
             card.addView(ui.text(R.string.stats_empty, Ui.SMALL));
         } else {
             addTiles(card, t);
@@ -284,33 +284,6 @@ public final class HomeScreen extends Screen {
         card.addView(ui.space(12));
         card.addView(ui.text(R.string.stats_local_note, Ui.CAPTION));
         return card;
-    }
-
-    /** The segmented toggle: three equal buttons that wrap instead of being cut off on narrow screens. */
-    private View periodToggle() {
-        int[] labels = {R.string.stats_period_week, R.string.stats_period_month, R.string.stats_period_all};
-        LinearLayout row = ui.hbox();
-        row.setContentDescription(ui.str(R.string.stats_period_label));
-        for (int i = 0; i < labels.length; i++) {
-            final int which = i;
-            TextView chip = ui.chip(ui.str(labels[i]), i == statsWindow, new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (statsWindow != which) {
-                        statsWindow = which;
-                        act.refresh();
-                    }
-                }
-            });
-            chip.setSingleLine(false);
-            chip.setMaxLines(2);
-            chip.setPadding(ui.dp(6), ui.dp(8), ui.dp(6), ui.dp(8));
-            if (i > 0) {
-                row.addView(ui.hspace(6));
-            }
-            row.addView(chip, ui.weight(1f));
-        }
-        return row;
     }
 
     /** Two columns of counters; zero counters other than the first are left out to keep the card short. */

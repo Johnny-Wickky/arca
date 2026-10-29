@@ -14,8 +14,9 @@
 //!   alarm that fires outside of that window (the system delays inexact alarms; the time zone or
 //!   daylight saving time may have changed since planning) is moved to 12:30 of the same or the
 //!   next local day ([`on_fire`]).
-//! * Two reminders are never closer than six days: a stray extra alarm is dropped and replanned.
-//!   A "last shown" time in the future (the clock was set backwards) is ignored.
+//! * Two reminders are never closer than seven days: a stray extra alarm is dropped and replanned.
+//!   A "last shown" time in the future (the clock was set backwards) is ignored. The host keeps
+//!   only the *day* of the last reminder, never a time of day.
 //! * The chain never dies silently: after a reminder that could not be posted because the
 //!   permission is missing, the next one is planned all the same (the person may grant the
 //!   permission in the system settings at any time).
@@ -23,8 +24,9 @@
 //!   [`on_start`] whenever the app starts: it keeps a plausible pending time, runs a reminder
 //!   that is only slightly overdue soon, and replans one that is long overdue, lies absurdly far
 //!   in the future (clock set backwards) or never existed.
-//! * Which text is shown is chosen by [`pick_item`]: texts that quote a counter are skipped while
-//!   that counter is zero, so nothing ever says "you opened 0 documents" or invents a number.
+//! * Which text is shown is chosen by [`next_index`]: the host keeps one small position and the
+//!   texts go round in order. No text quotes a counter, so nothing about the person's use of the
+//!   app is needed to choose one.
 //!
 //! All arithmetic saturates and every input is clamped, so no argument can panic or overflow.
 
@@ -48,7 +50,7 @@ pub const POST_UNTIL_MINUTE: i64 = 20 * 60 + 30;
 /// Local minute (12:30) to which a reminder is moved when it fires outside the window.
 pub const RETRY_MINUTE: i64 = 12 * 60 + 30;
 /// Two shown reminders are at least this far apart.
-pub const MIN_SPACING_MS: i64 = 6 * DAY_MS;
+pub const MIN_SPACING_MS: i64 = 7 * DAY_MS;
 /// An alarm overdue by no more than this is still run (soon) when the app starts.
 pub const OVERDUE_GRACE_MS: i64 = 12 * HOUR_MS;
 /// "Soon" for an overdue alarm that is still run.
@@ -225,69 +227,14 @@ pub fn on_start(next_ms: i64, now_ms: i64, offset_ms: i64, enabled: bool, rnd: u
     }
 }
 
-/// Which counters the text of a reminder quotes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Uses {
-    /// No number: `%1$d` does not occur.
-    Nothing = 0,
-    /// The count of documents opened (`%1$d`).
-    Documents = 1,
-    /// The count of dangerous things neutralised (`%1$d`).
-    Threats = 2,
-    /// Documents (`%1$d`) and threats (`%2$d`).
-    Both = 3,
-}
+/// Number of reminder texts the host must have, in every language it ships.
+pub const MESSAGE_COUNT: usize = 30;
 
-use Uses::{Both, Documents, Nothing, Threats};
-
-/// The texts of the reminder, in the order of the host's table, and the counters each quotes.
-const ITEM_USES: [Uses; 38] = [
-    Documents, Threats, Nothing, Documents, Nothing, Threats, Both, Nothing, Threats, Documents,
-    Nothing, Nothing, Threats, Both, Nothing, Documents, Nothing, Threats, Documents, Nothing,
-    Both, Documents, Documents, Nothing, Threats, Documents, Nothing, Nothing, Documents, Threats,
-    Nothing, Threats, Documents, Nothing, Documents, Nothing, Threats, Both,
-];
-
-/// Number of texts the host must have, in the order of [`item_uses`].
-pub const ITEM_COUNT: usize = ITEM_USES.len();
-
-/// The counters quoted by text number `index`, `None` past the end of the table.
+/// The text to show for the stored position `seq`: the texts go round in order. The host stores
+/// `index + 1` as the next position.
 #[must_use]
-pub fn item_uses(index: usize) -> Option<Uses> {
-    ITEM_USES.get(index).copied()
-}
-
-/// The text to show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pick {
-    /// Index into the host's table (`0 ..` [`ITEM_COUNT`]).
-    pub index: usize,
-    /// The counters the text quotes.
-    pub uses: Uses,
-}
-
-/// Chooses the next text: the first one at or after position `seq` (wrapping) that is usable
-/// with the given counters. A text quoting documents needs `documents > 0`, one quoting threats
-/// needs `threats > 0`. With both counters zero (for example when statistics are off) only the
-/// texts without a number are used. The host stores `index + 1` as the next `seq`.
-#[must_use]
-pub fn pick_item(seq: u32, documents: u64, threats: u64) -> Pick {
-    let start = usize::try_from(seq).map_or(0, |s| s % ITEM_COUNT);
-    for step in 0..ITEM_COUNT {
-        let index = (start + step) % ITEM_COUNT;
-        let Some(uses) = item_uses(index) else { continue };
-        let usable = match uses {
-            Nothing => true,
-            Documents => documents > 0,
-            Threats => threats > 0,
-            Both => documents > 0 && threats > 0,
-        };
-        if usable {
-            return Pick { index, uses };
-        }
-    }
-    // Not reached while the table holds texts without a number (a test checks that).
-    Pick { index: ITEM_USES.iter().position(|u| *u == Nothing).unwrap_or(0), uses: Nothing }
+pub fn next_index(seq: u32) -> usize {
+    usize::try_from(seq).map_or(0, |s| s % MESSAGE_COUNT)
 }
 
 #[cfg(test)]

@@ -3,7 +3,6 @@
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 import org.arca.viewer.core.ExtraSupport;
@@ -13,10 +12,10 @@ import org.arca.viewer.core.StatsStore;
 import org.arca.viewer.core.StatsView;
 
 /**
- * Tests of the Java pieces around the Rust statistics and reminder rules: reading the summary JSON,
- * choosing the week / month / all-time window, formatting, the store with its migration of the
- * older counters, the on / off switch, and the readers of the reminder answers and of the extra
- * support addresses. The Rust side has its own tests; the native glue is exercised by the
+ * Tests of the Java pieces around the Rust counter and reminder rules: reading the summary JSON
+ * (flat totals, no dates), formatting, the store with its on / off switch (off by default, a blob
+ * found while off is deleted), and the readers of the reminder answers and of the extra support
+ * addresses. The Rust side has its own tests; the native glue is exercised by the
  * host-test. A plain runner like CoreTest (see run.sh).
  */
 public final class StatsTest {
@@ -42,33 +41,19 @@ public final class StatsTest {
     }
 
     /** The shape the Rust core produces (see arca_engine::stats::Stats::summary_json). */
-    private static final String RUST_JSON = "{\"version\":1,\"empty\":false,\"firstDay\":19990,\"days\":11,"
-        + "\"week\":{\"opened\":2,\"clean\":1,\"trackers\":1,\"active\":2,\"threats\":3,\"rejected\":0,\"unverified\":0,\"sterile\":0,\"pictures\":0},"
-        + "\"month\":{\"opened\":5,\"clean\":1,\"trackers\":4,\"active\":2,\"threats\":6,\"rejected\":1,\"unverified\":1,\"sterile\":2,\"pictures\":3},"
+    private static final String RUST_JSON = "{\"version\":2,\"empty\":false,"
         + "\"all\":{\"opened\":1234567,\"clean\":1,\"trackers\":4,\"active\":2,\"threats\":6,\"rejected\":1,\"unverified\":1,\"sterile\":2,\"pictures\":3}}";
 
     // ---------------------------------------------------------------------------------------
 
-    private static void windows() {
+    private static void totals() {
         StatsView.Summary s = StatsView.parse(utf8(RUST_JSON));
         check(!s.empty, "not empty");
-        eq(19990L, s.firstDay, "first day");
-        eq(11L, s.days, "days");
-        eq(2L, s.window(StatsView.WEEK).opened, "week opened");
-        eq(3L, s.window(StatsView.WEEK).threats, "week threats");
-        eq(5L, s.window(StatsView.MONTH).opened, "month opened");
-        eq(3L, s.window(StatsView.MONTH).pictures, "month pictures");
-        eq(1234567L, s.window(StatsView.ALL).opened, "all opened");
-        eq(1234567L, s.window(99).opened, "an unknown window is all time");
-        eq(1234567L, s.window(-1).opened, "a negative window is all time");
-        check(s.window(StatsView.WEEK) != s.window(StatsView.MONTH), "week and month are different objects");
-        check(!s.window(StatsView.WEEK).isZero(), "week not zero");
-        check(new StatsView.Totals().isZero(), "fresh totals are zero");
-        // The same JSON read twice gives the same numbers (no hidden state).
-        eq(2L, StatsView.parse(utf8(RUST_JSON)).week.opened, "second parse");
-        // The largest value the core can send is read exactly.
-        StatsView.Summary big = StatsView.parse(utf8("{\"empty\":false,\"all\":{\"opened\":9223372036854775807}}"));
-        eq(Long.MAX_VALUE, big.all.opened, "max long");
+        eq(1234567L, s.all.opened, "opened");
+        eq(6L, s.all.threats, "threats");
+        eq(3L, s.all.pictures, "pictures");
+        check(!s.all.isZero(), "not zero");
+        check(StatsView.empty().empty && StatsView.empty().all.isZero(), "empty summary");
     }
 
     private static void garbage() {
@@ -78,14 +63,10 @@ public final class StatsTest {
         check(StatsView.parse(utf8("[1,2,3]")).empty, "array");
         check(StatsView.parse(utf8("{}")).empty, "object without fields");
         StatsView.Summary neg = StatsView.parse(utf8(
-            "{\"empty\":false,\"firstDay\":-5,\"days\":-9,\"week\":{\"opened\":-3,\"trackers\":\"x\"},\"month\":7}"));
-        eq(0L, neg.week.opened, "negative becomes zero");
-        eq(0L, neg.week.trackers, "a string is zero");
-        eq(0L, neg.month.opened, "a number instead of an object is zero");
-        eq(0L, neg.firstDay, "negative first day");
-        eq(1L, neg.days, "days is at least one");
-        check(StatsView.empty().empty && StatsView.empty().all.isZero(), "empty summary");
-        eq(1L, StatsView.empty().days, "empty days");
+            "{\"empty\":false,\"all\":{\"opened\":-3,\"trackers\":\"x\"}}"));
+        eq(0L, neg.all.opened, "negative becomes zero");
+        eq(0L, neg.all.trackers, "a string is zero");
+        eq(0L, StatsView.parse(utf8("{\"empty\":false,\"all\":7}")).all.opened, "a number instead of an object is zero");
     }
 
     private static void formatting() {
@@ -115,232 +96,152 @@ public final class StatsTest {
     /** In-memory storage that remembers every call. */
     private static final class FakeStorage implements StatsStore.Storage {
         byte[] blob = new byte[0];
-        boolean on = true;
-        byte[] passport = new byte[0];
-        long docs;
-        long threats;
-        boolean legacy;
+        boolean on;
         int writes;
         int blobDeletes;
-        int legacyDeletes;
 
         @Override public byte[] readBlob() { return blob; }
         @Override public void writeBlob(byte[] b) { blob = b; writes++; }
         @Override public void deleteBlob() { blob = new byte[0]; blobDeletes++; }
         @Override public boolean enabled() { return on; }
         @Override public void setEnabled(boolean v) { on = v; }
-        @Override public boolean hasLegacy() { return legacy; }
-        @Override public byte[] legacyPassport() { return passport; }
-        @Override public long legacyDocuments() { return docs; }
-        @Override public long legacyThreats() { return threats; }
-        @Override public void deleteLegacy() {
-            legacy = false;
-            passport = new byte[0];
-            docs = 0;
-            threats = 0;
-            legacyDeletes++;
-        }
     }
 
-    /** A codec whose "blob" is a text log of what it was asked; it never needs the native library. */
+    /** A codec that records its calls; it appends one byte per event so the blob grows visibly. */
     private static final class FakeCodec implements StatsStore.Codec {
         final List<String> calls = new ArrayList<>();
-        boolean failFold;
+        boolean throwRuntime;
         boolean throwLinkage;
-        byte[] oversize;
 
-        private byte[] append(byte[] blob, String what) {
+        private void gate() {
             if (throwLinkage) {
                 throw new UnsatisfiedLinkError("no native library");
             }
-            if (oversize != null) {
-                return oversize;
+            if (throwRuntime) {
+                throw new IllegalStateException("boom");
             }
-            calls.add(what);
-            return (new String(blob, StandardCharsets.UTF_8) + what + ";").getBytes(StandardCharsets.UTF_8);
         }
 
-        @Override public byte[] recordScan(byte[] blob, int day, int verdict, int trackers, int active) {
-            return append(blob, "scan:" + day + ":" + verdict + ":" + trackers + ":" + active);
+        private static byte[] grow(byte[] blob) {
+            byte[] next = new byte[blob.length + 1];
+            System.arraycopy(blob, 0, next, 0, blob.length);
+            next[blob.length] = 1;
+            return next;
         }
 
-        @Override public byte[] recordEvent(byte[] blob, int day, int event) {
-            return append(blob, "event:" + day + ":" + event);
+        @Override public byte[] recordScan(byte[] blob, int verdict, int trackers, int active) {
+            gate();
+            calls.add("scan:" + verdict + ":" + trackers + ":" + active);
+            return grow(blob);
         }
 
-        @Override public byte[] summary(byte[] blob, int today) {
-            if (throwLinkage) {
-                throw new UnsatisfiedLinkError("no native library");
-            }
-            calls.add("summary:" + today);
+        @Override public byte[] recordEvent(byte[] blob, int event) {
+            gate();
+            calls.add("event:" + event);
+            return grow(blob);
+        }
+
+        @Override public byte[] summary(byte[] blob) {
+            gate();
+            calls.add("summary");
             return utf8(RUST_JSON);
         }
 
-        @Override public byte[] foldLegacy(byte[] blob, byte[] passport, long documents, long threats, int today) {
-            if (failFold) {
-                return null;
-            }
-            return append(blob, "fold:" + passport.length + ":" + documents + ":" + threats + ":" + today);
-        }
-
-        @Override public byte[] passport(int lang, byte[] blob, int today) {
-            if (throwLinkage) {
-                throw new UnsatisfiedLinkError("no native library");
-            }
-            calls.add("passport:" + lang + ":" + today);
+        @Override public byte[] passport(int lang, byte[] blob, int firstUseDay, int today) {
+            gate();
+            calls.add("passport:" + lang + ":" + firstUseDay + ":" + today);
             return utf8("{\"title\":\"x\"}");
         }
     }
 
-    private static String text(byte[] b) {
-        return new String(b, StandardCharsets.UTF_8);
+    private static void offByDefault() {
+        FakeStorage st = new FakeStorage();
+        FakeCodec codec = new FakeCodec();
+        StatsStore store = new StatsStore(st, codec);
+        check(!store.enabled(), "a fresh store is off");
+        store.recordScan(0, 1, 2);
+        store.recordEvent(StatsStore.EVENT_PICTURE_OPENED);
+        check(codec.calls.isEmpty(), "nothing reaches the core while off");
+        eq(0, st.writes, "nothing is written while off");
+        check(store.summary().empty, "summary is empty while off");
+        check(store.passportJson(1, 20000, 20001) == null, "no passport while off");
     }
 
     private static void recording() {
         FakeStorage st = new FakeStorage();
         FakeCodec codec = new FakeCodec();
         StatsStore store = new StatsStore(st, codec);
-        store.recordScan(20000, 1, 3, 0);
-        store.recordEvent(20000, StatsStore.EVENT_STERILE_COPY);
-        store.recordEvent(20001, StatsStore.EVENT_PICTURE_OPENED);
-        eq("scan:20000:1:3:0;event:20000:1;event:20001:2;", text(st.blob), "calls are chained through the blob");
-        eq(3, st.writes, "one write per event");
-        // Negative and huge counts are clamped before they reach the core.
-        store.recordScan(20002, 2, -5, Long.MAX_VALUE);
-        check(text(st.blob).endsWith("scan:20002:2:0:2147483647;"), "clamped counts");
-        // The summary is read from the core's JSON and the window picked from it.
-        StatsView.Summary s = store.summary(20002);
-        eq(5L, s.window(StatsView.MONTH).opened, "summary through the store");
-        check(codec.calls.contains("summary:20002"), "summary asked the core");
-    }
-
-    private static void switchedOff() {
-        FakeStorage st = new FakeStorage();
-        FakeCodec codec = new FakeCodec();
-        StatsStore store = new StatsStore(st, codec);
-        store.recordScan(20000, 0, 0, 0);
-        check(st.blob.length > 0, "recorded while on");
-        store.setEnabled(false);
-        check(!store.enabled(), "off");
-        eq(0, st.blob.length, "the blob is deleted when statistics are turned off");
-        int calls = codec.calls.size();
-        int writes = st.writes;
-        store.recordScan(20000, 0, 0, 0);
-        store.recordEvent(20000, StatsStore.EVENT_PICTURE_OPENED);
-        eq(calls, codec.calls.size(), "nothing is recorded while off (the core is not even asked)");
-        eq(writes, st.writes, "nothing is written while off");
-        check(store.summary(20000).empty, "summary is empty while off");
-        eq(calls, codec.calls.size(), "the summary does not ask the core while off");
-        check(store.passportJson(0, 20000) == null, "no passport while off");
         store.setEnabled(true);
-        store.recordScan(20000, 0, 0, 0);
-        check(st.blob.length > 0, "recording resumes when turned on again");
+        store.recordScan(2, 3, 4);
+        store.recordEvent(StatsStore.EVENT_STERILE_COPY);
+        eq(2, st.writes, "both events stored");
+        eq(2, st.blob.length, "the blob grew");
+        eq("scan:2:3:4", codec.calls.get(0), "scan arguments carry no day");
+        eq("event:1", codec.calls.get(1), "event arguments carry no day");
+        store.recordScan(0, Long.MAX_VALUE, -5);
+        eq("scan:0:2147483647:0", codec.calls.get(2), "counts are clamped");
+        check(codec.calls.contains("scan:0:2147483647:0") && !store.summary().empty, "summary after recording");
     }
 
-    private static void migration() {
+    private static void switchingOffDeletes() {
         FakeStorage st = new FakeStorage();
-        st.legacy = true;
-        st.passport = new byte[36];
-        st.docs = 12;
-        st.threats = 5;
-        FakeCodec codec = new FakeCodec();
-        StatsStore store = new StatsStore(st, codec);
-        store.recordScan(20000, 0, 0, 0);
-        eq("fold:36:12:5:20000;scan:20000:0:0:0;", text(st.blob), "the older counters are folded first, once");
-        check(!st.legacy, "the older counters are deleted after the fold");
-        eq(1, st.legacyDeletes, "deleted exactly once");
-        store.recordScan(20000, 0, 0, 0);
-        eq("fold:36:12:5:20000;scan:20000:0:0:0;scan:20000:0:0:0;", text(st.blob), "no second fold");
-    }
-
-    private static void migrationWhenReadingOnly() {
-        FakeStorage st = new FakeStorage();
-        st.legacy = true;
-        st.docs = 3;
-        FakeCodec codec = new FakeCodec();
-        StatsStore store = new StatsStore(st, codec);
-        store.summary(20000);
-        check(!st.legacy, "a read also migrates");
-        check(text(st.blob).startsWith("fold:0:3:0:20000;"), "folded on read");
-    }
-
-    private static void migrationSkippedWhenOff() {
-        FakeStorage st = new FakeStorage();
-        st.on = false;
-        st.legacy = true;
-        st.docs = 9;
-        FakeCodec codec = new FakeCodec();
-        StatsStore store = new StatsStore(st, codec);
-        store.recordScan(20000, 0, 0, 0);
-        check(codec.calls.isEmpty(), "no fold while off");
-        // Turning off (or resetting) deletes the older counters too: privacy first.
+        StatsStore store = new StatsStore(st, new FakeCodec());
+        store.setEnabled(true);
+        store.recordScan(0, 0, 0);
+        check(st.blob.length > 0, "blob stored");
         store.setEnabled(false);
-        check(!st.legacy, "turning off deletes the older counters");
-        st.legacy = true;
-        st.docs = 4;
-        store.reset();
-        check(!st.legacy, "reset deletes the older counters");
+        eq(0, st.blob.length, "off deletes the blob at once");
+        store.recordScan(0, 0, 0);
+        eq(0, st.blob.length, "and counts nothing afterwards");
+    }
+
+    private static void purgeAtStart() {
+        FakeStorage st = new FakeStorage();
+        st.blob = new byte[] {1, 2, 3}; // left by an older version that counted by default
+        StatsStore store = new StatsStore(st, new FakeCodec());
+        store.purgeIfOff();
+        eq(0, st.blob.length, "a blob found while the counter is off is deleted");
+        st.on = true;
+        st.blob = new byte[] {1, 2, 3};
+        store.purgeIfOff();
+        eq(3, st.blob.length, "a blob of a counter that is on is kept");
     }
 
     private static void failingCore() {
-        // A failed fold keeps the older counters for the next attempt and does not break recording.
         FakeStorage st = new FakeStorage();
-        st.legacy = true;
-        st.docs = 8;
         FakeCodec codec = new FakeCodec();
-        codec.failFold = true;
         StatsStore store = new StatsStore(st, codec);
-        store.recordScan(20000, 0, 0, 0);
-        check(st.legacy, "the older counters survive a failed fold");
-        eq("scan:20000:0:0:0;", text(st.blob), "recording went on");
-        codec.failFold = false;
-        store.recordScan(20000, 0, 0, 0);
-        check(!st.legacy, "the fold succeeded on the next attempt");
-        check(text(st.blob).startsWith("scan:20000:0:0:0;fold:"), "folded onto the existing blob");
-
-        // A missing native library never throws into the caller.
-        FakeStorage st2 = new FakeStorage();
-        FakeCodec dead = new FakeCodec();
-        dead.throwLinkage = true;
-        StatsStore store2 = new StatsStore(st2, dead);
-        store2.recordScan(20000, 0, 0, 0);
-        store2.recordEvent(20000, 1);
-        check(store2.summary(20000).empty, "summary without the core is empty");
-        check(store2.passportJson(1, 20000) == null, "no passport without the core");
-        eq(0, st2.blob.length, "nothing written");
-
-        // A blob larger than the core ever produces is not stored.
-        FakeStorage st3 = new FakeStorage();
-        FakeCodec huge = new FakeCodec();
-        huge.oversize = new byte[50 * 1024];
-        new StatsStore(st3, huge).recordScan(20000, 0, 0, 0);
-        eq(0, st3.writes, "an oversized blob is refused");
-        huge.oversize = new byte[0];
-        new StatsStore(st3, huge).recordScan(20000, 0, 0, 0);
-        eq(0, st3.writes, "an empty blob is refused");
+        store.setEnabled(true);
+        codec.throwRuntime = true;
+        store.recordScan(0, 1, 1);
+        store.recordEvent(1);
+        check(store.summary().empty, "a failing core gives empty totals");
+        check(store.passportJson(0, 1, 1) == null, "and no passport");
+        codec.throwRuntime = false;
+        codec.throwLinkage = true;
+        store.recordScan(0, 1, 1);
+        check(store.summary().empty, "a missing library gives empty totals");
+        eq(0, st.writes, "nothing written on failure");
     }
 
     private static void reset() {
         FakeStorage st = new FakeStorage();
         StatsStore store = new StatsStore(st, new FakeCodec());
-        store.recordScan(20000, 0, 0, 0);
+        store.setEnabled(true);
+        store.recordScan(0, 0, 0);
         store.reset();
         eq(0, st.blob.length, "reset deletes the blob");
-        check(store.enabled(), "reset keeps statistics on");
-        store.recordScan(20000, 0, 0, 0);
-        eq("scan:20000:0:0:0;", text(st.blob), "counting starts again from nothing");
+        check(st.on, "the switch stays as it was");
     }
 
     private static void passportThroughTheStore() {
         FakeStorage st = new FakeStorage();
         FakeCodec codec = new FakeCodec();
         StatsStore store = new StatsStore(st, codec);
-        byte[] p = store.passportJson(1, 20000);
-        check(p != null && text(p).contains("title"), "passport comes from the core");
-        check(codec.calls.contains("passport:1:20000"), "with the language and the day");
+        store.setEnabled(true);
+        check(store.passportJson(1, 20000, 20003) != null, "passport when on");
+        check(codec.calls.contains("passport:1:20000:20003"), "with the language, the install day and today");
     }
-
-    // ---------------------------------------------------------------------------------------
 
     private static void reminderAnswers() {
         ReminderRules.Decision d = ReminderRules.parse(utf8("{\"action\":\"show\",\"at\":1772323200000}"));
@@ -362,23 +263,6 @@ public final class StatsTest {
             check(!g.arms() && !ReminderRules.SHOW.equals(g.action), "garbage <" + bad + "> does nothing");
         }
         check(!ReminderRules.parse(null).arms(), "null");
-    }
-
-    private static void reminderTexts() {
-        // index | uses << 8
-        eq(5, ReminderRules.index(5 | (1 << 8)), "index");
-        eq(1, ReminderRules.uses(5 | (1 << 8)), "uses documents");
-        eq(3, ReminderRules.uses(37 | (3 << 8)), "uses both");
-        eq(37, ReminderRules.index(37 | (3 << 8)), "last index");
-        eq(0, ReminderRules.uses(12), "uses nothing");
-        eq(0, ReminderRules.arguments(ReminderRules.USES_NOTHING, 4, 5).length, "no arguments");
-        eq(Arrays.asList((Object) 4L), Arrays.asList(ReminderRules.arguments(ReminderRules.USES_DOCUMENTS, 4, 5)), "documents");
-        eq(Arrays.asList((Object) 5L), Arrays.asList(ReminderRules.arguments(ReminderRules.USES_THREATS, 4, 5)), "threats");
-        eq(Arrays.asList((Object) 4L, (Object) 5L), Arrays.asList(ReminderRules.arguments(ReminderRules.USES_BOTH, 4, 5)), "both");
-        eq(Arrays.asList((Object) 0L), Arrays.asList(ReminderRules.arguments(ReminderRules.USES_DOCUMENTS, -4, 5)), "negative is zero");
-        // The text of a reminder formats with these arguments.
-        eq("You opened 4 documents, 5 threats", String.format("You opened %1$d documents, %2$d threats",
-            ReminderRules.arguments(ReminderRules.USES_BOTH, 4, 5)), "format");
     }
 
     private static void extraSupport() {
@@ -424,28 +308,24 @@ public final class StatsTest {
     // ---------------------------------------------------------------------------------------
 
     public static void main(String[] args) {
-        String[] names = {"windows", "garbage", "formatting", "verdictTags", "recording", "switchedOff", "migration",
-            "migrationWhenReadingOnly", "migrationSkippedWhenOff", "failingCore", "reset", "passportThroughTheStore",
-            "reminderAnswers", "reminderTexts", "extraSupport"};
+        String[] names = {"totals", "garbage", "formatting", "verdictTags", "offByDefault", "recording", "switchingOffDeletes", "purgeAtStart", "failingCore", "reset", "passportThroughTheStore", "reminderAnswers", "extraSupport"};
         for (String name : names) {
             current = name;
             int before = failures;
             try {
                 switch (name) {
-                    case "windows": windows(); break;
+                    case "totals": totals(); break;
                     case "garbage": garbage(); break;
                     case "formatting": formatting(); break;
                     case "verdictTags": verdictTags(); break;
+                    case "offByDefault": offByDefault(); break;
                     case "recording": recording(); break;
-                    case "switchedOff": switchedOff(); break;
-                    case "migration": migration(); break;
-                    case "migrationWhenReadingOnly": migrationWhenReadingOnly(); break;
-                    case "migrationSkippedWhenOff": migrationSkippedWhenOff(); break;
+                    case "switchingOffDeletes": switchingOffDeletes(); break;
+                    case "purgeAtStart": purgeAtStart(); break;
                     case "failingCore": failingCore(); break;
                     case "reset": reset(); break;
                     case "passportThroughTheStore": passportThroughTheStore(); break;
                     case "reminderAnswers": reminderAnswers(); break;
-                    case "reminderTexts": reminderTexts(); break;
                     default: extraSupport(); break;
                 }
             } catch (Throwable t) {

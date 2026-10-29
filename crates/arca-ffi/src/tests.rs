@@ -87,26 +87,21 @@ fn non_positive_handles_are_bad_handles() {
 
 #[test]
 fn statistics_and_reminder_rules_work_without_a_guest() {
-    // Feed three outcomes, read the totals, fold the old counters in, drop the blob.
-    let mut blob = stats_record_scan(&[], 20_000, 0, 0, 0);
-    blob = stats_record_scan(&blob, 20_000, 2, 1, 4);
-    blob = stats_record_event(&blob, 20_001, 1);
-    let json = String::from_utf8(stats_summary(&blob, 20_001)).expect("utf-8");
+    // Feed three outcomes and read the flat totals; there is no day anywhere in the interface.
+    let mut blob = stats_record_scan(&[], 0, 0, 0);
+    blob = stats_record_scan(&blob, 2, 1, 4);
+    blob = stats_record_event(&blob, 1);
+    let json = String::from_utf8(stats_summary(&blob)).expect("utf-8");
     assert!(
-        json.contains("\"week\":{\"opened\":2,\"clean\":1,\"trackers\":1,\"active\":4"),
+        json.contains("\"all\":{\"opened\":2,\"clean\":1,\"trackers\":1,\"active\":4"),
         "{json}"
     );
     assert!(json.contains("\"sterile\":1"), "{json}");
-    // Hostile blobs and arguments are empty statistics, never a failure.
-    let junk = stats_summary(&[0xff; 300], -1);
+    assert!(!json.contains("week") && !json.contains("firstDay"), "{json}");
+    // Hostile blobs are empty statistics, never a failure.
+    let junk = stats_summary(&[0xff; 300]);
     assert!(String::from_utf8(junk).expect("utf-8").contains("\"empty\":true"));
-    let folded = stats_fold_legacy(&[], &[], 5, 2, 20_000);
-    assert!(
-        String::from_utf8(stats_summary(&folded, 20_000))
-            .expect("utf-8")
-            .contains("\"all\":{\"opened\":5")
-    );
-    let pass = String::from_utf8(stats_passport(1, &blob, 20_001)).expect("utf-8");
+    let pass = String::from_utf8(stats_passport(1, &blob, 20_000, 20_001)).expect("utf-8");
     assert!(pass.contains("\"documents\":2"), "{pass}");
 
     // Reminder rules.
@@ -119,6 +114,6 @@ fn statistics_and_reminder_rules_work_without_a_guest() {
     assert!(fire.starts_with("{\"action\":\"show\""), "{fire}");
     let start = String::from_utf8(reminder_on_start(0, now, 0, 1, 0)).expect("utf-8");
     assert!(start.contains("\"plan\""), "{start}");
-    assert_eq!(reminder_item_count(), 38);
-    assert_eq!(reminder_pick(0, 0, 0) >> 8, 0);
+    assert_eq!(reminder_item_count(), 30);
+    assert_eq!(reminder_pick(31), 1);
 }

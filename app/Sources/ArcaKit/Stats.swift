@@ -6,11 +6,11 @@ import ArcaCore
 
 // Thin bindings of the platform-neutral statistics and reminder rules of the Rust core
 // (arca_engine::stats and arca_engine::schedule). They hold no state and call no network:
-// the app keeps the opaque statistics blob in its own protected storage and passes the local
-// calendar day (days since 1970-01-01 in the LOCAL time zone) with every call. These files are
-// not built in this repository's CI; they mirror what the Android app does through JNI.
+// the app keeps the opaque counter blob (flat all-time totals, no dates) in its own protected
+// storage, only while the person has switched the optional counter on. These files are not built
+// in this repository's CI; they mirror what the Android app does through JNI.
 
-/// One window of the statistics (week, month or all time).
+/// The flat totals of the optional counter.
 public struct StatsTotals: Codable, Sendable, Equatable {
     public let opened: Int64
     public let clean: Int64
@@ -27,10 +27,6 @@ public struct StatsTotals: Codable, Sendable, Equatable {
 public struct StatsSummary: Codable, Sendable, Equatable {
     public let version: Int
     public let empty: Bool
-    public let firstDay: Int64
-    public let days: Int64
-    public let week: StatsTotals
-    public let month: StatsTotals
     public let all: StatsTotals
 }
 
@@ -43,10 +39,11 @@ public enum StatsVerdict: Int32, Sendable {
     case unverified = 4
 }
 
-/// The local statistics. Every function takes the stored blob (empty = nothing yet) and returns
-/// the new blob; the caller stores it (and deletes it when the person turns statistics off).
+/// The optional local counter. Every function takes the stored blob (empty = nothing yet) and
+/// returns the new blob; the caller stores it (and deletes it when the person turns the counter
+/// off or zeroes it).
 public enum ArcaStats {
-    /// Today's day number in the local calendar.
+    /// Today's day number in the local calendar (for the passport's "days with Arca" line only).
     public static func localDay(_ date: Date = Date(), calendar: Calendar = .current) -> Int32 {
         let offset = calendar.timeZone.secondsFromGMT(for: date)
         let days = ((date.timeIntervalSince1970 + Double(offset)) / 86400.0).rounded(.down)
@@ -54,40 +51,28 @@ public enum ArcaStats {
     }
 
     public static func recordScan(
-        blob: Data, day: Int32, verdict: StatsVerdict, trackers: Int32, active: Int32
+        blob: Data, verdict: StatsVerdict, trackers: Int32, active: Int32
     ) throws -> Data {
         try call(blob) { base, len, out in
-            arca_stats_record_scan(base, len, day, verdict.rawValue, trackers, active, out)
+            arca_stats_record_scan(base, len, verdict.rawValue, trackers, active, out)
         }
     }
 
     /// `event` 1 = a sterile copy was made, 2 = a picture was opened.
-    public static func recordEvent(blob: Data, day: Int32, event: Int32) throws -> Data {
-        try call(blob) { base, len, out in arca_stats_record_event(base, len, day, event, out) }
+    public static func recordEvent(blob: Data, event: Int32) throws -> Data {
+        try call(blob) { base, len, out in arca_stats_record_event(base, len, event, out) }
     }
 
-    public static func summary(blob: Data, today: Int32) throws -> StatsSummary {
-        let json = try call(blob) { base, len, out in arca_stats_summary(base, len, today, out) }
+    public static func summary(blob: Data) throws -> StatsSummary {
+        let json = try call(blob) { base, len, out in arca_stats_summary(base, len, out) }
         return try JSONDecoder().decode(StatsSummary.self, from: json)
     }
 
-    /// Folds the old 36-byte patron record (or the two old plain counters) into the all-time
-    /// total. Call once, then delete the old data.
-    public static func foldLegacy(
-        blob: Data, passport: Data, documents: Int64, threats: Int64, today: Int32
-    ) throws -> Data {
-        try call(blob) { base, len, out in
-            passport.withUnsafeBytes { p in
-                arca_stats_fold_legacy(
-                    base, len, p.baseAddress?.assumingMemoryBound(to: UInt8.self), p.count,
-                    documents, threats, today, out)
-            }
-        }
-    }
-
-    public static func passport(blob: Data, today: Int32, isRussian: Bool) throws -> PassportInfo {
+    public static func passport(
+        blob: Data, firstUseDay: Int32, today: Int32, isRussian: Bool
+    ) throws -> PassportInfo {
         let json = try call(blob) { base, len, out in
-            arca_stats_passport(isRussian ? 0 : 1, base, len, today, out)
+            arca_stats_passport(isRussian ? 0 : 1, base, len, firstUseDay, today, out)
         }
         return try JSONDecoder().decode(PassportInfo.self, from: json)
     }
@@ -159,9 +144,9 @@ public enum ArcaReminderRules {
         return try JSONDecoder().decode(ReminderDecision.self, from: Data(bytes: ptr, count: buf.len))
     }
 
-    /// `index | (uses << 8)`; see `arca_reminder_pick`.
-    public static func pick(seq: Int32, documents: Int64, threats: Int64) -> Int32 {
-        arca_reminder_pick(seq, documents, threats)
+    /// The index of the message for the stored position; see `arca_reminder_pick`.
+    public static func pick(seq: Int32) -> Int32 {
+        arca_reminder_pick(seq)
     }
 
     public static var itemCount: Int32 { arca_reminder_item_count() }

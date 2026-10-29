@@ -10,6 +10,14 @@ public final class App extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        // Whatever an older version kept (a counter blob while the counter is off, first-use and
+        // reminder times) is deleted before anything else runs.
+        Prefs.purgeLegacy(this);
         Engine.start(this);
+        try {
+            Stats.purgeIfOff(this);
+        } catch (RuntimeException | LinkageError ignored) {
+            // the counter is a courtesy; the app starts without it
+        }
     }
 }

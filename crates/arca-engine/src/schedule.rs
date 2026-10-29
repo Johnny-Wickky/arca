@@ -82,24 +82,16 @@ fn decision_json(action: &str, at: i64) -> Vec<u8> {
     w.finish()
 }
 
-/// The text to show: `index | (uses << 8)` where `uses` is 0 none, 1 documents, 2 threats, 3
-/// both (see [`reminder::pick_item`]); `seq` is the stored position. Negative counters count as
-/// zero.
+/// The index of the text to show for the stored position `seq` (see [`reminder::next_index`]).
 #[must_use]
-pub fn pick(seq: i32, documents: i64, threats: i64) -> i32 {
-    let p = reminder::pick_item(
-        bits(seq),
-        u64::try_from(documents).unwrap_or(0),
-        u64::try_from(threats).unwrap_or(0),
-    );
-    let index = i32::try_from(p.index).unwrap_or(0);
-    index | ((p.uses as i32) << 8)
+pub fn pick(seq: i32) -> i32 {
+    i32::try_from(reminder::next_index(bits(seq))).unwrap_or(0)
 }
 
 /// The number of texts the host must have.
 #[must_use]
 pub fn item_count() -> i32 {
-    i32::try_from(reminder::ITEM_COUNT).unwrap_or(0)
+    i32::try_from(reminder::MESSAGE_COUNT).unwrap_or(0)
 }
 
 #[cfg(test)]

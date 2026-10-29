@@ -11,7 +11,7 @@ import android.util.Base64;
 import java.util.Locale;
 
 /**
- * The app's few settings, the reminder schedule and the opaque statistics blob of the Rust core.
+ * The app's few settings, the three numbers of the support card and the opaque counter blob of the Rust core.
  * Everything is stored in the app's private storage (never backed up: {@code allowBackup="false"});
  * nothing here is ever sent anywhere, the app has no network permission. Nothing about a document
  * is stored: no name, no content, no hash; the statistics blob holds counters per day and nothing
@@ -38,16 +38,19 @@ public final class Prefs {
     private static final String K_REVEAL = "reveal_hidden";
     private static final String K_IMAGES = "auto_images";
     private static final String K_SECURE = "secure_screen";
-    /** Keys of the counters of versions before 0.3.0: read once to be folded into the statistics, then deleted. */
-    private static final String K_PASSPORT = "passport";
-    private static final String K_DOC_COUNT = "doc_count";
-    private static final String K_THREAT_COUNT = "threat_count";
+    /**
+     * Keys that earlier versions wrote and this one never reads: counters, a first-use record and
+     * a time of day of the last reminder. {@link #purgeLegacy} deletes them at start so that
+     * nothing of the old timeline survives an update.
+     */
+    private static final String[] LEGACY_KEYS = {"passport", "doc_count", "threat_count", "next_reminder", "last_reminder"};
     private static final String K_STATS = "stats";
     private static final String K_STATS_ON = "stats_on";
     private static final String K_REMINDERS = "reminders";
-    private static final String K_LAST_REMINDER = "last_reminder";
-    private static final String K_NEXT_REMINDER = "next_reminder";
-    private static final String K_REMINDER_INDEX = "reminder_idx";
+    /** The whole state of the weekly support card: these three numbers and the switch. */
+    private static final String K_INSTALL_DAY = "install_epoch_day";
+    private static final String K_LAST_REMINDER_DAY = "last_reminder_epoch_day";
+    private static final String K_REMINDER_INDEX = "next_message_index";
 
     private static SharedPreferences sp(Context c) {
         return c.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
@@ -200,20 +203,13 @@ public final class Prefs {
         sp(c).edit().putBoolean(K_REMINDERS, on).apply();
     }
 
-    public static long lastReminder(Context c) {
-        return sp(c).getLong(K_LAST_REMINDER, 0L);
+    /** The local calendar day (days since 1970-01-01) of the last support card, 0 if none. */
+    public static int lastReminderDay(Context c) {
+        return sp(c).getInt(K_LAST_REMINDER_DAY, 0);
     }
 
-    public static void setLastReminder(Context c, long time) {
-        sp(c).edit().putLong(K_LAST_REMINDER, time).apply();
-    }
-
-    public static long nextReminder(Context c) {
-        return sp(c).getLong(K_NEXT_REMINDER, 0L);
-    }
-
-    public static void setNextReminder(Context c, long time) {
-        sp(c).edit().putLong(K_NEXT_REMINDER, time).apply();
+    public static void setLastReminderDay(Context c, int day) {
+        sp(c).edit().putInt(K_LAST_REMINDER_DAY, day).apply();
     }
 
     public static int reminderIndex(Context c) {
@@ -225,8 +221,33 @@ public final class Prefs {
     }
 
     /**
-     * The private storage of the statistics: the blob of the Rust core (base64), the on / off
-     * switch, and the counters of older versions (so they can be folded in once and deleted).
+     * The local calendar day the app was first started, remembered on the first call. It feeds the
+     * "days with Arca" line of the optional Passport and the quiet first week of the support card;
+     * it is a single number, not a log.
+     */
+    public static int installDay(Context c) {
+        SharedPreferences p = sp(c);
+        int day = p.getInt(K_INSTALL_DAY, 0);
+        if (day <= 0) {
+            long now = System.currentTimeMillis();
+            day = org.arca.viewer.core.Fmt.epochDay(now, java.util.TimeZone.getDefault().getOffset(now));
+            p.edit().putInt(K_INSTALL_DAY, day).apply();
+        }
+        return day;
+    }
+
+    /** Deletes what earlier versions stored (see {@link #LEGACY_KEYS}). Called once per start. */
+    public static void purgeLegacy(Context c) {
+        SharedPreferences.Editor e = sp(c).edit();
+        for (String key : LEGACY_KEYS) {
+            e.remove(key);
+        }
+        e.apply();
+    }
+
+    /**
+     * The private storage of the optional counter: the blob of the Rust core (base64) and the
+     * on / off switch, which is OFF on a fresh install.
      */
     public static org.arca.viewer.core.StatsStore.Storage statsStorage(final Context c) {
         final Context app = c.getApplicationContext();
@@ -248,46 +269,12 @@ public final class Prefs {
 
             @Override
             public boolean enabled() {
-                return sp(app).getBoolean(K_STATS_ON, true);
+                return sp(app).getBoolean(K_STATS_ON, false);
             }
 
             @Override
             public void setEnabled(boolean on) {
                 sp(app).edit().putBoolean(K_STATS_ON, on).apply();
-            }
-
-            @Override
-            public boolean hasLegacy() {
-                SharedPreferences p = sp(app);
-                return p.contains(K_PASSPORT) || p.contains(K_DOC_COUNT) || p.contains(K_THREAT_COUNT);
-            }
-
-            @Override
-            public byte[] legacyPassport() {
-                return decode(sp(app).getString(K_PASSPORT, null));
-            }
-
-            @Override
-            public long legacyDocuments() {
-                return legacyCount(K_DOC_COUNT);
-            }
-
-            @Override
-            public long legacyThreats() {
-                return legacyCount(K_THREAT_COUNT);
-            }
-
-            private long legacyCount(String key) {
-                try {
-                    return Math.max(0, sp(app).getInt(key, 0));
-                } catch (ClassCastException e) {
-                    return 0;
-                }
-            }
-
-            @Override
-            public void deleteLegacy() {
-                sp(app).edit().remove(K_PASSPORT).remove(K_DOC_COUNT).remove(K_THREAT_COUNT).apply();
             }
         };
     }

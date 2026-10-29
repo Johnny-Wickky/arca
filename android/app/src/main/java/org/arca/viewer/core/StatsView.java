@@ -6,20 +6,14 @@ package org.arca.viewer.core;
 import java.util.Map;
 
 /**
- * The local usage statistics as the Rust core reports them (the JSON of {@code Native.statsSummary}):
- * week, month and all-time totals. This class only reads that JSON and formats numbers; what is
- * counted, and how a verdict maps to a counter, is decided in Rust and nowhere else.
+ * The optional local counter as the Rust core reports it (the JSON of {@code Native.statsSummary}):
+ * flat all-time totals, with no dates. This class only reads that JSON and formats numbers; what
+ * is counted, and how a verdict maps to a counter, is decided in Rust and nowhere else.
  */
 public final class StatsView {
     private StatsView() {}
 
-    /** The windows of the segmented toggle, in the order of its buttons. */
-    public static final int WEEK = 0;
-    public static final int MONTH = 1;
-    public static final int ALL = 2;
-    public static final int WINDOWS = 3;
-
-    /** The counters of one period. */
+    /** The counters. */
     public static final class Totals {
         public long opened;
         public long clean;
@@ -38,23 +32,10 @@ public final class StatsView {
         }
     }
 
-    /** The three windows and the day numbers. */
+    /** The totals. */
     public static final class Summary {
         public boolean empty = true;
-        public long firstDay;
-        public long days = 1;
-        public Totals week = new Totals();
-        public Totals month = new Totals();
         public Totals all = new Totals();
-
-        /** The totals of window {@code which} ({@link #WEEK}, {@link #MONTH}, anything else all time). */
-        public Totals window(int which) {
-            switch (which) {
-                case WEEK: return week;
-                case MONTH: return month;
-                default: return all;
-            }
-        }
     }
 
     /**
@@ -74,7 +55,7 @@ public final class StatsView {
         }
     }
 
-    /** Empty statistics: what is shown when nothing was recorded, statistics are off, or the core is missing. */
+    /** Empty totals: what is shown when nothing was recorded, the counter is off, or the core is missing. */
     public static Summary empty() {
         return new Summary();
     }
@@ -107,10 +88,6 @@ public final class StatsView {
             Map<String, Object> root = Json.obj(Json.parse(json));
             Summary s = new Summary();
             s.empty = Json.bool(root.get("empty"), true);
-            s.firstDay = nonNegative(Json.num(root, "firstDay"));
-            s.days = Math.max(1L, Json.num(root, "days"));
-            s.week = totals(root.get("week"));
-            s.month = totals(root.get("month"));
             s.all = totals(root.get("all"));
             return s;
         } catch (RuntimeException e) {
