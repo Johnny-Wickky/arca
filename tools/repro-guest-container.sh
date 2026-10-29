@@ -31,10 +31,10 @@ cp -a /src/. "$src"/
 cd "$src"
 rustup toolchain install >/dev/null
 
-export SOURCE_DATE_EPOCH=1700000000
 export CARGO_TARGET_DIR="$src/target"
-export RUSTFLAGS="--remap-path-prefix=$src=/arca --remap-path-prefix=$CARGO_HOME=/cargo --remap-path-prefix=$RUSTUP_HOME=/rustup"
-cargo build -p arca-guest-xray --target wasm32-unknown-unknown --profile guest --locked
+. tools/guest-env.sh
+arca_guest_env "$src"
+arca_guest_build
 wasm="$CARGO_TARGET_DIR/wasm32-unknown-unknown/guest/arca_guest_xray.wasm"
 
 rustc --version

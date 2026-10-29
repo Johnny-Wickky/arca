@@ -27,8 +27,13 @@ fn main() -> Result<(), String> {
                 return Err(format!("{} is not a WebAssembly module", path.display()));
             }
             let digest = arca_digest::sha256(&bytes);
+            // The module is copied into OUT_DIR from the very bytes that were hashed, and the
+            // library embeds that copy: the digest and the embedded module cannot disagree even
+            // if the original file is rebuilt while this crate is being compiled.
+            let copy = out.join("guest.wasm");
+            std::fs::write(&copy, &bytes).map_err(|e| format!("{}: {e}", copy.display()))?;
             format!(
-                "/// The embedded guest module.\npub static GUEST_WASM: &[u8] = include_bytes!({path:?});\n\
+                "/// The embedded guest module.\npub static GUEST_WASM: &[u8] = include_bytes!({copy:?});\n\
                  /// Its SHA-256 (lowercase hex), computed by the build script.\npub const GUEST_SHA256: &str = \"{digest}\";\n"
             )
         }

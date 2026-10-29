@@ -40,7 +40,9 @@ fn without_a_guest_the_library_refuses_to_start() {
 
 #[test]
 fn the_embedded_guest_matches_the_digest_recorded_at_build_time() {
-    if !has_guest() {
+    // `info()` describes the process-wide engine, which other tests create: this one must not
+    // depend on the order the harness runs them in.
+    if !ready() {
         return;
     }
     assert_eq!(arca_engine::guest_digest_of(guest::GUEST_WASM), GUEST_SHA256);
