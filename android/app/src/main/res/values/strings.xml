@@ -168,6 +168,11 @@
     <string name="search_prev">Previous match</string>
     <string name="search_next">Next match</string>
     <string name="search_close">Close search</string>
+    <string name="search_filter">Only matches</string>
+    <string name="search_filter_desc">Show only the rows that match</string>
+    <string name="pictures_show">Show pictures in the text</string>
+    <string name="pictures_hide">Hide pictures in the text</string>
+    <string name="grid_header_desc">Column names</string>
     <string name="search_count">%1$d of %2$d</string>
     <string name="search_count_capped">%1$d of %2$d+</string>
     <string name="search_none">Nothing found</string>
