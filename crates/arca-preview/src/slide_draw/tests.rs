@@ -33,6 +33,7 @@ struct Deck {
     master_rels: String,
     slide_rels: String,
     master_bg: String,
+    slide_bg: String,
     size: (String, String),
 }
 
@@ -51,6 +52,7 @@ impl Deck {
             ]),
             slide_rels: rels(&[("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")]),
             master_bg: String::new(),
+            slide_bg: String::new(),
             size: ("9144000".to_owned(), "6858000".to_owned()),
         }
     }
@@ -77,7 +79,8 @@ impl Deck {
                 let hidden = if body.starts_with("HIDDEN") { r#" show="0""# } else { "" };
                 let body = body.trim_start_matches("HIDDEN");
                 format!(
-                    r#"<p:sld {P_NS}{hidden}><p:cSld><p:spTree>{GROUP_HEAD}{body}</p:spTree></p:cSld></p:sld>"#
+                    r#"<p:sld {P_NS}{hidden}><p:cSld>{}<p:spTree>{GROUP_HEAD}{body}</p:spTree></p:cSld></p:sld>"#,
+                    self.slide_bg
                 )
             })
             .collect();
@@ -571,6 +574,98 @@ fn slide_backgrounds_come_from_the_master() {
     assert_eq!(ps.len(), 2);
     assert_eq!(ps[0].0, 0xFF11_2233);
     assert!(near(ps[0].2[2].0, 720.0) && near(ps[0].2[2].1, 540.0));
+}
+
+/// The pictures of a page as `(matrix, id)`, in drawing order.
+fn images(p: &PageModel) -> Vec<([f32; 6], u32)> {
+    p.prims
+        .iter()
+        .filter_map(|pr| match pr {
+            Prim::Image { m, id, .. } => Some((*m, *id)),
+            _ => None,
+        })
+        .collect()
+}
+
+const PIC_BG: &str = r#"<p:bg><p:bgPr><a:blipFill dpi="0" rotWithShape="1"><a:blip r:embed="rId7"/><a:srcRect/><a:stretch><a:fillRect/></a:stretch></a:blipFill><a:effectLst/></p:bgPr></p:bg>"#;
+
+fn picture_rels(extra: &[(&str, &str, &str)]) -> String {
+    let mut all = vec![("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")];
+    all.extend_from_slice(extra);
+    rels(&all)
+}
+
+#[test]
+fn a_picture_background_of_the_slide_is_drawn_under_the_shapes() {
+    let mut d = Deck::new(&[&sp(0.0, 0.0, 9.0, 9.0, "rect", RED, "")]);
+    d.slide_bg = PIC_BG.to_owned();
+    d.slide_rels = picture_rels(&[("rId7", "image", "../media/back.png")]);
+    let r = noted(&d.build(&[("ppt/media/back.png", "PNG!")]), 0);
+    let imgs = images(&r.page);
+    assert_eq!(imgs.len(), 1);
+    assert_ne!(imgs[0].1, crate::model::IMAGE_NONE);
+    // It covers the whole slide (the unit square maps to 0..720 × 0..540, the picture's bottom
+    // left corner being the unit origin) ...
+    let m = imgs[0].0;
+    assert!(
+        near(m[0], 720.0) && near(m[3], -540.0) && near(m[4], 0.0) && near(m[5], 540.0),
+        "{m:?}"
+    );
+    // ... and comes before the shape, so the shape stays on top of it.
+    let first_path = r.page.prims.iter().position(|p| matches!(p, Prim::Path { .. })).unwrap();
+    let first_image = r.page.prims.iter().position(|p| matches!(p, Prim::Image { .. })).unwrap();
+    assert!(first_image < first_path);
+    assert!(!r.page.approximate, "a picture background is no longer approximated");
+}
+
+#[test]
+fn a_picture_background_comes_from_the_master_and_a_missing_one_is_noted() {
+    let mut d = Deck::new(&[&sp(0.0, 0.0, 9.0, 9.0, "rect", RED, "")]);
+    d.master_bg = PIC_BG.to_owned();
+    d.master_rels = rels(&[
+        ("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"),
+        ("rId2", "theme", "../theme/theme1.xml"),
+        ("rId7", "image", "../media/back.png"),
+    ]);
+    let with = noted(&d.build(&[("ppt/media/back.png", "PNG!")]), 0);
+    let imgs = images(&with.page);
+    assert_eq!(imgs.len(), 1);
+    assert_ne!(imgs[0].1, crate::model::IMAGE_NONE);
+    // The relationship names a picture that is not in the package: nothing to draw, and the page
+    // says so.
+    let without = noted(&d.build(&[]), 0);
+    assert!(images(&without.page).is_empty());
+    assert!(without.page.approximate);
+}
+
+#[test]
+fn a_shape_filled_with_a_picture_draws_the_picture_in_its_frame() {
+    let fill =
+        r#"<a:blipFill><a:blip r:embed="rId7"/><a:stretch><a:fillRect/></a:stretch></a:blipFill>"#;
+    let label = para("on top");
+    let shape = sp(100.0, 50.0, 200.0, 100.0, "rect", fill, &label);
+    let mut d = Deck::new(&[&shape]);
+    d.slide_rels = picture_rels(&[("rId7", "image", "../media/fill.png")]);
+    let r = noted(&d.build(&[("ppt/media/fill.png", "PNG!")]), 0);
+    let imgs = images(&r.page);
+    assert_eq!(imgs.len(), 1);
+    let m = imgs[0].0;
+    assert!(
+        near(m[4], 100.0) && near(m[5], 150.0) && near(m[0], 200.0) && near(m[3], -100.0),
+        "{m:?}"
+    );
+    assert!(!r.page.approximate);
+    // The picture is under the text.
+    let image_at = r.page.prims.iter().position(|p| matches!(p, Prim::Image { .. })).unwrap();
+    let text_at = r.page.prims.iter().position(|p| matches!(p, Prim::Text { .. })).unwrap();
+    assert!(image_at < text_at);
+    // A picture of an ellipse is stretched over its frame, and the page says it is approximate.
+    let round = sp(100.0, 50.0, 200.0, 100.0, "ellipse", fill, "");
+    let mut d = Deck::new(&[&round]);
+    d.slide_rels = picture_rels(&[("rId7", "image", "../media/fill.png")]);
+    let r = noted(&d.build(&[("ppt/media/fill.png", "PNG!")]), 0);
+    assert_eq!(images(&r.page).len(), 1);
+    assert!(r.page.approximate);
 }
 
 // ---- text ----------------------------------------------------------------------------------
