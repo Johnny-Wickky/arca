@@ -88,6 +88,13 @@ public final class Native {
     /** Initialises the engine (idempotent). Limits are clamped by the engine. */
     public static native int init(int maxInputMiB, int maxMemoryMiB, int scanSeconds, int previewSeconds);
 
+    /**
+     * Checks the guest module against its build-time digest and validates it in memory (once per
+     * process). Called by the app zygote before the process of a document is forked; it starts no
+     * thread. Returns the status code.
+     */
+    public static native int preloadGuest();
+
     /** Facts about the engine and the pinned guest module (JSON). */
     public static native byte[] info();
 

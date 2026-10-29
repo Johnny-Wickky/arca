@@ -238,3 +238,40 @@ fn concurrent_runs_are_isolated() {
         }
     });
 }
+
+#[test]
+fn a_prepared_module_runs_like_any_other_and_only_for_its_own_bytes() {
+    let (sb, m) = pinned(guest(RunBody::Echo, ABI, None, 2));
+    let prepared = sb.prepare(&m).expect("a module that is pinned and valid");
+    let sb = sb.with_prepared(prepared);
+    let input = "документ".as_bytes();
+    let out = sb.run(&m, input).unwrap();
+    assert_eq!((out.status, &out.payload[..]), (0, input));
+    // Twice: the prepared module is shared, not used up.
+    assert_eq!(&sb.run(&m, b"again").unwrap().payload[..], b"again");
+
+    // Another module under the same sandbox is not served from the prepared one: it is checked
+    // on its own and, not being pinned, refused.
+    let other = GuestModule::new("o", guest(RunBody::Echo, ABI, None, 3));
+    assert!(matches!(sb.run(&other, b"x"), Err(SandboxError::ModuleNotPinned(_))));
+}
+
+#[test]
+fn only_a_pinned_and_valid_module_can_be_prepared() {
+    let m = GuestModule::new("g", guest(RunBody::Echo, ABI, None, 2));
+    let unpinned = Sandbox::new(SandboxPolicy::default(), []);
+    assert!(matches!(unpinned.prepare(&m), Err(SandboxError::ModuleNotPinned(_))));
+    let bad = GuestModule::new("b", b"\0asm not a module".to_vec());
+    let sb = Sandbox::new(SandboxPolicy::default(), [bad.pin()]);
+    assert!(matches!(sb.prepare(&bad), Err(SandboxError::ModuleInvalid(_))));
+}
+
+#[test]
+fn a_prepared_module_made_under_other_limits_is_ignored() {
+    let m = GuestModule::new("g", guest(RunBody::Echo, ABI, None, 2));
+    let strict = SandboxPolicy { max_stack_height: 2 << 20, ..SandboxPolicy::default() };
+    let made_under_strict = Sandbox::new(strict, [m.pin()]).prepare(&m).unwrap();
+    let sb = Sandbox::new(SandboxPolicy::default(), [m.pin()]).with_prepared(made_under_strict);
+    // It still runs, validated afresh under this sandbox's own limits.
+    assert_eq!(&sb.run(&m, b"x").unwrap().payload[..], b"x");
+}

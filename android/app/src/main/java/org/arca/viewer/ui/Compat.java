@@ -336,15 +336,22 @@ public final class Compat {
         }
 
         /**
-         * The app zygote's preload (named in the manifest): loads the engine library once, so the
-         * process of each document starts from a zygote that already has it. Nothing else is done
-         * here on purpose: a zygote must stay single-threaded, and the engine's sandbox is built
-         * per process.
+         * The app zygote's preload (named in the manifest): loads the engine library and has the
+         * guest module checked against its build-time digest and validated in memory, so the
+         * process of each document starts from a zygote that already has both. Parsing a module is
+         * plain single-threaded computation; the sandbox starts a thread only to run a guest,
+         * which never happens here, so the zygote stays single-threaded.
          */
         public static final class Preload implements android.app.ZygotePreload {
             @Override
             public void doPreload(android.content.pm.ApplicationInfo info) {
-                org.arca.viewer.Native.isLoaded();
+                if (org.arca.viewer.Native.isLoaded()) {
+                    try {
+                        org.arca.viewer.Native.preloadGuest();
+                    } catch (RuntimeException | LinkageError ignored) {
+                        // not worth a failed zygote: every run validates the module itself
+                    }
+                }
             }
         }
 

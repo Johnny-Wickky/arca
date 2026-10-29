@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use arca_engine::render::{self, lang_from_code};
-use arca_engine::{Engine, EngineConfig, Handle, Host, Status, schedule, selftest, stats};
+use arca_engine::{Engine, EngineConfig, Handle, Host, PreparedGuest, Status, schedule, selftest, stats};
 
 mod guest {
     include!(concat!(env!("OUT_DIR"), "/guest.rs"));
@@ -25,11 +25,36 @@ mod guest {
 pub use guest::GUEST_SHA256;
 
 static HOST: OnceLock<Host> = OnceLock::new();
+/// The guest module validated ahead of time (see [`preload_guest`]). `None` inside means it could
+/// not be prepared, and every run then validates it for itself as before.
+static PREPARED: OnceLock<Option<PreparedGuest>> = OnceLock::new();
 
 /// `true` if a guest module was embedded at build time.
 #[must_use]
 pub fn has_guest() -> bool {
     !guest::GUEST_WASM.is_empty()
+}
+
+fn prepared() -> Option<&'static PreparedGuest> {
+    PREPARED
+        .get_or_init(|| {
+            if has_guest() { Engine::prepare_guest(guest::GUEST_WASM, GUEST_SHA256) } else { None }
+        })
+        .as_ref()
+}
+
+/// Checks the embedded guest against its build-time SHA-256 and validates it in memory, once per
+/// process, so that no run has to. The app zygote calls this before it forks the process of a
+/// document: parsing and validating a module is single-threaded computation (the sandbox starts a
+/// thread only to *run* a guest), so it is safe there, and every isolated process then starts with
+/// the module already prepared. Idempotent; later runs still re-hash the module and use the
+/// prepared copy only if the bytes match.
+#[must_use]
+pub fn preload_guest() -> i32 {
+    if !has_guest() {
+        return Status::NotReady.code();
+    }
+    if prepared().is_some() { Status::Ok.code() } else { Status::Fault.code() }
 }
 
 /// Initialises the engine (once per process; later calls return the first result's state).
@@ -57,6 +82,10 @@ pub fn init(max_input_mib: i32, max_memory_mib: i32, scan_secs: i32, preview_sec
     let engine = match Engine::pinned(guest::GUEST_WASM, GUEST_SHA256, config) {
         Ok(engine) => engine,
         Err(status) => return status.code(),
+    };
+    let engine = match prepared() {
+        Some(p) => engine.with_prepared(p.clone()),
+        None => engine,
     };
     // A concurrent first call may win; both built the same engine.
     let _ = HOST.set(Host::new(engine));

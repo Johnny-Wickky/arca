@@ -599,13 +599,14 @@ impl ResourceLimiter for Guard {
 pub struct Sandbox {
     policy: SandboxPolicy,
     pins: Vec<ModulePin>,
+    prepared: Option<PreparedModule>,
 }
 
 impl Sandbox {
     /// Creates a sandbox that only executes the pinned modules.
     #[must_use]
     pub fn new(policy: SandboxPolicy, pins: impl IntoIterator<Item = ModulePin>) -> Self {
-        Self { policy, pins: pins.into_iter().collect() }
+        Self { policy, pins: pins.into_iter().collect(), prepared: None }
     }
 
     /// The active policy.
@@ -733,16 +734,25 @@ impl Sandbox {
         // A run that is already cancelled never pays for compilation.
         meter.check()?;
 
-        let engine = self.engine();
-        let wasm = Module::new(&engine, &*module.bytes)
-            .map_err(|e| SandboxError::ModuleInvalid(e.to_string()))?;
-        if let Some(import) = wasm.imports().next() {
-            return Err(SandboxError::ForbiddenImport {
-                module: import.module().to_owned(),
-                name: import.name().to_owned(),
-            });
-        }
-        check_exports(&wasm)?;
+        let (engine, wasm) = match &self.prepared {
+            // The bytes just hashed are the ones the prepared module was made from.
+            Some(p) if p.digest == digest && p.key == self.engine_key() => {
+                (p.engine.clone(), p.module.clone())
+            }
+            _ => {
+                let engine = self.engine();
+                let wasm = Module::new(&engine, &*module.bytes)
+                    .map_err(|e| SandboxError::ModuleInvalid(e.to_string()))?;
+                if let Some(import) = wasm.imports().next() {
+                    return Err(SandboxError::ForbiddenImport {
+                        module: import.module().to_owned(),
+                        name: import.name().to_owned(),
+                    });
+                }
+                check_exports(&wasm)?;
+                (engine, wasm)
+            }
+        };
         meter.check()?;
 
         let guard = Guard {
@@ -775,6 +785,71 @@ impl Sandbox {
         );
         drop(guard);
         result
+    }
+}
+
+
+/// A guest module that has already been hashed, matched against the pins, parsed, validated and
+/// checked for imports and exports, together with the engine it was compiled for.
+///
+/// Parsing and validating a module is plain single-threaded computation in memory (a thread
+/// exists only while a guest *runs*), so it can be done early: in the app zygote, before the
+/// process of a document is forked. A run still re-hashes the bytes it is given and uses the
+/// prepared module only if they are the very ones it was made from; a prepared module made under
+/// other engine limits than the sandbox's is ignored. Nothing about *what may run* is relaxed.
+#[derive(Clone)]
+pub struct PreparedModule {
+    digest: Digest,
+    key: (usize, usize, bool),
+    engine: Engine,
+    module: Module,
+}
+
+impl fmt::Debug for PreparedModule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedModule").field("digest", &self.digest).finish_non_exhaustive()
+    }
+}
+
+impl Sandbox {
+    /// The engine limits that decide whether a prepared module fits this sandbox.
+    fn engine_key(&self) -> (usize, usize, bool) {
+        let p = &self.policy;
+        (p.max_recursion_depth, p.max_stack_height, p.strict_module_limits)
+    }
+
+    /// Hashes, checks, parses and validates `module` ahead of any run.
+    ///
+    /// # Errors
+    /// The same as a run would give for the module: [`SandboxError::ModuleTooLarge`],
+    /// [`SandboxError::ModuleNotPinned`], [`SandboxError::ModuleInvalid`],
+    /// [`SandboxError::ForbiddenImport`] and the export checks.
+    pub fn prepare(&self, module: &GuestModule) -> Result<PreparedModule, SandboxError> {
+        if module.bytes.len() > self.policy.max_module_bytes {
+            return Err(SandboxError::ModuleTooLarge(module.bytes.len()));
+        }
+        let digest = arca_digest::sha256(&module.bytes);
+        if digest != module.digest || !self.pins.iter().any(|pin| pin.digest == digest) {
+            return Err(SandboxError::ModuleNotPinned(digest));
+        }
+        let engine = self.engine();
+        let wasm = Module::new(&engine, &*module.bytes)
+            .map_err(|e| SandboxError::ModuleInvalid(e.to_string()))?;
+        if let Some(import) = wasm.imports().next() {
+            return Err(SandboxError::ForbiddenImport {
+                module: import.module().to_owned(),
+                name: import.name().to_owned(),
+            });
+        }
+        check_exports(&wasm)?;
+        Ok(PreparedModule { digest, key: self.engine_key(), engine, module: wasm })
+    }
+
+    /// Uses `prepared` for the runs whose module hashes to the same digest.
+    #[must_use]
+    pub fn with_prepared(mut self, prepared: PreparedModule) -> Self {
+        self.prepared = Some(prepared);
+        self
     }
 }
 
