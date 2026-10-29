@@ -92,6 +92,8 @@ public final class PreviewScreen extends Screen {
 
     // The search survives rebuilds too (the window changes shape, a match is in another section).
     private static boolean searchOpen;
+    /** Show only the rows that match the search (grids). Forgotten with the search. */
+    private static boolean filterRows;
     private static boolean focusSearch;
     private static String searchQuery = "";
     private static DocSearch search;
@@ -254,8 +256,19 @@ public final class PreviewScreen extends Screen {
                 showContents();
             }
         });
+        // Pictures in the text: on, each one is decoded in the sandbox as soon as it is shown
+        // (a few at a time, within the picture cache); off, a picture is a placeholder to tap.
+        final boolean pictures = Prefs.autoImages(act);
+        View inline = ui.iconButton(pictures ? R.drawable.ic_eye : R.drawable.ic_eye_off,
+            pictures ? R.string.pictures_hide : R.string.pictures_show, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Prefs.setAutoImages(act, !pictures);
+                    act.refresh();
+                }
+            });
         View head = meta.sections.isEmpty() ? header(title, true, reveal)
-            : header(title, true, find, contents, reveal);
+            : header(title, true, find, contents, inline, reveal);
 
         LinearLayout body = ui.vbox();
         if (searchOpen && !meta.sections.isEmpty()) {
@@ -349,6 +362,19 @@ public final class PreviewScreen extends Screen {
         countView.setPadding(ui.dp(8), 0, ui.dp(2), 0);
         countView.setGravity(Gravity.CENTER);
         bar.addView(countView, ui.wrapLp());
+        if (gridWidths != null) {
+            // Rows of a table: either jump from match to match, or keep only the matching rows.
+            TextView only = ui.chip(ui.str(R.string.search_filter), filterRows, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    filterRows = !filterRows;
+                    savedPosition = 0;
+                    act.refresh();
+                }
+            });
+            only.setContentDescription(ui.str(R.string.search_filter_desc));
+            bar.addView(only, ui.wrapLp());
+        }
         bar.addView(ui.iconButton(R.drawable.ic_chevron_up, R.string.search_prev, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -402,6 +428,7 @@ public final class PreviewScreen extends Screen {
         }
         search = null;
         searchOpen = false;
+        filterRows = false;
         focusSearch = false;
         searchQuery = "";
         hitIndex = -1;
@@ -484,7 +511,12 @@ public final class PreviewScreen extends Screen {
             return;
         }
         if (list != null) {
-            list.setSelectionFromTop((int) Math.min(item, Integer.MAX_VALUE), ui.dp(24));
+            int at = (int) Math.min(item, Integer.MAX_VALUE);
+            if (adapter != null && adapter.filtered() != null) {
+                // Only the matching rows are listed: the row's place is its rank among them.
+                at = Math.max(0, java.util.Arrays.binarySearch(adapter.filtered(), item));
+            }
+            list.setSelectionFromTop(at, ui.dp(24));
         }
         if (adapter != null) {
             adapter.notifyDataSetChanged();
@@ -985,7 +1017,12 @@ public final class PreviewScreen extends Screen {
             }
             HorizontalScrollView hs = new HorizontalScrollView(act);
             hs.setFillViewport(true);
-            hs.addView(list, new FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.MATCH_PARENT));
+            // The column names stay at the top while the rows scroll under them, and scroll
+            // sideways together with the rows.
+            LinearLayout stack = ui.vbox();
+            stack.addView(pinnedHeader(cols), new LinearLayout.LayoutParams(width, ui.dp(32)));
+            stack.addView(list, new LinearLayout.LayoutParams(width, 0, 1f));
+            hs.addView(stack, new FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.MATCH_PARENT));
             return pinchable(hs);
         }
         int pad = ui.dp(Adaptive.padding(act));
@@ -1061,14 +1098,52 @@ public final class PreviewScreen extends Screen {
             this.total = total;
         }
 
+        private long[] rows;
+        private int rowsFor = -1;
+        private DocSearch rowsSearch;
+
+        /** The matching rows of this grid in order, or {@code null} when every row is listed. */
+        long[] filtered() {
+            DocSearch sr = search;
+            if (!filterRows || sr == null || gridWidths == null) {
+                return null;
+            }
+            int n = sr.hitCount();
+            if (rows == null || rowsFor != n || rowsSearch != sr) {
+                long[] tmp = new long[n];
+                int k = 0;
+                for (int i = 0; i < n; i++) {
+                    // The header (item 0) is not a row.
+                    if (sr.hitSection(i) == sectionIndex && sr.hitItem(i) > 0) {
+                        tmp[k++] = sr.hitItem(i);
+                    }
+                }
+                rows = java.util.Arrays.copyOf(tmp, k);
+                java.util.Arrays.sort(rows);
+                rowsFor = n;
+                rowsSearch = sr;
+            }
+            return rows;
+        }
+
+        /** The item behind list position {@code position}. */
+        long itemAt(int position) {
+            long[] f = filtered();
+            if (f == null) {
+                return position;
+            }
+            return position >= 0 && position < f.length ? f[position] : position;
+        }
+
         @Override
         public int getCount() {
-            return (int) Math.min(total, Integer.MAX_VALUE);
+            long[] f = filtered();
+            return f != null ? f.length : (int) Math.min(total, Integer.MAX_VALUE);
         }
 
         @Override
         public Object getItem(int position) {
-            return cache.get(sectionIndex, position, total);
+            return cache.get(sectionIndex, itemAt(position), total);
         }
 
         @Override
@@ -1112,7 +1187,7 @@ public final class PreviewScreen extends Screen {
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
-            currentHitRow = search != null && search.isHit(hitIndex, sectionIndex, position);
+            currentHitRow = search != null && search.isHit(hitIndex, sectionIndex, itemAt(position));
             try {
                 return buildView(position, convertView);
             } finally {
@@ -1567,7 +1642,30 @@ public final class PreviewScreen extends Screen {
         return t;
     }
 
+    /** The pinned header: the real column names where the document has them (Access), else the letters. */
+    private View pinnedHeader(int cols) {
+        LinearLayout row = new LinearLayout(act);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setContentDescription(ui.str(R.string.grid_header_desc));
+        row.addView(gridCell(rowHeaderPx(adapter.total), Gravity.CENTER, true));
+        for (int i = 0; i < cols; i++) {
+            TextView c = gridCell(columnPx(i), Gravity.CENTER, true);
+            String name = i < gridNames.length && gridNames[i] != null && !gridNames[i].isEmpty()
+                ? gridNames[i] : columnName(i);
+            c.setText(name);
+            c.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+            row.addView(c);
+        }
+        return row;
+    }
+
     private View gridHeader(Model.GridHeader h) {
+        if (gridWidths != null) {
+            // The header is pinned above the list; this row only keeps the item numbering.
+            View none = new View(act);
+            none.setLayoutParams(new AbsListView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1));
+            return none;
+        }
         LinearLayout row = new LinearLayout(act);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setMinimumHeight(ui.dp(32));

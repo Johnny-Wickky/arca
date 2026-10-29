@@ -166,6 +166,11 @@
     <string name="search_prev">Предыдущее совпадение</string>
     <string name="search_next">Следующее совпадение</string>
     <string name="search_close">Закрыть поиск</string>
+    <string name="search_filter">Только найденное</string>
+    <string name="search_filter_desc">Показывать только подходящие строки</string>
+    <string name="pictures_show">Показывать картинки в тексте</string>
+    <string name="pictures_hide">Скрыть картинки в тексте</string>
+    <string name="grid_header_desc">Названия столбцов</string>
     <string name="search_count">%1$d из %2$d</string>
     <string name="search_count_capped">%1$d из %2$d+</string>
     <string name="search_none">Ничего не найдено</string>
