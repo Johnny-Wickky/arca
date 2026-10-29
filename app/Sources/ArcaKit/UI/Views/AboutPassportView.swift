@@ -10,6 +10,7 @@ public struct AboutPassportView: View {
     @State private var passport: PassportInfo?
     @State private var isLicenseSheetPresented = false
     @State private var licenseText: String = ""
+    @State private var weeklySupportReminders = SupportReminderSetting.isEnabled()
 
     public init() {}
 
@@ -61,6 +62,8 @@ public struct AboutPassportView: View {
 
                         // Theme Switcher Section
                         themeSelectorSection
+
+                        supportReminderSection
 
                         // Zero Telemetry & Legal
                         legalSection
@@ -226,6 +229,29 @@ public struct AboutPassportView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Support reminders
+
+    private var supportReminderSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $weeklySupportReminders) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Еженедельные напоминания о поддержке / Weekly support reminders")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(state.theme.textPrimary)
+                    Text("Показывать ненавязчивую карточку раз в 7 дней на главном экране / Show a non-intrusive card once every 7 days on the home screen")
+                        .font(.system(size: 12))
+                        .foregroundColor(state.theme.textSecondary)
+                }
+            }
+            .onChange(of: weeklySupportReminders) { on in
+                SupportReminderSetting.set(on)
+            }
+            .padding(14)
+            .background(state.theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 

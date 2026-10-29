@@ -8,6 +8,8 @@ import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.util.Base64;
 
+import org.arca.viewer.core.ReminderRules;
+
 import java.util.Locale;
 
 /**
@@ -191,12 +193,12 @@ public final class Prefs {
     }
 
     /**
-     * Whether the support reminder is on. A new install has it on only where no permission is
-     * needed to post (before Android 13); from Android 13 on it stays off until the person turns
-     * it on and grants the notification permission.
+     * Whether the weekly support card is on. It is on by default; only the person's own choice in
+     * Settings turns it off (the "About and support" entry stays available either way).
      */
     public static boolean reminders(Context c) {
-        return sp(c).getBoolean(K_REMINDERS, android.os.Build.VERSION.SDK_INT < 33);
+        SharedPreferences p = sp(c);
+        return ReminderRules.enabledOrDefault(p.contains(K_REMINDERS), p.getBoolean(K_REMINDERS, ReminderRules.ENABLED_BY_DEFAULT));
     }
 
     public static void setReminders(Context c, boolean on) {

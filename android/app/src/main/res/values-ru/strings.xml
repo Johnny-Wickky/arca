@@ -408,8 +408,8 @@
     <string name="support_msg_30">Вы доверяете нам проверку самых подозрительных файлов, а мы доверяем вам судьбу этого проекта. Спасибо, что выбираете свободную и безопасную Arca!</string>
     <string name="support_msg_privacy">Честный Zero-Trust: Arca не имеет доступа к интернету, не собирает телеметрию, не отслеживает ваши действия внутри приложения и не показывает рекламу. Мы работаем исключительно ради вашей безопасности.</string>
     <string name="settings_reminders_title">Напоминания</string>
-    <string name="settings_reminders">Напоминать о поддержке</string>
-    <string name="settings_reminders_desc">Ненавязчивая карточка на главном экране примерно раз в неделю с просьбой поддержать разработчиков. Без уведомлений и разрешений; ничего никуда не отправляется.</string>
+    <string name="settings_reminders">Еженедельные напоминания о поддержке</string>
+    <string name="settings_reminders_desc">Показывать ненавязчивую карточку раз в 7 дней на главном экране</string>
 
     <!-- Local statistics (counted by the Rust core, kept only on this device) -->
     <string name="stats_title">Статистика</string>

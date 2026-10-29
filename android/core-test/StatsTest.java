@@ -244,6 +244,10 @@ public final class StatsTest {
     }
 
     private static void reminderAnswers() {
+        check(ReminderRules.ENABLED_BY_DEFAULT, "the support card is on by default");
+        check(ReminderRules.enabledOrDefault(false, false), "no stored choice: on");
+        check(ReminderRules.enabledOrDefault(true, true), "stored on");
+        check(!ReminderRules.enabledOrDefault(true, false), "stored off is kept");
         ReminderRules.Decision d = ReminderRules.parse(utf8("{\"action\":\"show\",\"at\":1772323200000}"));
         eq("show", d.action, "action");
         eq(1772323200000L, d.at, "at");

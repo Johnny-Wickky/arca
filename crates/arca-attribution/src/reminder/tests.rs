@@ -354,3 +354,42 @@ fn the_privacy_note_states_the_zero_telemetry_promise() {
         }
     }
 }
+
+#[test]
+fn the_support_card_is_on_until_the_person_turns_it_off() {
+    assert!(ENABLED_BY_DEFAULT);
+    assert!(enabled_or_default(None), "no stored choice: the card is on");
+    assert!(enabled_or_default(Some(true)));
+    assert!(!enabled_or_default(Some(false)), "an explicit off is kept");
+}
+
+#[test]
+fn the_switch_gates_the_card_and_back_on_restores_it() {
+    let now = T0 + 13 * HOUR;
+    // Off: nothing is shown and nothing is planned, however long ago the last card was.
+    let off = fire(now, 0, 0, enabled_or_default(Some(false)), true);
+    assert_eq!(off, FireDecision { action: FireAction::Disabled, next_at_ms: 0 });
+    assert_eq!(on_start(now + 3 * DAY_MS, now, 0, false, 4).action, StartAction::Off);
+    // Back on: the same moment shows the card.
+    let on = fire(now, 0, 0, enabled_or_default(Some(true)), true);
+    assert_eq!(on.action, FireAction::Show);
+    // A fresh install has made no choice and is shown the card.
+    assert_eq!(fire(now, 0, 0, enabled_or_default(None), true).action, FireAction::Show);
+}
+
+#[test]
+fn android_reads_the_default_from_the_rules_and_names_the_switch() {
+    let prefs = include_str!("../../../../android/app/src/main/java/org/arca/viewer/Prefs.java");
+    assert!(
+        prefs.contains("ReminderRules.enabledOrDefault("),
+        "Prefs.reminders must resolve the stored choice through ReminderRules"
+    );
+    let rules = include_str!("../../../../android/app/src/main/java/org/arca/viewer/core/ReminderRules.java");
+    assert!(rules.contains("ENABLED_BY_DEFAULT = true"), "the Java default must equal the Rust one");
+    let en = include_str!("../../../../android/app/src/main/res/values/strings.xml");
+    let ru = include_str!("../../../../android/app/src/main/res/values-ru/strings.xml");
+    assert!(en.contains("Weekly support reminders"));
+    assert!(en.contains("Show a non-intrusive card once every 7 days on the home screen"));
+    assert!(ru.contains("Еженедельные напоминания о поддержке"));
+    assert!(ru.contains("Показывать ненавязчивую карточку раз в 7 дней на главном экране"));
+}
