@@ -5,19 +5,18 @@
 //!
 //! `upstream.rs` is covered by `UPSTREAM_FINGERPRINT` and must not be edited by anyone but the
 //! original maintainers, and nobody may invent a payment address. This file holds the
-//! **mechanism**: the list [`EXTRA_SUPPORT_ADDRESSES`] ships **empty**, the About screen shows
+//! **mechanism**: the list [`EXTRA_SUPPORT_ADDRESSES`] is **optional** and ships empty, the About screen shows
 //! the "Other ways to support" card only when the list has valid entries, and
 //! every entry goes through [`is_valid`] first (an entry that fails is dropped, never shown).
 //!
-//! # What the owner provides
+//! # What an entry holds
 //!
 //! For each wallet: the network or coin (`network`, for example `BTC`, `ETH`, `USDT-TRC20`,
 //! `TON`), a display `label`, the full `value` (the address, exactly as the wallet shows it),
 //! and the `memo` / tag when the network needs one (otherwise `""`). For Boosty: the full
-//! `https://boosty.to/<name>` address. The owner adds the entries to the list below. If they
-//! want the entries covered by the fingerprint like the Lava.top link, they move the list into
-//! `upstream.rs` and re-pin `UPSTREAM_FINGERPRINT` (a deliberate act of the owner, which this
-//! change does not perform).
+//! `https://boosty.to/<name>` address. Entries are added to the list below. To have them
+//! covered by the fingerprint like the Lava.top link, the list moves into `upstream.rs` and
+//! `UPSTREAM_FINGERPRINT` is re-pinned.
 //!
 //! The app shows the full address first, copies it only on an explicit tap (flagged sensitive,
 //! cleared from the clipboard after a minute where the platform allows), and opens a Boosty
@@ -47,33 +46,14 @@ pub struct SupportAddress {
     pub memo: &'static str,
 }
 
-// ---- the owner's values: replace the strings below, nothing else in this file ---------------
+// ---- optional extra entries ------------------------------------------------------------------
 //
-// A value that still reads `CHANGEME...` is a placeholder: `is_valid` refuses it, the entry is
-// not shown and nothing is invented. Fill in the real address character for character.
+// Wallets and pages that the creators publish are added to this list, character for character;
+// the list is empty until then and the About screen shows no card for it. Every entry goes
+// through `is_valid` before it can be shown.
 
-/// Boosty page, the full `https://boosty.to/<name>` address.
-const BOOSTY_URL: &str = "CHANGEME-https://boosty.to/name";
-/// USDT on the TRON network (TRC-20).
-const USDT_TRC20: &str = "CHANGEME-USDT-TRC20-ADDRESS";
-/// TON address.
-const TON_ADDRESS: &str = "CHANGEME-TON-ADDRESS";
-/// Memo (comment) that the TON address needs, `""` if none.
-const TON_MEMO: &str = "";
-/// Monero (XMR) address.
-const XMR_ADDRESS: &str = "CHANGEME-XMR-ADDRESS";
-/// Bitcoin (BTC) address.
-const BTC_ADDRESS: &str = "CHANGEME-BTC-ADDRESS";
-
-/// The configured extra addresses. Entries whose value is still a placeholder are not shown; see
-/// the module documentation and the block above.
-pub const EXTRA_SUPPORT_ADDRESSES: &[SupportAddress] = &[
-    SupportAddress { kind: SupportKind::Boosty, label: "Boosty", network: "", value: BOOSTY_URL, memo: "" },
-    SupportAddress { kind: SupportKind::Crypto, label: "USDT (TRC-20)", network: "USDT-TRC20", value: USDT_TRC20, memo: "" },
-    SupportAddress { kind: SupportKind::Crypto, label: "TON", network: "TON", value: TON_ADDRESS, memo: TON_MEMO },
-    SupportAddress { kind: SupportKind::Crypto, label: "Monero (XMR)", network: "XMR", value: XMR_ADDRESS, memo: "" },
-    SupportAddress { kind: SupportKind::Crypto, label: "Bitcoin (BTC)", network: "BTC", value: BTC_ADDRESS, memo: "" },
-];
+/// The configured extra addresses; each entry is checked by [`is_valid`] before it is shown.
+pub const EXTRA_SUPPORT_ADDRESSES: &[SupportAddress] = &[];
 
 /// Longest wallet address or memo accepted (the longest real formats are below 110 characters).
 pub const MAX_VALUE_LEN: usize = 128;
@@ -141,10 +121,8 @@ mod tests {
 
     #[test]
     fn nothing_is_invented_every_configured_entry_is_valid() {
-        // Until the owner supplies real values an entry is a `CHANGEME` placeholder, which the
-        // check refuses; whatever is shown has passed the same check the About screen applies.
         for e in EXTRA_SUPPORT_ADDRESSES {
-            assert!(is_valid(e) || e.value.contains("CHANGEME"), "invalid extra support entry: {e:?}");
+            assert!(is_valid(e), "invalid extra support entry: {e:?}");
         }
         assert!(configured().iter().all(is_valid));
     }
