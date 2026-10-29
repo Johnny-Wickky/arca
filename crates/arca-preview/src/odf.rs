@@ -117,8 +117,14 @@ fn length_pt(v: &str) -> Option<f32> {
     pt.is_finite().then_some(pt)
 }
 
+/// `v` rounded and held within `lo ..= hi`.
+#[allow(clippy::cast_possible_truncation, reason = "the value is clamped to a few thousand first")]
+fn clamped(v: f32, lo: f32, hi: f32) -> i64 {
+    if v.is_finite() { v.clamp(lo, hi).round() as i64 } else { 0 }
+}
+
 fn pt_to_u16(v: f32) -> u16 {
-    u16::try_from((v.max(0.0).round() as i64).min(2000)).unwrap_or(0)
+    u16::try_from(clamped(v, 0.0, 2000.0)).unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -382,7 +388,7 @@ fn para_props(tag: &Tag<'_>, info: &mut StyleInfo) {
         f.indent_left = pt_to_u16(v);
     }
     if let Some(v) = tag.attr("text-indent").and_then(|v| length_pt(&v)) {
-        f.indent_first = v.round() as i64;
+        f.indent_first = clamped(v, -2000.0, 2000.0);
     }
     if let Some(v) = tag.attr("line-height")
         && let Some(pct) = v.trim().strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok())

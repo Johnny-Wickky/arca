@@ -9,6 +9,14 @@
 //! `Theme.color` does and check that no text, badge, secondary caption or divider sinks into the
 //! surface it is drawn on. Reading the Java source as text keeps the check free of a JVM.
 
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::string_slice,
+    reason = "test code over the ASCII source of Theme.java and small colour channels"
+)]
+
 use std::collections::BTreeMap;
 
 const THEME: &str =
