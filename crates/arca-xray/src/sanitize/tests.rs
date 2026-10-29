@@ -560,3 +560,83 @@ fn mutated_opendocument_never_panics() {
         let _ = sanitize(&m, &ScanPolicy::default(), &SanitizeOptions::default());
     }
 }
+
+/// Every part name of a package.
+fn part_names(doc: &[u8]) -> Vec<String> {
+    let zip =
+        arca_container::zip::ZipArchive::parse(doc, arca_container::zip::ZipLimits::default())
+            .unwrap();
+    zip.entries().iter().map(|e| e.name().to_owned()).collect()
+}
+
+/// Whether any part of the package mentions `needle`.
+fn mentions(doc: &[u8], needle: &str) -> bool {
+    part_names(doc).iter().any(|n| part(doc, n).is_some_and(|text| text.contains(needle)))
+}
+
+#[test]
+fn relationships_written_with_a_dot_slash_do_not_keep_metadata_parts_alive() {
+    // The package relationships name the custom properties and a custom XML item as
+    // "./docProps/custom.xml" and "./customXml/item1.xml"; both parts have relationship parts of
+    // their own with an external target. A sterile copy must carry none of them.
+    let mut o = docx();
+    o.set(
+        "_rels/.rels",
+        rels(&[
+            ("rId1", "officeDocument", "./word/document.xml", false),
+            ("rId2", "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties", "./docProps/core.xml", false),
+            ("rId3", "extended-properties", "./docProps/app.xml", false),
+            ("rId4", "custom-properties", "./docProps/custom.xml", false),
+            ("rId5", "customXml", "./customXml/item1.xml", false),
+        ]),
+    )
+    .set(
+        "docProps/custom.xml",
+        r#"<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="2" name="Client"><vt:lpwstr>SECRET-CLIENT</vt:lpwstr></property></Properties>"#,
+    )
+    .set("docProps/_rels/custom.xml.rels", rels(&[("rId1", "hyperlink", "https://beacon.example/custom", true)]))
+    .set("customXml/item1.xml", "<root>SECRET-CUSTOM-XML</root>")
+    .set("customXml/_rels/item1.xml.rels", rels(&[("rId1", "hyperlink", "https://beacon.example/item", true)]));
+    let ct = content_types(&[
+        ("/word/document.xml", CT_DOCX),
+        ("/docProps/custom.xml", "application/vnd.openxmlformats-officedocument.custom-properties+xml"),
+        ("/customXml/item1.xml", "application/xml"),
+    ]);
+    o.set("[Content_Types].xml", ct);
+    let input = o.build();
+
+    let out = sanitize(&input, &ScanPolicy::default(), &SanitizeOptions::default()).unwrap();
+    assert_eq!(out.verification.verdict, Verdict::Clean, "{:#?}", out.verification.findings);
+    for gone in ["docProps/custom.xml", "docProps/_rels/custom.xml.rels", "customXml/item1.xml", "customXml/_rels/item1.xml.rels"] {
+        assert!(part(&out.bytes, gone).is_none(), "{gone} survived: {:?}", part_names(&out.bytes));
+    }
+    for gone in ["SECRET-CLIENT", "SECRET-CUSTOM-XML", "beacon.example", "customXml", "custom-properties"] {
+        assert!(!mentions(&out.bytes, gone), "{gone} survived somewhere in the copy");
+    }
+}
+
+#[test]
+fn a_part_reached_through_parent_segments_is_still_the_same_part() {
+    // "word/../docProps/custom.xml" names the same part as "docProps/custom.xml".
+    let mut o = docx();
+    o.set(
+        "_rels/.rels",
+        rels(&[
+            ("rId1", "officeDocument", "word/document.xml", false),
+            ("rId4", "custom-properties", "word/../docProps/custom.xml", false),
+        ]),
+    )
+    .set(
+        "docProps/custom.xml",
+        r#"<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"><property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="2" name="Client"/></Properties>"#,
+    );
+    match sanitize(&o.build(), &ScanPolicy::default(), &SanitizeOptions::default()) {
+        Ok(out) => {
+            assert!(part(&out.bytes, "docProps/custom.xml").is_none());
+            assert_ne!(out.verification.verdict, Verdict::Rejected);
+        }
+        // Refusing a package that spells a target this way is as good as cleaning it.
+        Err(SanitizeError::Rejected(_)) => {}
+        Err(e) => panic!("{e:?}"),
+    }
+}
