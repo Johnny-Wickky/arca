@@ -41,16 +41,10 @@ fn start_decisions_are_small_json() {
 }
 
 #[test]
-fn picking_packs_index_and_uses() {
-    assert_eq!(item_count(), 38);
-    let p = pick(0, 0, 0);
-    assert_eq!(p >> 8, 0);
-    assert!((p & 0xff) < 38);
-    let p = pick(0, 1, 1);
-    assert_eq!(p & 0xff, 0);
-    assert_eq!(p >> 8, 1); // item 0 quotes documents
-    assert_eq!(pick(6, 1, 1) >> 8, 3); // item 6 quotes both
-    // Negative counters are zero, a negative position is just a position.
-    assert_eq!(pick(0, -4, -4) >> 8, 0);
-    assert!((pick(-1, 5, 5) & 0xff) < 38);
+fn picking_gives_an_index_in_range() {
+    assert_eq!(item_count(), 30);
+    assert_eq!(pick(0), 0);
+    assert_eq!(pick(31), 1);
+    // A negative position is just a position.
+    assert!((0..30).contains(&pick(-1)));
 }

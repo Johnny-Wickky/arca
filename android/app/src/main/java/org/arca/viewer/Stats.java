@@ -13,10 +13,10 @@ import org.arca.viewer.core.StatsView;
 import java.util.TimeZone;
 
 /**
- * The local usage statistics of this device. What is counted is decided by the Rust core
- * ({@code arca_engine::stats}); this class gives it the day (the local calendar, the core has no
- * clock) and keeps the opaque blob in private storage through {@link Prefs}. Nothing about a
- * document is recorded and nothing is sent anywhere.
+ * The optional local counter ("Passport") of this device, OFF by default. What is counted is
+ * decided by the Rust core ({@code arca_engine::stats}); this class keeps its opaque blob of flat
+ * totals in private storage through {@link Prefs}. No date, time or history is recorded, nothing
+ * about a document is recorded and nothing is sent anywhere.
  */
 public final class Stats {
     private Stats() {}
@@ -40,72 +40,72 @@ public final class Stats {
     /** The blob functions of the native library. */
     private static final class NativeCodec implements StatsStore.Codec {
         @Override
-        public byte[] recordScan(byte[] blob, int day, int verdict, int trackers, int active) {
-            return Native.statsRecordScan(blob, day, verdict, trackers, active);
+        public byte[] recordScan(byte[] blob, int verdict, int trackers, int active) {
+            return Native.statsRecordScan(blob, verdict, trackers, active);
         }
 
         @Override
-        public byte[] recordEvent(byte[] blob, int day, int event) {
-            return Native.statsRecordEvent(blob, day, event);
+        public byte[] recordEvent(byte[] blob, int event) {
+            return Native.statsRecordEvent(blob, event);
         }
 
         @Override
-        public byte[] summary(byte[] blob, int today) {
-            return Native.statsSummary(blob, today);
+        public byte[] summary(byte[] blob) {
+            return Native.statsSummary(blob);
         }
 
         @Override
-        public byte[] foldLegacy(byte[] blob, byte[] passport, long documents, long threats, int today) {
-            return Native.statsFoldLegacy(blob, passport, documents, threats, today);
-        }
-
-        @Override
-        public byte[] passport(int lang, byte[] blob, int today) {
-            return Native.statsPassport(lang, blob, today);
+        public byte[] passport(int lang, byte[] blob, int firstUseDay, int today) {
+            return Native.statsPassport(lang, blob, firstUseDay, today);
         }
     }
 
-    /** Today's day number in the device's local calendar. */
-    public static int today() {
+    /** Today's day number in the device's local calendar (only for the "days with Arca" line of the passport). */
+    static int today() {
         long now = System.currentTimeMillis();
         return Fmt.epochDay(now, TimeZone.getDefault().getOffset(now));
     }
 
+    /** At start: deletes a counter blob that an older version left while the counter is off. */
+    public static void purgeIfOff(Context c) {
+        store(c).purgeIfOff();
+    }
+
     /** Counts a scanned document by its verdict and the engine's counts of findings. */
     public static void recordScan(Context c, Model.Report r) {
-        store(c).recordScan(today(), StatsView.verdictTag(r.verdict), r.trackers, r.active);
+        store(c).recordScan(StatsView.verdictTag(r.verdict), r.trackers, r.active);
     }
 
     /** Counts a sterile copy that was written. */
     public static void recordSterileCopy(Context c) {
-        store(c).recordEvent(today(), StatsStore.EVENT_STERILE_COPY);
+        store(c).recordEvent(StatsStore.EVENT_STERILE_COPY);
     }
 
     /** Counts a picture the reader opened. */
     public static void recordPicture(Context c) {
-        store(c).recordEvent(today(), StatsStore.EVENT_PICTURE_OPENED);
+        store(c).recordEvent(StatsStore.EVENT_PICTURE_OPENED);
     }
 
-    /** Week, month and all-time totals (empty when statistics are off). */
+    /** All-time totals (empty when the counter is off). */
     public static StatsView.Summary summary(Context c) {
-        return store(c).summary(today());
+        return store(c).summary();
     }
 
-    /** The Patron Passport JSON from the all-time totals, {@code null} when statistics are off. */
+    /** The Patron Passport JSON from the totals, {@code null} when the counter is off. */
     public static byte[] passportJson(Context c) {
-        return store(c).passportJson(Prefs.engineLang(c), today());
+        return store(c).passportJson(Prefs.engineLang(c), Prefs.installDay(c), today());
     }
 
     public static boolean enabled(Context c) {
         return store(c).enabled();
     }
 
-    /** Switches statistics on or off; off deletes everything that was counted. */
+    /** Switches the counter on or off; off deletes everything that was counted. */
     public static void setEnabled(Context c, boolean on) {
         store(c).setEnabled(on);
     }
 
-    /** Forgets everything that was counted. */
+    /** Instantly and irreversibly zeroes the counter. */
     public static void reset(Context c) {
         store(c).reset();
     }

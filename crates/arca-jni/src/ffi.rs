@@ -499,13 +499,12 @@ pub extern "system" fn Java_org_arca_viewer_Native_statsRecordScan(
     env: Env,
     _class: JObject,
     blob: JObject,
-    day: JInt,
     verdict: JInt,
     trackers: JInt,
     active: JInt,
 ) -> JObject {
     bytes_result(env, || {
-        Some(api::stats_record_scan(&optional_bytes(env, blob), day, verdict, trackers, active))
+        Some(api::stats_record_scan(&optional_bytes(env, blob), verdict, trackers, active))
     })
 }
 
@@ -514,10 +513,9 @@ pub extern "system" fn Java_org_arca_viewer_Native_statsRecordEvent(
     env: Env,
     _class: JObject,
     blob: JObject,
-    day: JInt,
     event: JInt,
 ) -> JObject {
-    bytes_result(env, || Some(api::stats_record_event(&optional_bytes(env, blob), day, event)))
+    bytes_result(env, || Some(api::stats_record_event(&optional_bytes(env, blob), event)))
 }
 
 #[unsafe(no_mangle)]
@@ -525,30 +523,8 @@ pub extern "system" fn Java_org_arca_viewer_Native_statsSummary(
     env: Env,
     _class: JObject,
     blob: JObject,
-    today: JInt,
 ) -> JObject {
-    bytes_result(env, || Some(api::stats_summary(&optional_bytes(env, blob), today)))
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_arca_viewer_Native_statsFoldLegacy(
-    env: Env,
-    _class: JObject,
-    blob: JObject,
-    passport: JObject,
-    documents: JLong,
-    threats: JLong,
-    today: JInt,
-) -> JObject {
-    bytes_result(env, || {
-        Some(api::stats_fold_legacy(
-            &optional_bytes(env, blob),
-            &optional_bytes(env, passport),
-            documents,
-            threats,
-            today,
-        ))
-    })
+    bytes_result(env, || Some(api::stats_summary(&optional_bytes(env, blob))))
 }
 
 #[unsafe(no_mangle)]
@@ -557,9 +533,12 @@ pub extern "system" fn Java_org_arca_viewer_Native_statsPassport(
     _class: JObject,
     lang: JInt,
     blob: JObject,
+    first_use_day: JInt,
     today: JInt,
 ) -> JObject {
-    bytes_result(env, || Some(api::stats_passport(lang, &optional_bytes(env, blob), today)))
+    bytes_result(env, || {
+        Some(api::stats_passport(lang, &optional_bytes(env, blob), first_use_day, today))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -618,10 +597,8 @@ pub extern "system" fn Java_org_arca_viewer_Native_reminderPick(
     _env: Env,
     _class: JObject,
     seq: JInt,
-    documents: JLong,
-    threats: JLong,
 ) -> JInt {
-    guard(0, || api::reminder_pick(seq, documents, threats))
+    guard(0, || api::reminder_pick(seq))
 }
 
 #[unsafe(no_mangle)]

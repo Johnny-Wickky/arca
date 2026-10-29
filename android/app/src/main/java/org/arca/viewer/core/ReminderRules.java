@@ -7,10 +7,9 @@ import java.util.Map;
 
 /**
  * Reads the answers of the Rust core's reminder rules ({@code Native.reminderOnFire},
- * {@code reminderOnStart}, {@code reminderPick}). When the reminder is due, whether it may be
- * shown, and which text is shown are decided in Rust, the same on every platform; this class only
- * decodes the answers. The Android side keeps the operating-system calls (the alarm, the
- * notification).
+ * {@code reminderOnStart}). When the reminder is due and whether it may be shown are decided in
+ * Rust, the same on every platform; this class only decodes the answers. Which text comes next is
+ * {@code Native.reminderPick}.
  */
 public final class ReminderRules {
     private ReminderRules() {}
@@ -50,31 +49,5 @@ public final class ReminderRules {
             return new Decision();
         }
         return d;
-    }
-
-    /** Counters a text quotes. */
-    public static final int USES_NOTHING = 0;
-    public static final int USES_DOCUMENTS = 1;
-    public static final int USES_THREATS = 2;
-    public static final int USES_BOTH = 3;
-
-    /** The text index of a packed pick ({@code index | uses << 8}). */
-    public static int index(int packed) {
-        return packed & 0xff;
-    }
-
-    /** The counters the text of a packed pick quotes. */
-    public static int uses(int packed) {
-        return (packed >> 8) & 3;
-    }
-
-    /** The format arguments for a text that {@code uses} the counters. */
-    public static Object[] arguments(int uses, long documents, long threats) {
-        switch (uses) {
-            case USES_DOCUMENTS: return new Object[] {Math.max(0L, documents)};
-            case USES_THREATS: return new Object[] {Math.max(0L, threats)};
-            case USES_BOTH: return new Object[] {Math.max(0L, documents), Math.max(0L, threats)};
-            default: return new Object[0];
-        }
     }
 }

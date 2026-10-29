@@ -162,23 +162,20 @@ public final class Native {
      */
     public static native byte[] extraSupport();
 
-    // ---- local statistics (the blob is opaque; day numbers are in the device's LOCAL calendar) ------
+    // ---- optional local counter (the blob is opaque and holds flat totals: no dates anywhere) ------
     /** The blob after one scan; {@code verdict} 0 clean, 1 hidden trackers, 2 active content, 3 rejected, 4 unverified. */
-    public static native byte[] statsRecordScan(byte[] blob, int day, int verdict, int trackers, int active);
+    public static native byte[] statsRecordScan(byte[] blob, int verdict, int trackers, int active);
 
     /** The blob after a sterile copy ({@code event} 1) or an opened picture (2). */
-    public static native byte[] statsRecordEvent(byte[] blob, int day, int event);
+    public static native byte[] statsRecordEvent(byte[] blob, int event);
 
-    /** Week, month and all-time totals as JSON. */
-    public static native byte[] statsSummary(byte[] blob, int today);
+    /** The all-time totals as JSON. */
+    public static native byte[] statsSummary(byte[] blob);
 
-    /** The blob with the older counters folded into the all-time total. */
-    public static native byte[] statsFoldLegacy(byte[] blob, byte[] passport, long documents, long threats, int today);
+    /** The Patron Passport JSON built from the statistics blob, the install day and today. */
+    public static native byte[] statsPassport(int lang, byte[] blob, int firstUseDay, int today);
 
-    /** The Patron Passport JSON built from the statistics blob. */
-    public static native byte[] statsPassport(int lang, byte[] blob, int today);
-
-    // ---- reminder rules (when, whether and which text; the platform only owns the alarm) -----------
+    // ---- reminder rules (when, whether and which text; the platform only owns the card) -----------
     /** The time of the next reminder, epoch milliseconds. */
     public static native long reminderPlan(long nowMs, int offsetMs, int rnd);
 
@@ -191,8 +188,8 @@ public final class Native {
     /** What to do with the stored time when the app starts (JSON {@code {"action":..,"at":..}}). */
     public static native byte[] reminderOnStart(long nextMs, long nowMs, int offsetMs, int enabled, int rnd);
 
-    /** The text to show: {@code index | uses << 8}. */
-    public static native int reminderPick(int seq, long documents, long threats);
+    /** The index of the reminder text for the stored position. */
+    public static native int reminderPick(int seq);
 
     /** The number of reminder texts the app must have. */
     public static native int reminderItemCount();

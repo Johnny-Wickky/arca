@@ -524,12 +524,13 @@ int32_t arca_passport_update(
 );
 
 /**
- * @brief Local statistics: the blob after one scanned document.
+ * @brief Optional local counter: the blob after one scanned document.
  *
- * The statistics are an opaque, versioned, CRC-protected blob that the app keeps in its private
- * storage (nothing else about documents is ever stored). Pass NULL / 0 for "no statistics yet";
- * a damaged or unknown blob is treated as empty. The core has no clock: `day` is the number of
- * days since 1970-01-01 in the device's LOCAL calendar.
+ * The counter is an opaque, versioned, CRC-protected blob of eight flat all-time totals that the
+ * app keeps in its private storage only while the person has switched the counter on (it is off
+ * by default). There is no date, time or per-day count anywhere in it, and nothing else about
+ * documents is ever stored. Pass NULL / 0 for "no totals yet"; a damaged or unknown blob
+ * (including one written by an older version that kept a daily history) is treated as empty.
  *
  * @param verdict Wire tag of the X-ray verdict: 0 Clean, 1 HiddenTrackers,
  *        2 ActiveContentNeutralized, 3 Rejected, 4 Unverified (anything else counts as 4).
@@ -541,7 +542,6 @@ int32_t arca_passport_update(
 int32_t arca_stats_record_scan(
     const uint8_t *blob,
     size_t blob_len,
-    int32_t day,
     int32_t verdict,
     int32_t trackers,
     int32_t active,
@@ -549,60 +549,42 @@ int32_t arca_stats_record_scan(
 );
 
 /**
- * @brief Local statistics: the blob after a sterile copy (`event` 1) or an opened picture (2).
+ * @brief Optional local counter: the blob after a sterile copy (`event` 1) or an opened picture (2).
  *
  * Any other event code returns the blob unchanged. See `arca_stats_record_scan`.
  */
 int32_t arca_stats_record_event(
     const uint8_t *blob,
     size_t blob_len,
-    int32_t day,
     int32_t event,
     ArcaBuffer *out
 );
 
 /**
- * @brief Local statistics: week, month and all-time totals as JSON.
+ * @brief Optional local counter: the flat all-time totals as JSON.
  *
- * `{"version":1,"empty":false,"firstDay":N,"days":N,"week":{...},"month":{...},"all":{...}}`
- * where every window holds opened, clean, trackers, active, threats, rejected, unverified,
- * sterile and pictures.
+ * `{"version":2,"empty":false,"all":{...}}` where the totals hold opened, clean, trackers,
+ * active, threats, rejected, unverified, sterile and pictures.
  *
- * @param today Today's day number in the device's local calendar.
  * @param[out] out Receives the JSON. Caller must free with `arca_buffer_free`.
  */
 int32_t arca_stats_summary(
     const uint8_t *blob,
     size_t blob_len,
-    int32_t today,
     ArcaBuffer *out
 );
 
 /**
- * @brief Local statistics: folds the counters of an older app version into the all-time total.
+ * @brief The Patron Passport JSON (as `arca_passport`) built from the counter blob.
  *
- * @param passport The old 36-byte patron record (NULL / 0 if none); when it is missing or
- *        damaged, `documents` and `threats` (the old plain counters) are used instead.
- * Call it once, then delete the old data. Nothing is added when everything is zero.
- */
-int32_t arca_stats_fold_legacy(
-    const uint8_t *blob,
-    size_t blob_len,
-    const uint8_t *passport,
-    size_t passport_len,
-    int64_t documents,
-    int64_t threats,
-    int32_t today,
-    ArcaBuffer *out
-);
-
-/**
- * @brief The Patron Passport JSON (as `arca_passport`) built from the statistics blob.
+ * @param first_use_day The local calendar day the app was installed (days since 1970-01-01).
+ * @param today Today's local calendar day.
  */
 int32_t arca_stats_passport(
     int32_t lang,
     const uint8_t *blob,
     size_t blob_len,
+    int32_t first_use_day,
     int32_t today,
     ArcaBuffer *out
 );
@@ -627,9 +609,10 @@ int64_t arca_reminder_refine(int64_t target_ms, int32_t offset_used_ms, int32_t 
  *
  * JSON `{"action":"show|quietHours|tooSoon|noPermission|disabled","at":<epoch ms>}`: post
  * only on "show"; in every case except "disabled" arm the next trigger for `at`.
- * Reminders are shown between 11:00 and 20:30 local time, at least six days apart.
+ * Reminders are shown between 11:00 and 20:30 local time, at least seven days apart.
  *
- * @param last_shown_ms When the previous reminder was shown (0 if never).
+ * @param last_shown_ms When the previous reminder was shown (0 if never); the host keeps only
+ *        the day, not a time of day.
  * @param enabled Non-zero if the person has reminders switched on.
  * @param can_post Non-zero if the system lets the app post notifications.
  */
@@ -661,11 +644,10 @@ int32_t arca_reminder_on_start(
 /**
  * @brief Reminder rules: which reminder text to show.
  *
- * Returns `index | (uses << 8)`; `uses` is 0 none, 1 documents, 2 threats, 3 both (which
- * counters the text quotes, as `%1$d` / `%2$d`). Texts that quote a zero counter are skipped.
- * Store `index + 1` as the next `seq`.
+ * Returns the index (0 .. `arca_reminder_item_count() - 1`) for the stored position `seq`; the
+ * texts go round in order and quote no counter. Store `index + 1` as the next `seq`.
  */
-int32_t arca_reminder_pick(int32_t seq, int64_t documents, int64_t threats);
+int32_t arca_reminder_pick(int32_t seq);
 
 /** @brief Reminder rules: the number of reminder texts the app must have. */
 int32_t arca_reminder_item_count(void);

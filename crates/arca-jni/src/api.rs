@@ -295,44 +295,26 @@ pub fn passport_update(record: &[u8], today: i32, trackers: i32, active: i32) ->
 
 /// The statistics blob after one scan (`verdict` is the wire tag of the X-ray verdict).
 #[must_use]
-pub fn stats_record_scan(
-    blob: &[u8],
-    day: i32,
-    verdict: i32,
-    trackers: i32,
-    active: i32,
-) -> Vec<u8> {
-    stats::blob_record_scan(blob, day, verdict, trackers, active)
+pub fn stats_record_scan(blob: &[u8], verdict: i32, trackers: i32, active: i32) -> Vec<u8> {
+    stats::blob_record_scan(blob, verdict, trackers, active)
 }
 
 /// The statistics blob after a sterile copy (`1`) or an opened picture (`2`).
 #[must_use]
-pub fn stats_record_event(blob: &[u8], day: i32, event: i32) -> Vec<u8> {
-    stats::blob_record_event(blob, day, event)
+pub fn stats_record_event(blob: &[u8], event: i32) -> Vec<u8> {
+    stats::blob_record_event(blob, event)
 }
 
-/// The week, month and all-time totals of the blob as JSON.
+/// The flat all-time totals of the blob as JSON.
 #[must_use]
-pub fn stats_summary(blob: &[u8], today: i32) -> Vec<u8> {
-    stats::blob_summary_json(blob, today)
+pub fn stats_summary(blob: &[u8]) -> Vec<u8> {
+    stats::blob_summary_json(blob)
 }
 
-/// The blob with the counters of the older app versions folded into the all-time total.
+/// The Patron Passport as JSON, built from the statistics blob, the install day and today.
 #[must_use]
-pub fn stats_fold_legacy(
-    blob: &[u8],
-    passport: &[u8],
-    documents: i64,
-    threats: i64,
-    today: i32,
-) -> Vec<u8> {
-    stats::blob_fold_legacy(blob, passport, documents, threats, today)
-}
-
-/// The Patron Passport as JSON, built from the statistics blob.
-#[must_use]
-pub fn stats_passport(lang: i32, blob: &[u8], today: i32) -> Vec<u8> {
-    stats::blob_passport_json(lang, blob, today)
+pub fn stats_passport(lang: i32, blob: &[u8], first_use_day: i32, today: i32) -> Vec<u8> {
+    stats::blob_passport_json(lang, blob, first_use_day, today)
 }
 
 /// The planned time of the next reminder (epoch milliseconds).
@@ -372,10 +354,10 @@ pub fn reminder_on_start(
     schedule::on_start_json(next_ms, now_ms, offset_ms, enabled, rnd)
 }
 
-/// The reminder text to show: `index | (uses << 8)`.
+/// The index of the reminder text to show for the stored position `seq`.
 #[must_use]
-pub fn reminder_pick(seq: i32, documents: i64, threats: i64) -> i32 {
-    schedule::pick(seq, documents, threats)
+pub fn reminder_pick(seq: i32) -> i32 {
+    schedule::pick(seq)
 }
 
 /// The number of reminder texts the app must have.

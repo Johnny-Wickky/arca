@@ -1,13 +1,15 @@
-//! Local usage statistics: what Arca did for the person, kept on the device and nowhere else.
+//! The optional local counter ("Passport"): flat all-time totals, kept on the device and nowhere
+//! else, off unless the person switches it on.
 //!
-//! The statistics are a bounded ring of daily buckets (the last [`KEEP_DAYS`] days) plus an
-//! all-time total. Nothing about a document is ever recorded: no name, no content, no hash, no
-//! time of day; only counters of what was done, per day. The core has no clock: the platform
-//! passes the day number (days since 1970-01-01 in its *local* calendar) with every call, and
-//! stores the opaque byte blob of [`Stats::encode`] in its private storage. The blob is
-//! versioned and protected by a CRC-32; [`Stats::decode`] accepts hostile bytes (any length,
-//! any content) without panicking or allocating more than a few tens of kilobytes, and answers
-//! with empty statistics for anything it does not understand.
+//! There is no history. Earlier versions kept a ring of 400 daily buckets, which on a seized
+//! phone would have been a timeline of the days the person opened documents; this module keeps
+//! one set of eight totals and nothing else: no dates, no timestamps, no per-day counts, no
+//! document name, content or hash. The core has no clock and is never given one. The platform
+//! stores the opaque byte blob of [`Stats::encode`] in its private storage and deletes it when the
+//! counter is switched off or reset. The blob is versioned and protected by a CRC-32;
+//! [`Stats::decode`] accepts hostile bytes (any length, any content) without panicking and
+//! answers with empty totals for anything it does not understand, a blob written by a version
+//! that still kept daily buckets included (its history is dropped, never read).
 //!
 //! # How a result is counted (the one place)
 //!
@@ -25,14 +27,6 @@
 //! (`active`) findings of medium severity or higher. A rejected file is not opened. A verdict
 //! code this build does not know counts as `Unverified` (never as clean). Sterile copies and
 //! opened pictures are separate events.
-//!
-//! # Days
-//!
-//! A day number outside the sane range (before 2019 or after the year 9999) is clamped into it.
-//! An event dated *before* the newest bucket (the clock was set back, or the person travelled
-//! west across the date line) is added to the newest bucket: buckets stay strictly ordered, and
-//! a window never loses it. Buckets older than [`KEEP_DAYS`] days are dropped when a newer day
-//! is recorded; the all-time total keeps counting.
 
 use arca_attribution::PatronStats;
 use arca_xray::Verdict;
@@ -40,17 +34,12 @@ use arca_xray::Verdict;
 use crate::json::JsonWriter;
 use crate::render;
 
-/// Number of days of daily buckets that are kept.
-pub const KEEP_DAYS: u32 = 400;
 /// Largest encoded blob; a bigger input is not a blob of this module.
-pub const MAX_BLOB_LEN: usize = 48 * 1024;
-/// 2019-01-01 as a day number: no day recorded by this app can be earlier.
-pub const MIN_DAY: u32 = 17_897;
-/// 9999-12-31 as a day number.
-pub const MAX_DAY: u32 = 2_932_896;
+pub const MAX_BLOB_LEN: usize = 1024;
 
 const MAGIC: [u8; 3] = *b"AST";
-const VERSION: u8 = 1;
+/// Version 2: the eight flat totals. (Version 1 held daily buckets and is not read any more.)
+const VERSION: u8 = 2;
 /// Number of counters in a [`Counts`].
 const FIELDS: usize = 8;
 /// What the JSON of a counter may reach: every consumer reads it as a signed 64-bit number.
@@ -118,15 +107,6 @@ impl Counts {
     #[must_use]
     pub fn is_zero(&self) -> bool {
         self.as_array().iter().all(|v| *v == 0)
-    }
-
-    fn raise_to(&mut self, other: &Self) {
-        let (a, b) = (self.as_array(), other.as_array());
-        let mut out = [0u64; FIELDS];
-        for ((slot, x), y) in out.iter_mut().zip(a).zip(b) {
-            *slot = x.max(y);
-        }
-        *self = Self::from_array(out);
     }
 }
 
@@ -222,50 +202,10 @@ impl Event {
     }
 }
 
-/// The period a total covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Window {
-    /// The last 7 days including today.
-    Week,
-    /// The last 30 days including today.
-    Month,
-    /// Everything since the statistics started.
-    All,
-}
-
-impl Window {
-    /// From a platform code: `7`, `30`; anything else is all time.
-    #[must_use]
-    pub const fn from_code(code: i32) -> Self {
-        match code {
-            7 => Self::Week,
-            30 => Self::Month,
-            _ => Self::All,
-        }
-    }
-
-    const fn days(self) -> Option<u32> {
-        match self {
-            Self::Week => Some(7),
-            Self::Month => Some(30),
-            Self::All => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Bucket {
-    day: u32,
-    counts: Counts,
-}
-
-/// The statistics.
+/// The totals.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Stats {
-    first_day: Option<u32>,
     all: Counts,
-    /// Strictly ascending by day, at most [`KEEP_DAYS`] entries.
-    days: Vec<Bucket>,
 }
 
 /// Why [`Stats::try_decode`] refused a blob.
@@ -284,7 +224,7 @@ pub enum DecodeError {
 }
 
 impl Stats {
-    /// Empty statistics.
+    /// Empty totals.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -295,109 +235,39 @@ impl Stats {
         *self = Self::default();
     }
 
-    /// `true` if nothing was ever recorded.
+    /// `true` if nothing was ever counted.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.all.is_zero() && self.days.is_empty()
+        self.all.is_zero()
     }
 
-    /// The day of the first recorded event, if any.
+    /// Counts `event`.
+    pub fn record(&mut self, event: Event) {
+        self.all.add(&event.counts());
+    }
+
+    /// The totals.
     #[must_use]
-    pub const fn first_day(&self) -> Option<u32> {
-        self.first_day
+    pub const fn totals(&self) -> Counts {
+        self.all
     }
 
-    /// Number of daily buckets held (at most [`KEEP_DAYS`]).
-    #[must_use]
-    pub fn bucket_count(&self) -> usize {
-        self.days.len()
-    }
-
-    /// Records `event` on `day` (days since 1970-01-01 in the platform's local calendar).
-    pub fn record(&mut self, day: u32, event: Event) {
-        self.add_counts(day, &event.counts());
-    }
-
-    fn add_counts(&mut self, day: u32, counts: &Counts) {
-        let day = day.clamp(MIN_DAY, MAX_DAY);
-        self.all.add(counts);
-        self.first_day = Some(self.first_day.map_or(day, |f| f.min(day)));
-        match self.days.last_mut() {
-            Some(last) if last.day >= day => last.counts.add(counts),
-            _ => {
-                self.days.push(Bucket { day, counts: *counts });
-                self.prune(day);
-            }
-        }
-    }
-
-    /// Drops buckets that are [`KEEP_DAYS`] or more days older than `newest`, and the excess.
-    fn prune(&mut self, newest: u32) {
-        let old =
-            self.days.iter().take_while(|b| newest.saturating_sub(b.day) >= KEEP_DAYS).count();
-        let excess = self.days.len().saturating_sub(usize::try_from(KEEP_DAYS).unwrap_or(400));
-        let drop = old.max(excess).min(self.days.len());
-        self.days.drain(..drop);
-    }
-
-    /// Adds counters carried over from an older version of the app to the all-time total only
-    /// (they have no days), and moves the first day back to `first_day` if it is earlier.
-    pub fn fold_legacy(&mut self, counts: &Counts, first_day: Option<u32>) {
-        self.all.add(counts);
-        if let Some(d) = first_day {
-            let d = d.clamp(MIN_DAY, MAX_DAY);
-            self.first_day = Some(self.first_day.map_or(d, |f| f.min(d)));
-        }
-    }
-
-    /// The totals of `window` as seen on day `today`. A bucket dated after `today` (the clock
-    /// went back) belongs to every window.
-    #[must_use]
-    pub fn totals(&self, window: Window, today: u32) -> Counts {
-        let Some(span) = window.days() else { return self.all };
-        let mut sum = Counts::default();
-        for b in &self.days {
-            if today.saturating_sub(b.day) < span {
-                sum.add(&b.counts);
-            }
-        }
-        sum
-    }
-
-    /// Days of use up to and including `today` (at least 1).
-    #[must_use]
-    pub fn days_in_use(&self, today: u32) -> u32 {
-        self.first_day.map_or(1, |f| today.saturating_sub(f).saturating_add(1))
-    }
-
-    /// The compact, versioned, CRC-protected blob: `"AST"`, version, first day + 1 (0 = none),
-    /// the eight all-time counters, the number of buckets, then per bucket the day (the first
-    /// absolute, the others as the difference to the previous) and its eight counters (all
-    /// LEB128 varints), then the CRC-32 of everything before it (little-endian).
+    /// The compact, versioned, CRC-protected blob: `"AST"`, version, the eight totals (LEB128
+    /// varints), then the CRC-32 of everything before it (little-endian).
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(32 + self.days.len() * 12);
+        let mut out = Vec::with_capacity(32);
         out.extend_from_slice(&MAGIC);
         out.push(VERSION);
-        put_varint(&mut out, self.first_day.map_or(0, |d| u64::from(d) + 1));
         for v in self.all.as_array() {
             put_varint(&mut out, v);
-        }
-        put_varint(&mut out, u64::try_from(self.days.len()).unwrap_or(0));
-        let mut prev = 0u32;
-        for b in &self.days {
-            put_varint(&mut out, u64::from(b.day.saturating_sub(prev)));
-            prev = b.day;
-            for v in b.counts.as_array() {
-                put_varint(&mut out, v);
-            }
         }
         let crc = arca_digest::crc32(&out);
         out.extend_from_slice(&crc.to_le_bytes());
         out
     }
 
-    /// Decodes [`Self::encode`] output; empty statistics for anything else.
+    /// Decodes [`Self::encode`] output; empty totals for anything else.
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Self {
         Self::try_decode(bytes).unwrap_or_default()
@@ -407,7 +277,7 @@ impl Stats {
     ///
     /// # Errors
     /// [`DecodeError`] for a blob that is too large, of another kind or version, damaged, or
-    /// not well formed. Memory use is bounded by [`MAX_BLOB_LEN`] and [`KEEP_DAYS`].
+    /// not well formed. Memory use is bounded by [`MAX_BLOB_LEN`].
     pub fn try_decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         if bytes.len() > MAX_BLOB_LEN {
             return Err(DecodeError::TooLarge);
@@ -429,59 +299,24 @@ impl Stats {
             return Err(DecodeError::BadChecksum);
         }
         let mut r = Reader { data: body, pos: 4 };
-        let bad = DecodeError::Malformed;
-        let first = r.varint().ok_or(bad)?;
-        let first_day = match first {
-            0 => None,
-            n => Some(u32::try_from(n - 1).map_err(|_| bad)?),
-        };
-        let all = r.counts().ok_or(bad)?;
-        let n = r.varint().ok_or(bad)?;
-        if n > u64::from(KEEP_DAYS) {
-            return Err(bad);
-        }
-        let mut days: Vec<Bucket> = Vec::new();
-        let mut prev = 0u32;
-        for i in 0..n {
-            let delta = u32::try_from(r.varint().ok_or(bad)?).map_err(|_| bad)?;
-            // Days are strictly ascending (the first may be anything).
-            if i > 0 && delta == 0 {
-                return Err(bad);
-            }
-            prev = prev.checked_add(delta).ok_or(bad)?;
-            days.push(Bucket { day: prev, counts: r.counts().ok_or(bad)? });
-        }
+        let all = r.counts().ok_or(DecodeError::Malformed)?;
         if r.pos != body.len() {
-            return Err(bad);
+            return Err(DecodeError::Malformed);
         }
-        let mut stats = Self { first_day, all, days };
-        // The all-time total can never be smaller than what the buckets add up to.
-        let mut sum = Counts::default();
-        for b in &stats.days {
-            sum.add(&b.counts);
-        }
-        stats.all.raise_to(&sum);
-        Ok(stats)
+        Ok(Self { all })
     }
 
-    /// The summary for the platforms as JSON:
-    /// `{"empty":bool,"firstDay":N,"days":N,"week":{…},"month":{…},"all":{…}}` where each
-    /// window holds `opened, clean, trackers, active, threats, rejected, unverified, sterile,
-    /// pictures` (numbers capped at 2^63 - 1). `firstDay` is `0` when nothing was recorded.
+    /// The summary for the platforms as JSON: `{"version":2,"empty":bool,"all":{...}}` where the
+    /// totals hold `opened, clean, trackers, active, threats, rejected, unverified, sterile,
+    /// pictures` (numbers capped at 2^63 - 1).
     #[must_use]
-    pub fn summary_json(&self, today: u32) -> Vec<u8> {
+    pub fn summary_json(&self) -> Vec<u8> {
         let mut w = JsonWriter::new();
         w.begin_object();
         w.field_u64("version", u64::from(VERSION));
         w.field_bool("empty", self.is_empty());
-        w.field_u64("firstDay", u64::from(self.first_day.unwrap_or(0)));
-        w.field_u64("days", u64::from(self.days_in_use(today)));
-        for (key, window) in
-            [("week", Window::Week), ("month", Window::Month), ("all", Window::All)]
-        {
-            w.key(key);
-            counts_json(&mut w, &self.totals(window, today));
-        }
+        w.key("all");
+        counts_json(&mut w, &self.all);
         w.end_object();
         w.finish()
     }
@@ -561,43 +396,30 @@ impl Reader<'_> {
 // Negative or out-of-range integers are clamped, nothing panics.
 // ---------------------------------------------------------------------------------------------
 
-fn day_of(day: i32) -> u32 {
-    u32::try_from(day).unwrap_or(0)
-}
-
 fn count_of(v: i32) -> u32 {
     u32::try_from(v).unwrap_or(0)
 }
 
 /// The blob after one scan (`verdict` as in [`verdict_from_code`]).
 #[must_use]
-pub fn blob_record_scan(
-    blob: &[u8],
-    day: i32,
-    verdict: i32,
-    trackers: i32,
-    active: i32,
-) -> Vec<u8> {
+pub fn blob_record_scan(blob: &[u8], verdict: i32, trackers: i32, active: i32) -> Vec<u8> {
     let mut s = Stats::decode(blob);
-    s.record(
-        day_of(day),
-        Event::Scan {
-            verdict: verdict_from_code(verdict),
-            trackers: count_of(trackers),
-            active: count_of(active),
-        },
-    );
+    s.record(Event::Scan {
+        verdict: verdict_from_code(verdict),
+        trackers: count_of(trackers),
+        active: count_of(active),
+    });
     s.encode()
 }
 
 /// The blob after a sterile copy ([`EVENT_STERILE_COPY`]) or an opened picture
 /// ([`EVENT_PICTURE_OPENED`]); any other event code changes nothing.
 #[must_use]
-pub fn blob_record_event(blob: &[u8], day: i32, event: i32) -> Vec<u8> {
+pub fn blob_record_event(blob: &[u8], event: i32) -> Vec<u8> {
     let mut s = Stats::decode(blob);
     match event {
-        EVENT_STERILE_COPY => s.record(day_of(day), Event::SterileCopy),
-        EVENT_PICTURE_OPENED => s.record(day_of(day), Event::PictureOpened),
+        EVENT_STERILE_COPY => s.record(Event::SterileCopy),
+        EVENT_PICTURE_OPENED => s.record(Event::PictureOpened),
         _ => {}
     }
     s.encode()
@@ -605,58 +427,18 @@ pub fn blob_record_event(blob: &[u8], day: i32, event: i32) -> Vec<u8> {
 
 /// The summary JSON of the blob (see [`Stats::summary_json`]).
 #[must_use]
-pub fn blob_summary_json(blob: &[u8], today: i32) -> Vec<u8> {
-    Stats::decode(blob).summary_json(day_of(today))
+pub fn blob_summary_json(blob: &[u8]) -> Vec<u8> {
+    Stats::decode(blob).summary_json()
 }
 
-/// The blob with the counters of the older versions folded into the all-time total.
-///
-/// `passport` is the old 36-byte record (documents, trackers, active and the first day); when it
-/// is missing or damaged, `documents` and `threats` (the old two plain counters) are used
-/// instead, the threats under "active content" because the old counter did not tell the two
-/// apart. Call it once and then delete the old data.
+/// The Patron Passport JSON (see `render::passport_json`) built from the totals. The host passes
+/// the day the app was installed (`first_use_day`) and today; neither is stored here.
 #[must_use]
-pub fn blob_fold_legacy(
-    blob: &[u8],
-    passport: &[u8],
-    documents: i64,
-    threats: i64,
-    today: i32,
-) -> Vec<u8> {
-    let mut s = Stats::decode(blob);
-    let (counts, first) = match PatronStats::decode(passport) {
-        Ok(p) => (
-            Counts {
-                opened: p.documents_opened,
-                trackers: p.trackers_blocked,
-                active: p.active_content_neutralized,
-                ..Counts::default()
-            },
-            Some(p.first_use_day),
-        ),
-        Err(_) => (
-            Counts {
-                opened: u64::try_from(documents).unwrap_or(0),
-                active: u64::try_from(threats).unwrap_or(0),
-                ..Counts::default()
-            },
-            Some(day_of(today)),
-        ),
-    };
-    if !counts.is_zero() {
-        s.fold_legacy(&counts, first);
-    }
-    s.encode()
-}
-
-/// The Patron Passport JSON (see `render::passport_json`) built from the all-time totals.
-#[must_use]
-pub fn blob_passport_json(lang: i32, blob: &[u8], today: i32) -> Vec<u8> {
-    let s = Stats::decode(blob);
-    let today = day_of(today);
-    let all = s.totals(Window::All, today);
+pub fn blob_passport_json(lang: i32, blob: &[u8], first_use_day: i32, today: i32) -> Vec<u8> {
+    let all = Stats::decode(blob).totals();
+    let today = u32::try_from(today).unwrap_or(0);
     let record = PatronStats {
-        first_use_day: s.first_day.unwrap_or(today),
+        first_use_day: u32::try_from(first_use_day).unwrap_or(today),
         documents_opened: all.opened,
         trackers_blocked: all.trackers,
         active_content_neutralized: all.active,
