@@ -328,6 +328,63 @@ fn relationships_and_indexes_are_listed() {
 }
 
 #[test]
+fn the_relationship_diagram_draws_a_line_with_both_ends_marked() {
+    use crate::page::Prim;
+    let data = query_db(&[], |tdb| {
+        tdb.add_table(
+            "Orders",
+            0,
+            &[ColSpec::new("OrderID", t::LONG), ColSpec::new("Customer", t::LONG)],
+            &[],
+            &[IndexSpec {
+                name: "PrimaryKey".into(),
+                columns: vec![(0, true)],
+                kind: 1,
+                unique: true,
+            }],
+        );
+        let cols = [
+            ColSpec::new("ccolumn", t::LONG),
+            ColSpec::new("grbit", t::LONG),
+            ColSpec::new("icolumn", t::LONG),
+            ColSpec::new("szColumn", t::TEXT),
+            ColSpec::new("szObject", t::TEXT),
+            ColSpec::new("szReferencedColumn", t::TEXT),
+            ColSpec::new("szReferencedObject", t::TEXT),
+            ColSpec::new("szRelationship", t::TEXT),
+        ];
+        let row = vec![
+            int(1),
+            int(0),
+            int(0),
+            text("Customer"),
+            text("Orders"),
+            text("id"),
+            text("Customers"),
+            text("CustomersOrders"),
+        ];
+        tdb.add_table("MSysRelationships", SYSTEM, &cols, &[row], &[]);
+    });
+    let page = crate::render_page(&data, 0, &crate::PreviewPolicy::default()).unwrap();
+    let texts: Vec<&str> = page
+        .prims
+        .iter()
+        .filter_map(|p| if let Prim::Text { text, .. } = p { Some(text.as_str()) } else { None })
+        .collect();
+    for wanted in ["Customers", "Orders", "OrderID", "Customer", "id", "PK", "FK", "∞", "1"] {
+        assert!(texts.contains(&wanted), "{wanted} missing from {texts:?}");
+    }
+    assert!(texts.iter().any(|t| t.starts_with("Relationships: 2 tables, 1 relationships")));
+    // One line (a path without a fill) joins the two boxes.
+    let lines = page
+        .prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Path { fill: 0, stroke, .. } if *stroke != 0))
+        .count();
+    assert_eq!(lines, 1);
+}
+
+#[test]
 fn linked_tables_are_listed_without_their_passwords() {
     let mut tdb = TestDb::new(1);
     tdb.add_link(0x4001, 4, "dbo_Sales", "ODBC;DSN=sales;UID=bob;PWD=hunter2;DATABASE=x", "");

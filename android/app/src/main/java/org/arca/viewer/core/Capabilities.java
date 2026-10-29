@@ -35,7 +35,7 @@ public final class Capabilities {
         "Doc", "Xls", "Ppt", "Pdf", "Msg",
         // Binary Visio: the text of the shapes of each page
         "Vsd",
-        // Access: the tables, as grids; queries, forms, reports, macros and modules are only listed
+        // Access: the tables, schema, indexes and relationships as grids (the page view draws the relationship diagram); saved queries as rebuilt SQL; forms, reports, macros and modules are only listed
         "AccessJet3", "AccessJet4", "AccessAce",
         // Pictures: decoded in the sandbox, reduced, without their metadata
         "Png", "Jpeg", "Gif", "Bmp",
@@ -45,12 +45,13 @@ public final class Capabilities {
     /** Visio formats: drawn flat, as the specification describes the shapes (there is no 3-D scene). */
     private static final Set<String> VISIO = set("Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd");
 
-    /** Formats that can be drawn page by page: PDF, slides, sheets and Visio drawings. */
+    /** Formats that can be drawn page by page: PDF, slides, sheets, Visio drawings and the relationship diagram of Access databases. */
     private static final Set<String> RENDER = set(
         "Pdf",
         "Pptx", "Pptm", "Ppsx", "Ppsm", "Potx", "Potm", "Odp",
         "Xlsx", "Xlsm", "Xltx", "Xltm", "Ods", "Xls",
-        "Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd");
+        "Vsdx", "Vsdm", "VisioTemplateOrStencil", "Vsd",
+        "AccessJet3", "AccessJet4", "AccessAce");
 
     private static final Set<String> SANITIZE = set(
         "Docx", "Docm", "Dotx", "Dotm",

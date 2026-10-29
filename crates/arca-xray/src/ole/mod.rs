@@ -777,22 +777,26 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Res
         _ => FileFormat::AccessAce,
     };
     ctx.identified(fmt);
-    // Pass 1, independent of whether the structure parses: a byte search for the names that
-    // matter, in ASCII (which is also how Jet 4 "compressed Unicode" stores them) and in
-    // UTF-16LE. A damaged or hostile file can hide its catalog, never its bytes.
-    // Access compares object names without regard to case, so the search does too.
-    let seen = |name: &str| {
-        memfind_ci(data, name.as_bytes()).is_some()
-            || memfind_ci(data, &utf16le_bytes(name)).is_some()
-    };
-    let mut autoexec = seen("autoexec");
-    let vba_project = seen("vbaproject");
-    // The table that holds the saved forms, reports, macros and modules of an ACCDB; its
-    // presence is how a stripped catalog still betrays that objects exist.
-    let access_storage = seen("msysaccessstorage");
-    // Pass 2: the catalog. Anything short of a complete, successful read is reported as a
-    // coverage gap, so the file can never come out Clean on the strength of a failed parse.
+    // The system catalog (MSysObjects) is what Access itself consults: a macro, a module and the
+    // table of stored objects (MSysAccessStorage) exist if and only if the catalog lists them.
+    // When the catalog was read completely it alone decides, so a harmless database whose rows
+    // merely contain these words stays clean. Anything short of a complete, successful read is
+    // reported as a coverage gap, so the file can never come out Clean on the strength of a
+    // failed parse, and then the names are searched for as bytes instead.
+    let mut autoexec = false;
     let mut vba_object = false;
+    // The table that holds the saved forms, reports, macros and modules of an ACCDB.
+    let mut access_storage = false;
+    let mut catalog_complete = false;
+    // Databases are written in whole pages: a file that ends inside one was cut off.
+    let page = if matches!(fmt, FileFormat::AccessJet3) { 2048 } else { 4096 };
+    if data.len() % page != 0 {
+        ctx.report.add(
+            ThreatKind::MalformedContainer,
+            location,
+            "the database file ends inside a page (it is truncated)",
+        );
+    }
     match arca_container::jet::Db::open(data) {
         Ok(db) => match db.catalog_checked() {
             Some((objects, stats)) => {
@@ -802,8 +806,17 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Res
                         location,
                         "the object catalog of the database was only partly read",
                     );
+                } else {
+                    catalog_complete = true;
                 }
                 for o in &objects {
+                    if o.name.eq_ignore_ascii_case("MSysAccessStorage") {
+                        access_storage = true;
+                    }
+                    // A project of the VBA editor is listed under its own name.
+                    if o.name.eq_ignore_ascii_case("VBAProject") {
+                        vba_object = true;
+                    }
                     // A macro is a catalog object of kind -32766; Access runs the one named
                     // AutoExec when the database opens (the name is case-insensitive).
                     if o.kind == -32766 && o.name.eq_ignore_ascii_case("AutoExec") {
@@ -852,6 +865,18 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Res
             );
         }
     }
+    if !catalog_complete {
+        // A damaged or hostile file can hide its catalog, never its bytes: search for the names
+        // in ASCII (which is also how Jet 4 "compressed Unicode" stores them) and in UTF-16LE.
+        // Access compares object names without regard to case, so the search does too.
+        let seen = |name: &str| {
+            memfind_ci(data, name.as_bytes()).is_some()
+                || memfind_ci(data, &utf16le_bytes(name)).is_some()
+        };
+        autoexec |= seen("autoexec");
+        vba_object |= seen("vbaproject");
+        access_storage |= seen("msysaccessstorage");
+    }
     if autoexec {
         ctx.report.add_with(
             ThreatKind::MacroAutoExec,
@@ -860,7 +885,7 @@ pub(crate) fn scan_access(ctx: &mut Ctx<'_>, data: &[u8], location: &str) -> Res
             "database contains an object named AutoExec (Access runs this macro on open; Arca never does)",
         );
     }
-    if vba_project || vba_object {
+    if vba_object {
         ctx.report.add(
             ThreatKind::VbaMacros,
             location,

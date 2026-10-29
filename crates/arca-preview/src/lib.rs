@@ -231,6 +231,7 @@ pub fn render_page(
     }
     match arca_xray::format::sniff(data) {
         arca_xray::format::Magic::Pdf => pdf::render(data, index, policy),
+        arca_xray::format::Magic::Jet(_) => access::render_er(data, index, policy),
         arca_xray::format::Magic::Zip => match slide_draw::render_slide(data, index, policy) {
             // Not a presentation: a workbook or a Visio drawing is drawn by its own module.
             Err(PreviewError::Unsupported(

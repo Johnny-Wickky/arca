@@ -45,14 +45,33 @@ fn real_databases_are_read_completely() {
 }
 
 #[test]
-fn a_planted_autoexec_name_is_found_by_the_byte_search() {
-    let mut data = MDB.to_vec();
-    data.extend_from_slice(b"AutoExec");
-    let r = scan_default(&data);
-    assert!(r.has(ThreatKind::MacroAutoExec), "{:#?}", r.findings);
-    let mut wide = MDB.to_vec();
-    wide.extend("AutoExec".encode_utf16().flat_map(u16::to_le_bytes));
-    assert!(scan_default(&wide).has(ThreatKind::MacroAutoExec));
+fn words_outside_a_readable_catalog_are_not_a_finding() {
+    // The catalog lists no macro and no module, so Access would run nothing; the words are data.
+    for base in [MDB, ACCDB] {
+        let mut data = base.to_vec();
+        data.extend_from_slice(b"AutoExec VBAProject MSysAccessStorage");
+        data.extend("AutoExec VBAProject".encode_utf16().flat_map(u16::to_le_bytes));
+        let r = scan_default(&data);
+        for not in [ThreatKind::MacroAutoExec, ThreatKind::VbaMacros] {
+            assert!(!r.has(not), "unexpected {not:?}: {:#?}", r.findings);
+        }
+    }
+}
+
+#[test]
+fn a_planted_autoexec_name_is_found_when_the_catalog_cannot_be_read() {
+    for base in [MDB, ACCDB] {
+        let mut data = base.to_vec();
+        // Page 2 holds the definition of the system catalog: without it the byte search decides.
+        data[2 * PAGE..3 * PAGE].fill(0);
+        let mut narrow = data.clone();
+        narrow.extend_from_slice(b"AutoExec");
+        let r = scan_default(&narrow);
+        assert!(r.has(ThreatKind::MacroAutoExec), "{:#?}", r.findings);
+        let mut wide = data;
+        wide.extend("AutoExec".encode_utf16().flat_map(u16::to_le_bytes));
+        assert!(scan_default(&wide).has(ThreatKind::MacroAutoExec));
+    }
 }
 
 #[test]

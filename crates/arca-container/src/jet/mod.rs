@@ -19,8 +19,10 @@ use std::cell::Cell;
 
 mod complex;
 mod props;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod testdb;
+#[cfg(feature = "test-support")]
+pub use testdb::database_with_objects;
 #[cfg(test)]
 mod values_tests;
 
@@ -311,6 +313,12 @@ impl Column {
     #[must_use]
     pub fn is_hidden(&self) -> bool {
         self.flags & FLAG_HIDDEN != 0
+    }
+
+    /// Whether the column holds a hyperlink (a memo or text with the hyperlink flag).
+    #[must_use]
+    pub fn is_hyperlink(&self) -> bool {
+        self.flags & FLAG_HYPERLINK != 0
     }
 
     /// Whether the column is an automatic number.
@@ -780,6 +788,23 @@ impl<'a> Db<'a> {
             out.push(Index { name, columns, kind, unique: *unique });
         }
         Some(out)
+    }
+
+    /// The declared size of a column for display: bytes for the fixed-size types, characters for
+    /// text, bytes for binary data; `None` for the types that have no declared size.
+    #[must_use]
+    pub fn column_size(&self, c: &Column) -> Option<u32> {
+        match c.ty {
+            ty::BOOL | ty::BYTE => Some(1),
+            ty::INT => Some(2),
+            ty::LONG | ty::FLOAT => Some(4),
+            ty::MONEY | ty::DOUBLE | ty::DATE | ty::BIGINT => Some(8),
+            ty::GUID => Some(16),
+            ty::BINARY => Some(u32::from(c.length)),
+            ty::TEXT if self.lay.jet3 => Some(u32::from(c.length)),
+            ty::TEXT => Some(u32::from(c.length) / 2),
+            _ => None,
+        }
     }
 
     /// The objects of the database (tables, queries, forms, ...).

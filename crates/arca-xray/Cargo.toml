@@ -18,5 +18,8 @@ arca-image.workspace = true
 miniz_oxide.workspace = true
 quick-xml.workspace = true
 
+[dev-dependencies]
+arca-container = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true
