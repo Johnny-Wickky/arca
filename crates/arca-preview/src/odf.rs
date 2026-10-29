@@ -2034,6 +2034,39 @@ mod tests {
     }
 
     #[test]
+    fn slide_text_is_read_from_shapes_groups_and_tables() {
+        let body = r#"<draw:page draw:name="page1">
+              <draw:g><draw:g><draw:custom-shape><text:p>Deep shape</text:p></draw:custom-shape></draw:g>
+                <draw:frame><draw:text-box><text:p>Grouped box</text:p></draw:text-box></draw:frame></draw:g>
+              <draw:frame><table:table table:name="t"><table:table-row><table:table-cell><text:p>Ячейка один</text:p></table:table-cell><table:table-cell><text:p>Cell two</text:p></table:table-cell></table:table-row></table:table></draw:frame>
+              <draw:custom-shape><draw:enhanced-geometry/><text:p>Shape text</text:p></draw:custom-shape>
+            </draw:page>"#;
+        let p = ok(&odp("", body, &[]));
+        let s = p.sections.first().expect("slide");
+        let mut all = String::new();
+        for para in paragraphs(s) {
+            all.push_str(&para.text());
+            all.push('\n');
+        }
+        for block in &s.blocks {
+            if let Block::Table(t) = block {
+                for row in &t.rows {
+                    for cell in &row.cells {
+                        for para in &cell.paras {
+                            all.push_str(&para.text());
+                            all.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+        for wanted in ["Deep shape", "Grouped box", "Ячейка один", "Cell two", "Shape text"]
+        {
+            assert!(all.contains(wanted), "{wanted} missing from {all:?}");
+        }
+    }
+
+    #[test]
     fn headers_and_footers_of_text_documents() {
         let styles = format!(
             r#"<office:document-styles {NS}><office:master-styles><style:master-page style:name="Standard"><style:header><text:p>Company<text:s/>Confidential</text:p></style:header><style:header-left><text:p>Company Confidential</text:p></style:header-left><style:footer><text:p>Page <text:page-number>1</text:page-number></text:p></style:footer></style:master-page></office:master-styles></office:document-styles>"#

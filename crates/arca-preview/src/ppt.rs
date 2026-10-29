@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use arca_container::bytes::{slice, u16_le, u32_le};
 use arca_container::cfb::CompoundFile;
+use arca_container::text::{CodePage, decode_codepage};
 
 use crate::PreviewError;
 use crate::model::{
@@ -356,6 +357,69 @@ fn parse_cf(data: &[u8], mut pos: usize, text_units: usize) -> Vec<CfRun> {
     out
 }
 
+const RT_ENVIRONMENT: u16 = 0x03F2;
+const RT_FONT_COLLECTION: u16 = 0x07D5;
+const RT_FONT_ENTITY: u16 = 0x0FB7;
+
+thread_local! {
+    /// The Windows code page of the single-byte text (`TextBytesAtom`) of the presentation being
+    /// read; set by [`extract`] from the fonts of the document.
+    static BYTE_TEXT_PAGE: std::cell::Cell<u16> = const { std::cell::Cell::new(1252) };
+}
+
+/// The Windows code page for a `LOGFONT` character set, if it names one that text is stored in.
+fn code_page_of_charset(charset: u8) -> Option<u16> {
+    Some(match charset {
+        0 => 1252,
+        128 => 932,
+        129 => 949,
+        134 => 936,
+        136 => 950,
+        161 => 1253,
+        162 => 1254,
+        163 => 1258,
+        177 => 1255,
+        178 => 1256,
+        186 => 1257,
+        204 => 1251,
+        222 => 874,
+        238 => 1250,
+        _ => return None,
+    })
+}
+
+/// The code page of the single-byte text of a presentation: the character set of the first font
+/// the document lists that is not plain Western (`FontEntityAtom`, in the font collection of the
+/// environment), otherwise Windows-1252. A text atom of one-byte characters carries no code page
+/// of its own; reading it as Latin-1 turned every Cyrillic or Central European deck to noise.
+fn document_code_page(doc: &Rec<'_>) -> u16 {
+    let mut page = 1252;
+    for env in doc.children().take(MAX_RECORDS).filter(|r| r.typ == RT_ENVIRONMENT) {
+        for fonts in env.children().take(MAX_RECORDS).filter(|r| r.typ == RT_FONT_COLLECTION) {
+            for font in fonts.children().take(MAX_RECORDS).filter(|r| r.typ == RT_FONT_ENTITY) {
+                // 32 UTF-16 units of face name, then the `lfCharSet` byte.
+                let found = font.data.get(64).copied().and_then(code_page_of_charset);
+                if let Some(p) = found
+                    && p != 1252
+                {
+                    return p;
+                }
+            }
+        }
+    }
+    page
+}
+
+/// The UTF-16 units of one-byte text, decoded with the code page of the presentation. One byte is
+/// one unit, so the character runs of the text keep their positions.
+fn byte_text_units(data: &[u8]) -> Vec<u16> {
+    let cp = CodePage::from_id(BYTE_TEXT_PAGE.with(std::cell::Cell::get));
+    decode_codepage(data.get(..MAX_UNITS).unwrap_or(data), cp)
+        .chars()
+        .map(|c| u16::try_from(u32::from(c)).unwrap_or(0xFFFD))
+        .collect()
+}
+
 /// Collects the text atoms of a text box, or of one entry of a text list.
 fn read_items<'a>(recs: impl Iterator<Item = Rec<'a>>) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
@@ -383,8 +447,7 @@ fn read_items<'a>(recs: impl Iterator<Item = Rec<'a>>) -> Vec<Item> {
                 }));
             }
             RT_TEXT_BYTES => {
-                let units: Vec<u16> =
-                    r.data.iter().take(MAX_UNITS).map(|&b| u16::from(b)).collect();
+                let units = byte_text_units(r.data);
                 items.push(Item::Text(TextItem {
                     ty: ty.take().unwrap_or(4),
                     units,
@@ -1272,6 +1335,7 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
             (Recs { buf: &stream, pos: 0 }.take(MAX_RECORDS).find(|r| r.typ == RT_DOCUMENT), None)
         }
     };
+    BYTE_TEXT_PAGE.with(|p| p.set(doc_rec.as_ref().map_or(1252, document_code_page)));
     let info = doc_rec.as_ref().map(read_document).unwrap_or_default();
 
     let mut plans = match edits.as_ref() {
@@ -2127,6 +2191,44 @@ mod tests {
             "{:?}",
             p.notices
         );
+    }
+
+    fn fonts_of(charset: u8) -> Vec<u8> {
+        let mut face = vec![0u8; 68];
+        if let Some(b) = face.get_mut(64) {
+            *b = charset;
+        }
+        container(
+            0,
+            RT_ENVIRONMENT,
+            &[container(0, RT_FONT_COLLECTION, &[rec(0, 0, RT_FONT_ENTITY, &face)])],
+        )
+    }
+
+    fn deck_with_one_byte_text(fonts: Option<Vec<u8>>, text_bytes: &[u8]) -> Preview {
+        let mut d = Deck::new();
+        let s1 = d.put(&slide(0, false, vec![shape(vec![header(0), bytes(text_bytes)])]));
+        let mut kids = Vec::new();
+        kids.extend(fonts);
+        kids.push(text_list(0, vec![(2, 10, vec![])]));
+        let doc = d.put(&container(0, RT_DOCUMENT, &kids));
+        d.commit(1, &[(1, doc), (2, s1)], None);
+        let cu = current_user(TOKEN_PLAIN, d.last_edit);
+        ok(&file(d.out, Some(cu)))
+    }
+
+    #[test]
+    fn one_byte_text_follows_the_character_set_of_the_fonts() {
+        // "Привет" in Windows-1251 when the deck uses a Cyrillic font.
+        let cyrillic = [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2];
+        let p = deck_with_one_byte_text(Some(fonts_of(204)), &cyrillic);
+        assert_eq!(slides_of(&p)[0].name, "Привет");
+        // "Łódź" in Windows-1250 for a Central European font.
+        let p = deck_with_one_byte_text(Some(fonts_of(238)), &[0xA3, 0xF3, 0x64, 0x9F]);
+        assert_eq!(slides_of(&p)[0].name, "Łódź");
+        // Without fonts, Windows-1252: the curly quotes of 0x93/0x94 and the accented letters.
+        let p = deck_with_one_byte_text(None, &[0x93, b'a', 0x94, 0xE9]);
+        assert_eq!(slides_of(&p)[0].name, "“a”é");
     }
 
     #[test]

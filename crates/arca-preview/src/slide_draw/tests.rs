@@ -807,6 +807,56 @@ fn replace_part(pkg: &[u8], name: &str, content: &str) -> Vec<u8> {
 // ---- hidden content ------------------------------------------------------------------------
 
 #[test]
+fn smartart_is_drawn_from_its_cached_drawing() {
+    let frame = format!(
+        r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="d"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" r:dm="rId5" r:lo="rId6" r:qs="rId7" r:cs="rId8"/></a:graphicData></a:graphic></p:graphicFrame>"#,
+        e(100.0),
+        e(50.0),
+        e(300.0),
+        e(200.0)
+    );
+    let mut deck = Deck::new(&[frame.as_str()]);
+    deck.slide_rels = rels(&[
+        ("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"),
+        ("rId5", "diagramData", "../diagrams/data1.xml"),
+        ("rId9", "diagramDrawing", "../diagrams/drawing1.xml"),
+    ]);
+    let shape = |x: f64, y: f64, text: &str| {
+        format!(
+            r#"<dsp:sp modelId="{{1}}"><dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr><dsp:spPr><a:xfrm><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></dsp:spPr><dsp:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="1400"/><a:t>{text}</a:t></a:r></a:p></dsp:txBody></dsp:sp>"#,
+            e(x),
+            e(y),
+            e(120.0),
+            e(60.0)
+        )
+    };
+    let drawing = format!(
+        r#"<dsp:drawing xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><dsp:spTree><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr><dsp:grpSpPr/>{}{}</dsp:spTree></dsp:drawing>"#,
+        shape(0.0, 0.0, "Планирование"),
+        shape(150.0, 100.0, "Execution")
+    );
+    let data = build_diagram_data();
+    let pkg = deck.build(&[
+        ("ppt/diagrams/data1.xml", data.as_str()),
+        ("ppt/diagrams/drawing1.xml", drawing.as_str()),
+    ]);
+    let p = render(&pkg, 0);
+    let t = texts(&p);
+    let find = |s: &str| t.iter().find(|(text, ..)| text.contains(s)).cloned();
+    let first = find("Планирование").expect("first node text drawn");
+    let second = find("Execution").expect("second node text drawn");
+    // The nodes sit where the drawing puts them, relative to the frame: 100 pt and 50 pt in.
+    assert!(first.1 >= 100.0 - 1.0 && first.2 >= 50.0 - 1.0, "{first:?}");
+    assert!(second.1 > first.1 && second.2 > first.2, "{first:?} {second:?}");
+    assert_sane(&p);
+}
+
+fn build_diagram_data() -> String {
+    r#"<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:ptLst/></dgm:dataModel>"#
+        .to_owned()
+}
+
+#[test]
 fn hidden_slides_and_shapes_follow_the_policy() {
     let shown = sp(0.0, 0.0, 10.0, 10.0, "rect", RED, "");
     let hidden_shape =

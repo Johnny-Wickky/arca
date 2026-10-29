@@ -422,6 +422,33 @@ const TIMES: [u16; 95] = [
     278, 778, 500, 500, 500, 500, 333, 389, 278, 500, 500, 722, 500, 500, 444, 480, 200, 480, 541,
 ];
 
+// Advance widths (1/1000 em) of the Russian alphabet in a Helvetica-like face, А..Я and а..я
+// (U+0410..=U+044F); Ё and ё take the width of Е and е. Without them every Cyrillic capital would
+// be counted alike and the lines of a Russian slide would wrap too early or too late.
+const CYRILLIC_UPPER: [u16; 32] = [
+    667, 637, 667, 535, 700, 667, 995, 611, 722, 722, 667, 690, 833, 722, 778, 722, 667, 722, 611,
+    667, 860, 667, 750, 648, 1026, 1060, 806, 925, 658, 732, 1050, 703,
+];
+const CYRILLIC_LOWER: [u16; 32] = [
+    556, 556, 546, 410, 570, 556, 796, 498, 565, 565, 517, 545, 688, 562, 556, 562, 556, 500, 467,
+    500, 797, 500, 570, 516, 828, 856, 607, 745, 518, 521, 842, 525,
+];
+
+/// The advance of a Russian letter in a sans-serif face, in 1/1000 em.
+fn cyrillic_units(code: u32) -> Option<f64> {
+    let table_at = |table: &[u16; 32], base: u32| {
+        let i = usize::try_from(code.checked_sub(base)?).ok()?;
+        table.get(i).copied().map(f64::from)
+    };
+    match code {
+        0x0401 => Some(667.0),
+        0x0451 => Some(556.0),
+        0x0410..=0x042F => table_at(&CYRILLIC_UPPER, 0x0410),
+        0x0430..=0x044F => table_at(&CYRILLIC_LOWER, 0x0430),
+        _ => None,
+    }
+}
+
 /// East Asian wide characters and emoji: a full em, and a line may break after each.
 fn is_wide(c: char) -> bool {
     matches!(u32::from(c),
@@ -447,6 +474,9 @@ pub(super) fn advance(c: char, st: &RunStyle) -> f64 {
         let idx = usize::try_from(code - 0x20).unwrap_or(0);
         let table = if st.serif { &TIMES } else { &HELVETICA };
         f64::from(table.get(idx).copied().unwrap_or(500))
+    } else if let Some(units) = cyrillic_units(code) {
+        // Times-like faces are about a twelfth narrower than Arial-like ones.
+        if st.serif { units * 0.92 } else { units }
     } else if c.is_uppercase() {
         if st.serif { 690.0 } else { 680.0 }
     } else if st.serif {
@@ -461,6 +491,25 @@ pub(super) fn advance(c: char, st: &RunStyle) -> f64 {
 /// The width of `text` in `st`, in points.
 pub(super) fn text_width(text: &str, st: &RunStyle) -> f64 {
     text.chars().map(|c| advance(c, st)).sum::<f64>() * st.size
+}
+
+#[cfg(test)]
+mod advance_tests {
+    use super::*;
+
+    #[test]
+    fn russian_letters_have_their_own_widths() {
+        let st = RunStyle::plain(10.0, 0xFF00_0000);
+        // "Ш" is much wider than "Г", "ь" narrower than "ы": the old flat guess missed both.
+        assert!(advance('Ш', &st) > 1.5 * advance('Г', &st));
+        assert!(advance('ы', &st) > advance('ь', &st));
+        assert!((advance('Ё', &st) - advance('Е', &st)).abs() < 1e-9);
+        assert!((advance('ё', &st) - advance('е', &st)).abs() < 1e-9);
+        // A Russian word is somewhat wider than the Latin word of the same length.
+        let ru = text_width("Привет", &st);
+        let en = text_width("Hellos", &st);
+        assert!(ru / en > 1.0 && ru / en < 1.4, "{ru} {en}");
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -985,7 +1034,7 @@ pub(super) fn parse(
                     }
                 }
                 if rel_elems.contains(&local) {
-                    for want in ["embed", "link", "id"] {
+                    for want in ["embed", "link", "id", "dm"] {
                         if let Some(v) = t.attr_rel(want) {
                             node.rels.push((want, v.into_owned()));
                         }

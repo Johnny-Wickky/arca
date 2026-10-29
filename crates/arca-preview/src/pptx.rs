@@ -58,8 +58,74 @@ struct TblState {
     skip_cell: bool,
 }
 
+/// The text of a SmartArt diagram: the content points (`dgm:pt` of type node, assistant or
+/// document) of its data part, one entry per paragraph, in the order the part lists them.
+#[derive(Default)]
+struct DiagramHandler {
+    in_point: bool,
+    in_run: bool,
+    in_t: bool,
+    para: String,
+    lines: Vec<String>,
+}
+
+/// Most paragraphs read from one diagram.
+const MAX_DIAGRAM_LINES: usize = 4_000;
+
+impl Handler for DiagramHandler {
+    fn start(&mut self, tag: &Tag<'_>, _empty: bool) -> Flow {
+        match tag.local() {
+            "pt" => {
+                // Presentation points and the transitions between nodes carry no content.
+                self.in_point =
+                    matches!(tag.attr("type").as_deref(), None | Some("node" | "asst" | "doc"));
+                self.para.clear();
+            }
+            "r" | "fld" if self.in_point => self.in_run = true,
+            "t" if self.in_run => self.in_t = true,
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    fn end(&mut self, local: &str) {
+        match local {
+            "t" => self.in_t = false,
+            "r" | "fld" => self.in_run = false,
+            "p" if self.in_point => {
+                let line = self.para.trim();
+                if !line.is_empty() && self.lines.len() < MAX_DIAGRAM_LINES {
+                    self.lines.push(line.to_owned());
+                }
+                self.para.clear();
+            }
+            "pt" => self.in_point = false,
+            _ => {}
+        }
+    }
+
+    fn text(&mut self, raw: &str, cdata: bool) -> Result<(), XmlError> {
+        if self.in_t && self.para.len() < 8_192 {
+            let s = if cdata { std::borrow::Cow::Borrowed(raw) } else { unescape(raw)? };
+            self.para.push_str(&s);
+        }
+        Ok(())
+    }
+}
+
+/// The paragraphs of the diagram data part `xml_text`.
+fn diagram_lines(xml_text: &str, limits: &crate::xml::XmlLimits) -> Vec<String> {
+    let mut h = DiagramHandler::default();
+    // A damaged part keeps what was read before the damage.
+    let _ = xml::drive(xml_text, limits, &mut h);
+    h.lines
+}
+
 struct SlideHandler {
     mode: Mode,
+    /// The text of the diagrams the slide refers to, by the relationship id of their data part.
+    diagrams: BTreeMap<String, Vec<String>>,
+    smartart: bool,
     out: Vec<(bool, Block)>,
     rels: BTreeMap<String, RelInfo>,
     // Shape state: one flag per open shape element ("is it hidden?").
@@ -85,6 +151,8 @@ impl SlideHandler {
     fn new(mode: Mode, rels: BTreeMap<String, RelInfo>) -> Self {
         Self {
             mode,
+            diagrams: BTreeMap::new(),
+            smartart: false,
             out: Vec::new(),
             rels,
             shapes: Vec::new(),
@@ -274,8 +342,24 @@ impl Handler for SlideHandler {
             }
             "graphicData" => {
                 let uri = tag.attr("uri").unwrap_or_default();
-                if uri.contains("chart") || uri.contains("diagram") || uri.contains("ole") {
+                // A diagram is read through its `relIds` element below.
+                if uri.contains("chart") || uri.contains("ole") {
                     self.unsupported = true;
+                }
+            }
+            "relIds" => {
+                let lines = tag.attr_rel("dm").and_then(|id| self.diagrams.get(&*id).cloned());
+                match lines {
+                    Some(lines) if !lines.is_empty() => {
+                        let st = if self.hidden() { style::HIDDEN } else { 0 };
+                        for line in lines {
+                            let mut b = ParaBuilder::default();
+                            b.text(&line, st, "");
+                            self.out.push((false, Block::Para(b.take(ParaStyle::Body))));
+                        }
+                        self.smartart = true;
+                    }
+                    _ => self.unsupported = true,
                 }
             }
             "txBody" => {
@@ -524,6 +608,7 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
     }
 
     let mut unsupported = false;
+    let mut smartart = false;
     // Every slide part the presentation names, shown or not.
     let mut named: Vec<String> = Vec::new();
     for rid in &ph.slides {
@@ -540,11 +625,22 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
             continue;
         };
         let rels = rel_map(pkg, &part)?;
+        let mut diagrams: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (id, info) in &rels {
+            if info.external || !info.target.contains("/diagrams/data") || diagrams.len() >= 256 {
+                continue;
+            }
+            if let Ok(Some(dx)) = read_xml(pkg, &info.target) {
+                diagrams.insert(id.clone(), diagram_lines(&dx, pkg.limits()));
+            }
+        }
         let mut h = SlideHandler::new(Mode::Slide, rels);
+        h.diagrams = diagrams;
         if xml::drive(&slide_xml, pkg.limits(), &mut h).is_err() {
             sink.skipped(&part);
         }
         unsupported |= h.unsupported;
+        smartart |= h.smartart;
         let hidden = h.slide_hidden;
         let title = h.title.clone();
         let mut blocks: Vec<Block> = Vec::new();
@@ -597,7 +693,10 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
     }
     if unsupported {
-        sink.note(NoticeKind::Unsupported, "charts, SmartArt and embedded objects");
+        sink.note(NoticeKind::Unsupported, "charts, SmartArt without text and embedded objects");
+    }
+    if smartart {
+        sink.note(NoticeKind::Unsupported, "SmartArt layout (its text is shown as a list)");
     }
     Ok(())
 }
@@ -846,6 +945,24 @@ mod tests {
         let p = ok(&deck(&[(gf, "")], &[]));
         assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Unsupported));
         assert!(section_of(&p, SectionKind::Slide).is_some());
+    }
+
+    #[test]
+    fn smartart_text_is_read_from_the_diagram_data() {
+        let gf = r#"<p:graphicFrame><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" r:dm="rId5" r:lo="rId6"/></a:graphicData></a:graphic></p:graphicFrame>"#;
+        let data = format!(
+            r#"<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><dgm:ptLst>
+               <dgm:pt modelId="1" type="doc"><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:p><a:endParaRPr/></a:p></dgm:t></dgm:pt>
+               <dgm:pt modelId="2"><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:p><a:r><a:rPr/><a:t>Планирование</a:t></a:r></a:p></dgm:t></dgm:pt>
+               <dgm:pt modelId="3" type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Execu</a:t></a:r><a:r><a:t>tion</a:t></a:r></a:p></dgm:t></dgm:pt>
+               <dgm:pt modelId="4" type="pres"><dgm:t><a:bodyPr/><a:p><a:r><a:t>layout noise</a:t></a:r></a:p></dgm:t></dgm:pt>
+               <dgm:pt modelId="5" type="parTrans"><dgm:t><a:bodyPr/><a:p><a:r><a:t>transition noise</a:t></a:r></a:p></dgm:t></dgm:pt>
+               </dgm:ptLst></dgm:dataModel>"#
+        );
+        let slide_rels = rels(&[("rId5", "diagramData", "../diagrams/data1.xml")]);
+        let p = ok(&deck(&[(gf, &slide_rels)], &[("ppt/diagrams/data1.xml", &data)]));
+        assert_eq!(slide_texts(&p, 0), ["Планирование", "Execution"]);
+        assert!(p.notices.iter().any(|n| n.kind == NoticeKind::Unsupported));
     }
 
     #[test]
