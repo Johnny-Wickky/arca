@@ -87,6 +87,8 @@ struct Styles<'a> {
     by: BTreeMap<(String, String), (String, Props)>,
     lists: BTreeMap<String, BTreeMap<usize, ListLevel>>,
     gradients: BTreeMap<String, String>,
+    /// `draw:fill-image` names and the package paths they point at.
+    fill_images: BTreeMap<String, String>,
     layouts: BTreeMap<String, (Option<f64>, Option<f64>)>,
     masters: BTreeMap<String, &'a Node>,
 }
@@ -109,6 +111,7 @@ impl<'a> Styles<'a> {
             by: BTreeMap::new(),
             lists: BTreeMap::new(),
             gradients: BTreeMap::new(),
+            fill_images: BTreeMap::new(),
             layouts: BTreeMap::new(),
             masters: BTreeMap::new(),
         };
@@ -189,6 +192,11 @@ impl<'a> Styles<'a> {
                     if let (Some(n), Some(c)) = (st.attr("draw:name"), st.attr("draw:start-color"))
                     {
                         self.gradients.insert(n.to_owned(), c.to_owned());
+                    }
+                }
+                "fill-image" => {
+                    if let (Some(n), Some(h)) = (st.attr("draw:name"), st.attr("xlink:href")) {
+                        self.fill_images.insert(n.to_owned(), h.to_owned());
                     }
                 }
                 "page-layout" => {
@@ -601,6 +609,31 @@ impl Draw<'_, '_> {
         m
     }
 
+    /// The picture of a `draw:fill="bitmap"` fill: the package member `draw:fill-image-name` names
+    /// in the styles; `None` for a fill of another kind, one that is not embedded, or a lost one.
+    fn bitmap_id(&self, p: &Props) -> Option<u32> {
+        if p.get("draw:fill").map(String::as_str) != Some("bitmap") {
+            return None;
+        }
+        let href = p.get("draw:fill-image-name").and_then(|n| self.styles.fill_images.get(n))?;
+        let path = href.trim_start_matches("./");
+        if href.contains("://") || href.starts_with("//") || path.is_empty() {
+            return None;
+        }
+        self.pkg.entry_id(path)
+    }
+
+    /// Draws the picture of a bitmap fill stretched over the frame `0..w × 0..h` under `m`
+    /// (before the outline and the text); a tiled one is stretched and the page says so.
+    fn bitmap_fill(&mut self, p: &Props, m: &Mat, w: f64, h: f64, rect: bool) {
+        let Some(id) = self.bitmap_id(p) else { return };
+        let tiled = p.get("style:repeat").is_some_and(|r| r == "repeat");
+        if tiled || !rect {
+            self.cv.approximated("a picture fill is drawn stretched over the frame of the shape");
+        }
+        self.cv.image(m, w, h, "", id);
+    }
+
     /// The paint of a shape from its properties: fill, stroke, stroke width.
     fn paint(&mut self, p: &Props, line_default: bool) -> (u32, u32, f64) {
         let opacity = p.get("draw:opacity").and_then(|v| percent(v)).unwrap_or(1.0).clamp(0.0, 1.0);
@@ -613,8 +646,15 @@ impl Draw<'_, '_> {
                     .and_then(|c| color(c))
                     .unwrap_or(0)
             }
-            Some("hatch" | "bitmap") => {
-                self.cv.approximated("a hatch or picture fill is not drawn");
+            Some("hatch") => {
+                self.cv.approximated("a hatch fill is not drawn");
+                0
+            }
+            Some("bitmap") => {
+                // The caller draws the picture (see `bitmap_fill`); only a lost one is noted here.
+                if self.bitmap_id(p).is_none() {
+                    self.cv.approximated("a picture fill that is not in the file is not drawn");
+                }
                 0
             }
             _ => 0,
@@ -820,6 +860,9 @@ impl Draw<'_, '_> {
         line_only: bool,
     ) {
         let (fill, stroke, width) = self.paint(props, line_only || n.name == "path");
+        if !line_only {
+            self.bitmap_fill(props, m, w, h, n.name == "rect");
+        }
         self.cv.path(segs, m, if line_only { 0 } else { fill }, stroke, width, false);
         let text_m = if n.name == "custom-shape" || n.name == "rect" || n.name == "caption" {
             // Text is not mirrored with the shape.
@@ -1448,6 +1491,7 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
     if bg >> 24 != 0 && bg != 0xFFFF_FFFF {
         d.cv.path(&presets::rect(w, h), &Mat::ID, bg, 0, 0.0, false);
     }
+    d.bitmap_fill(&bg_props, &Mat::ID, w, h, true);
     if bg_props.get("presentation:background-objects-visible").map(String::as_str) != Some("false")
         && let Some(m) = master
     {
