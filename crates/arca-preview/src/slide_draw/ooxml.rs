@@ -22,7 +22,7 @@ use crate::{PreviewError, PreviewPolicy};
 /// Elements whose text is kept: runs and the table style id.
 const KEEP_TEXT: [&str; 2] = ["t", "tableStyleId"];
 /// Elements whose relationship attributes are read.
-const REL_ELEMS: [&str; 2] = ["blip", "sldId"];
+const REL_ELEMS: [&str; 3] = ["blip", "sldId", "relIds"];
 /// Most rows and columns of a table that are drawn, and most cells.
 const MAX_TABLE_LINE: usize = 500;
 const MAX_TABLE_CELLS: usize = 10_000;
@@ -686,6 +686,9 @@ struct Pass<'a> {
     master: Option<&'a Node>,
     rels: &'a RelTab,
     table_styles: Option<&'a Node>,
+    /// The cached drawings of the slide's SmartArt diagrams, by the relationship id of the
+    /// diagram's data part (the one the frame names in `dgm:relIds`).
+    diagrams: &'a BTreeMap<String, super::Parsed>,
 }
 
 /// The kind of text style a placeholder takes from the master.
@@ -1022,6 +1025,22 @@ impl<'a> Pass<'a> {
         self.cv.opacity = before;
     }
 
+    /// Draws a SmartArt diagram from its cached drawing (`dsp:drawing`), whose shapes sit in EMU
+    /// relative to the frame. `false` if the file carries no such drawing.
+    fn diagram(&mut self, data: &Node, xf: &Xf, parent: &Mat) -> bool {
+        let Some(tree) = data
+            .child("relIds")
+            .and_then(|r| r.rel("dm"))
+            .and_then(|id| self.diagrams.get(id))
+            .and_then(|d| d.root.child("spTree"))
+        else {
+            return false;
+        };
+        let origin = Mat::translate(xf.x, xf.y).then(*parent);
+        self.shapes(tree, &origin, 1, false);
+        true
+    }
+
     fn frame(&mut self, gf: &Node, parent: &Mat, layer: bool) {
         let ph = ph_of(gf);
         if layer && ph.is_some() {
@@ -1048,6 +1067,8 @@ impl<'a> Pass<'a> {
                 if let Some(tbl) = data.child("tbl") {
                     self.table(tbl, &xf, parent);
                 }
+            } else if uri.contains("diagram") && self.diagram(data, &xf, parent) {
+                // drawn from the diagram's cached drawing
             } else {
                 let label = if uri.contains("chart") {
                     "chart"
@@ -1628,6 +1649,44 @@ struct Parts {
     theme: Option<super::Parsed>,
 }
 
+/// The number in the name of a diagram part: `3` for `ppt/diagrams/data3.xml` and prefix `data`.
+fn diagram_number<'p>(part: &'p str, prefix: &str) -> Option<&'p str> {
+    let name = part.rsplit('/').next()?;
+    let digits = name.strip_prefix(prefix)?.strip_suffix(".xml")?;
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(digits)
+}
+
+/// Most diagrams drawn on one slide.
+const MAX_DIAGRAMS: usize = 64;
+
+/// The cached drawings of the diagrams of a slide, by the relationship id of the diagram's data
+/// part. PowerPoint numbers the parts of one diagram alike (`data3.xml`, `drawing3.xml`).
+fn load_diagrams(
+    pkg: &mut Package<'_>,
+    slide_part: &str,
+) -> Result<BTreeMap<String, super::Parsed>, PreviewError> {
+    let mut out = BTreeMap::new();
+    let rels = pkg.rels_of(slide_part)?;
+    for data in rels.iter().filter(|r| !r.external && r.suffix() == "diagramData") {
+        if out.len() >= MAX_DIAGRAMS {
+            break;
+        }
+        let Some(data_part) = opc::resolve(slide_part, &data.target) else { continue };
+        let Some(n) = diagram_number(&data_part, "data") else { continue };
+        let drawing = rels
+            .iter()
+            .filter(|r| !r.external && r.suffix() == "diagramDrawing")
+            .filter_map(|r| opc::resolve(slide_part, &r.target))
+            .find(|p| diagram_number(p, "drawing") == Some(n));
+        if let Some(part) = drawing
+            && let Some(tree) = read_tree(pkg, &part, "drawing")?
+        {
+            out.insert(data.id.clone(), tree);
+        }
+    }
+    Ok(out)
+}
+
 fn load_parts(
     pkg: &mut Package<'_>,
     main: &str,
@@ -1853,6 +1912,7 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
         .clone();
 
     let (loaded, tabs) = load_parts(pkg, &main, &slide_part)?;
+    let diagrams = load_diagrams(pkg, &slide_part)?;
     let table_styles = match pkg.rel_target(&main, "tableStyles")? {
         Some(p) => read_tree(pkg, &p, "tblStyleLst")?,
         None => None,
@@ -1884,6 +1944,7 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
             master: master_tree,
             rels: &tabs[2],
             table_styles: table_styles.as_ref().map(|t| &t.root),
+            diagrams: &diagrams,
         };
         if slide_shows {
             if layout_shows && let Some(t) = master_tree {
