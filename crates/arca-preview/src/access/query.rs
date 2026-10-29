@@ -200,7 +200,12 @@ enum Node {
         key: String,
         text: String,
     },
-    Join { from: usize, to: usize, kind: i64, on: Vec<String> },
+    Join {
+        from: usize,
+        to: usize,
+        kind: i64,
+        on: Vec<String>,
+    },
 }
 
 impl<'a> Builder<'a> {
@@ -323,10 +328,15 @@ impl<'a> Builder<'a> {
         out.push_str(&cols.join(", "));
         if self.kind == QueryKind::MakeTable {
             let t = self.unique(attr::TYPE)?;
-            let target = t.and_then(|r| r.name1.as_deref()).ok_or("a make-table query without a target")?;
+            let target =
+                t.and_then(|r| r.name1.as_deref()).ok_or("a make-table query without a target")?;
             out.push_str(" INTO ");
             out.push_str(&ident(target));
-            remote(out, t.and_then(|r| r.name2.as_deref()), t.and_then(|r| r.expression.as_deref()));
+            remote(
+                out,
+                t.and_then(|r| r.name2.as_deref()),
+                t.and_then(|r| r.expression.as_deref()),
+            );
         }
         let from = self.build_from_list()?;
         if !from.is_empty() {
@@ -382,7 +392,9 @@ impl<'a> Builder<'a> {
     fn column_rows(&self) -> Vec<&'a QueryRow> {
         let all = self.of(attr::COLUMN);
         match self.kind {
-            QueryKind::Crosstab => all.filter(|r| r.flag.unwrap_or(0) & CROSSTAB_NORMAL != 0).collect(),
+            QueryKind::Crosstab => {
+                all.filter(|r| r.flag.unwrap_or(0) & CROSSTAB_NORMAL != 0).collect()
+            }
             QueryKind::Append => all.filter(|r| r.flag.unwrap_or(0) & APPEND_VALUE == 0).collect(),
             _ => all.collect(),
         }
@@ -402,7 +414,9 @@ impl<'a> Builder<'a> {
 
     fn groupings(&self) -> Vec<String> {
         self.of(attr::GROUP_BY)
-            .filter(|r| self.kind != QueryKind::Crosstab || r.flag.unwrap_or(0) & CROSSTAB_NORMAL != 0)
+            .filter(|r| {
+                self.kind != QueryKind::Crosstab || r.flag.unwrap_or(0) & CROSSTAB_NORMAL != 0
+            })
             .map(|r| r.expression.clone().unwrap_or_default())
             .collect()
     }
@@ -529,15 +543,14 @@ impl<'a> Builder<'a> {
 
     fn crosstab(&mut self, out: &mut String) -> Res<()> {
         let cols = self.of(attr::COLUMN);
-        let transform: Vec<&QueryRow> =
-            cols.filter(|r| r.flag.unwrap_or(0) & (CROSSTAB_PIVOT | CROSSTAB_NORMAL) == 0).collect();
+        let transform: Vec<&QueryRow> = cols
+            .filter(|r| r.flag.unwrap_or(0) & (CROSSTAB_PIVOT | CROSSTAB_NORMAL) == 0)
+            .collect();
         if transform.len() > 1 {
             return Err("more than one TRANSFORM row");
         }
-        let pivot: Vec<&QueryRow> = self
-            .of(attr::COLUMN)
-            .filter(|r| r.flag.unwrap_or(0) & CROSSTAB_PIVOT != 0)
-            .collect();
+        let pivot: Vec<&QueryRow> =
+            self.of(attr::COLUMN).filter(|r| r.flag.unwrap_or(0) & CROSSTAB_PIVOT != 0).collect();
         if pivot.len() != 1 {
             return Err("a cross-tab query needs exactly one PIVOT row");
         }
@@ -550,7 +563,10 @@ impl<'a> Builder<'a> {
         self.select_text(out, true)?;
         out.push_str("\nPIVOT ");
         out.push_str(
-            pivot.first().and_then(|r| r.expression.as_deref()).ok_or("a PIVOT row without an expression")?,
+            pivot
+                .first()
+                .and_then(|r| r.expression.as_deref())
+                .ok_or("a PIVOT row without an expression")?,
         );
         Ok(())
     }
@@ -577,14 +593,12 @@ impl<'a> Builder<'a> {
 
     fn append(&mut self, out: &mut String) -> Res<()> {
         let t = self.unique(attr::TYPE)?;
-        let target = t.and_then(|r| r.name1.as_deref()).ok_or("an append query without a target")?;
+        let target =
+            t.and_then(|r| r.name1.as_deref()).ok_or("an append query without a target")?;
         out.push_str("INSERT INTO ");
         out.push_str(&ident(target));
-        let targets: Vec<String> = self
-            .of(attr::COLUMN)
-            .filter_map(|r| r.name2.as_deref())
-            .map(ident)
-            .collect();
+        let targets: Vec<String> =
+            self.of(attr::COLUMN).filter_map(|r| r.name2.as_deref()).map(ident).collect();
         if !targets.is_empty() {
             out.push_str(&format!(" ({})", targets.join(", ")));
         }

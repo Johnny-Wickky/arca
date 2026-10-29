@@ -74,7 +74,8 @@ const EXPECTED: [(&str, &str); 9] = [
 fn text_of(p: &Preview) -> String {
     let mut out = String::new();
     for s in &p.sections {
-        let _ = writeln!(out, "## {:?} {}{}", s.kind, s.name, if s.hidden { " (hidden)" } else { "" });
+        let _ =
+            writeln!(out, "## {:?} {}{}", s.kind, s.name, if s.hidden { " (hidden)" } else { "" });
         for b in &s.blocks {
             match b {
                 Block::Para(para) => {
@@ -123,7 +124,8 @@ fn queries_written_by_access_read_as_jackcess_says() {
     let mut checked = 0usize;
     let mut query_files = 0usize;
     let mut failures = Vec::new();
-    let mut entries: Vec<_> = std::fs::read_dir(&dir).expect("samples directory").flatten().collect();
+    let mut entries: Vec<_> =
+        std::fs::read_dir(&dir).expect("samples directory").flatten().collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for e in entries {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -144,7 +146,9 @@ fn queries_written_by_access_read_as_jackcess_says() {
             for (query, expected) in EXPECTED {
                 match query_sql(&p, query) {
                     Some(got) if got == expected => checked += 1,
-                    other => failures.push(format!("{name}: {query}\n  got      {other:?}\n  expected {expected:?}")),
+                    other => failures.push(format!(
+                        "{name}: {query}\n  got      {other:?}\n  expected {expected:?}"
+                    )),
                 }
             }
         }

@@ -307,7 +307,13 @@ pub fn passport_update(record: &[u8], today: i32, trackers: i32, active: i32) ->
 
 /// The statistics blob after one scan (`verdict` is the wire tag of the X-ray verdict).
 #[must_use]
-pub fn stats_record_scan(blob: &[u8], day: i32, verdict: i32, trackers: i32, active: i32) -> Vec<u8> {
+pub fn stats_record_scan(
+    blob: &[u8],
+    day: i32,
+    verdict: i32,
+    trackers: i32,
+    active: i32,
+) -> Vec<u8> {
     stats::blob_record_scan(blob, day, verdict, trackers, active)
 }
 
@@ -325,7 +331,13 @@ pub fn stats_summary(blob: &[u8], today: i32) -> Vec<u8> {
 
 /// The blob with the counters of the older app versions folded into the all-time total.
 #[must_use]
-pub fn stats_fold_legacy(blob: &[u8], passport: &[u8], documents: i64, threats: i64, today: i32) -> Vec<u8> {
+pub fn stats_fold_legacy(
+    blob: &[u8],
+    passport: &[u8],
+    documents: i64,
+    threats: i64,
+    today: i32,
+) -> Vec<u8> {
     stats::blob_fold_legacy(blob, passport, documents, threats, today)
 }
 
@@ -362,7 +374,13 @@ pub fn reminder_on_fire(
 
 /// What to do with the stored reminder time when the app starts, as JSON.
 #[must_use]
-pub fn reminder_on_start(next_ms: i64, now_ms: i64, offset_ms: i32, enabled: i32, rnd: i32) -> Vec<u8> {
+pub fn reminder_on_start(
+    next_ms: i64,
+    now_ms: i64,
+    offset_ms: i32,
+    enabled: i32,
+    rnd: i32,
+) -> Vec<u8> {
     schedule::on_start_json(next_ms, now_ms, offset_ms, enabled, rnd)
 }
 

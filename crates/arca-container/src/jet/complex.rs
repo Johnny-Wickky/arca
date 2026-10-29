@@ -63,7 +63,14 @@ pub struct ComplexData {
 fn multi_value_type(t: u8) -> bool {
     matches!(
         t,
-        ty::BYTE | ty::INT | ty::LONG | ty::FLOAT | ty::DOUBLE | ty::GUID | ty::NUMERIC | ty::TEXT
+        ty::BYTE
+            | ty::INT
+            | ty::LONG
+            | ty::FLOAT
+            | ty::DOUBLE
+            | ty::GUID
+            | ty::NUMERIC
+            | ty::TEXT
             | ty::BIGINT
     )
 }
@@ -109,7 +116,8 @@ impl Db<'_> {
                     Value::Text(t) => t.eq_ignore_ascii_case(&column.name),
                     _ => true,
                 });
-                if let (Some(t), Some(c), Some(f)) = (int(v, c_type), int(v, c_concept), int(v, c_flat))
+                if let (Some(t), Some(c), Some(f)) =
+                    (int(v, c_type), int(v, c_concept), int(v, c_flat))
                     && named_ok
                 {
                     found = Some((t, c, f));
@@ -148,15 +156,11 @@ impl Db<'_> {
 
         // The key column of the flat table: the one marked as such, else the first plain whole
         // number that does not belong to the type.
-        let key = flat
-            .columns
-            .iter()
-            .position(Column::is_complex_key)
-            .or_else(|| {
-                flat.columns.iter().position(|c| {
-                    c.ty == ty::LONG && !c.is_auto_number() && !has(&c.name)
-                })
-            })?;
+        let key = flat.columns.iter().position(Column::is_complex_key).or_else(|| {
+            flat.columns
+                .iter()
+                .position(|c| c.ty == ty::LONG && !c.is_auto_number() && !has(&c.name))
+        })?;
         let by_name = |n: &str| flat.columns.iter().position(|c| c.name.eq_ignore_ascii_case(n));
         let value_col = type_table.columns.first().and_then(|c| by_name(&c.name));
         let (name_col, data_col) = (by_name("FileName"), by_name("FileData"));

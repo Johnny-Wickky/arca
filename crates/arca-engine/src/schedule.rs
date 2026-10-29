@@ -22,7 +22,11 @@ pub fn plan_next(now_ms: i64, offset_ms: i32, rnd: i32) -> i64 {
 /// [`reminder::refine_for_offset`]).
 #[must_use]
 pub fn refine(target_ms: i64, offset_used_ms: i32, offset_at_target_ms: i32) -> i64 {
-    reminder::refine_for_offset(target_ms, i64::from(offset_used_ms), i64::from(offset_at_target_ms))
+    reminder::refine_for_offset(
+        target_ms,
+        i64::from(offset_used_ms),
+        i64::from(offset_at_target_ms),
+    )
 }
 
 /// What to do when the alarm fires, as `{"action":"show","nextAt":123}` with `action` one of

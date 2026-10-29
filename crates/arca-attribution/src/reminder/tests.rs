@@ -322,7 +322,8 @@ fn picking_walks_forward_and_wraps() {
 // ------------------------------------------------------------------------------------------
 // The Android table must agree with the Rust table (count, order and placeholders).
 
-const JAVA: &str = include_str!("../../../../android/app/src/main/java/org/arca/viewer/Reminders.java");
+const JAVA: &str =
+    include_str!("../../../../android/app/src/main/java/org/arca/viewer/Reminders.java");
 const STRINGS_EN: &str = include_str!("../../../../android/app/src/main/res/values/strings.xml");
 const STRINGS_RU: &str = include_str!("../../../../android/app/src/main/res/values-ru/strings.xml");
 
@@ -359,7 +360,8 @@ fn the_java_table_matches_the_rust_table() {
             let (t, b) = (string_of(xml, title), string_of(xml, body));
             let one = t.contains("%1$d") || b.contains("%1$d");
             let two = t.contains("%2$d") || b.contains("%2$d");
-            let stray = |s: &str| s.replace("%1$d", "").replace("%2$d", "").replace("%%", "").contains('%');
+            let stray =
+                |s: &str| s.replace("%1$d", "").replace("%2$d", "").replace("%%", "").contains('%');
             assert!(!stray(t) && !stray(b), "{title}: unknown format specifier");
             match uses {
                 Nothing => assert!(!one && !two, "{title} quotes a number but the table says none"),

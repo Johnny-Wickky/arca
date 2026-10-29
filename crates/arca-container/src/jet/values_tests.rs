@@ -16,7 +16,7 @@
     reason = "test code with small constants and hand-made byte vectors"
 )]
 
-use super::testdb::{Cv, ColSpec, IndexSpec, TestDb, int, t, text};
+use super::testdb::{ColSpec, Cv, IndexSpec, TestDb, int, t, text};
 use super::*;
 
 fn column(ty: u8) -> Column {
@@ -67,7 +67,10 @@ fn integers_are_little_endian_and_signed_except_byte() {
     assert_eq!(decode(&column(ty::LONG), &[0x78, 0x56, 0x34, 0x12]), Value::Int(0x1234_5678));
     assert_eq!(decode(&column(ty::BIGINT), &[0xFF; 8]), Value::Int(-1));
     assert_eq!(decode(&column(ty::BIGINT), &[0, 0, 0, 0, 0, 0, 0, 0x80]), Value::Int(i64::MIN));
-    assert_eq!(decode(&column(ty::BIGINT), &[1, 0, 0, 0, 0, 0, 0, 0x7F]), Value::Int(0x7F00_0000_0000_0001));
+    assert_eq!(
+        decode(&column(ty::BIGINT), &[1, 0, 0, 0, 0, 0, 0, 0x7F]),
+        Value::Int(0x7F00_0000_0000_0001)
+    );
     // A value that is too short is no value.
     assert_eq!(decode(&column(ty::LONG), &[1, 2, 3]), Value::Null);
 }
@@ -130,10 +133,7 @@ fn decimals_are_a_sign_byte_and_a_128_bit_magnitude_most_significant_word_first(
     // reader handles all 128 bits).
     let mut max = vec![0xFFu8; 17];
     max[0] = 0;
-    assert_eq!(
-        decode(&c, &max),
-        Value::Numeric("340282366920938463463374607431768211455".into())
-    );
+    assert_eq!(decode(&c, &max), Value::Numeric("340282366920938463463374607431768211455".into()));
     assert_eq!(decode(&c, &d[..16]), Value::Null);
 }
 
@@ -218,13 +218,11 @@ fn memo_pointers_have_three_forms() {
     let mut link = column(ty::MEMO);
     link.flags = FLAG_HYPERLINK;
     let text = "Site#https://example.org/#";
-    let mut bytes = (0x8000_0000u32 | u32::try_from(text.len() * 2).unwrap()).to_le_bytes().to_vec();
+    let mut bytes =
+        (0x8000_0000u32 | u32::try_from(text.len() * 2).unwrap()).to_le_bytes().to_vec();
     bytes.extend([0u8; 8]);
     bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
-    assert_eq!(
-        db.value(&link, &bytes),
-        Value::Link("Site".into(), "https://example.org/".into())
-    );
+    assert_eq!(db.value(&link, &bytes), Value::Link("Site".into(), "https://example.org/".into()));
 }
 
 #[test]
@@ -334,10 +332,16 @@ fn a_calculated_column_shows_the_result_access_stored() {
 
 #[test]
 fn table_definitions_list_their_indexes() {
-    let cols = [ColSpec::new("id", t::LONG), ColSpec::new("name", t::TEXT), ColSpec::new("n", t::INT)];
+    let cols =
+        [ColSpec::new("id", t::LONG), ColSpec::new("name", t::TEXT), ColSpec::new("n", t::INT)];
     let indexes = [
         IndexSpec { name: "PrimaryKey".into(), columns: vec![(0, true)], kind: 1, unique: true },
-        IndexSpec { name: "byName".into(), columns: vec![(1, true), (2, false)], kind: 0, unique: false },
+        IndexSpec {
+            name: "byName".into(),
+            columns: vec![(1, true), (2, false)],
+            kind: 0,
+            unique: false,
+        },
         IndexSpec { name: "Link".into(), columns: vec![(2, true)], kind: 2, unique: false },
     ];
     let mut tdb = TestDb::new(1);
@@ -370,7 +374,8 @@ fn table_definitions_list_their_indexes() {
 #[test]
 fn a_table_with_a_damaged_index_list_keeps_its_rows() {
     let cols = [ColSpec::new("id", t::LONG)];
-    let indexes = [IndexSpec { name: "PK".into(), columns: vec![(0, true)], kind: 1, unique: true }];
+    let indexes =
+        [IndexSpec { name: "PK".into(), columns: vec![(0, true)], kind: 1, unique: true }];
     let mut tdb = TestDb::new(1);
     let page = tdb.add_table("T", 0, &cols, &[vec![int(5)]], &indexes);
     let mut data = tdb.finish();
@@ -416,9 +421,36 @@ fn complex_database() -> (Vec<u8>, usize) {
             ColSpec::new("FileFlags", t::LONG),
         ],
         &[
-            vec![int(1), int(7), Cv::Null, text("a.txt"), text("txt"), Cv::Long(vec![1; 300]), Cv::Null, int(0)],
-            vec![int(2), int(7), Cv::Null, text("b.png"), text("png"), Cv::Long(vec![2; 10]), Cv::Null, int(0)],
-            vec![int(3), int(8), Cv::Null, text("other.zip"), text("zip"), Cv::Long(vec![3; 5]), Cv::Null, int(0)],
+            vec![
+                int(1),
+                int(7),
+                Cv::Null,
+                text("a.txt"),
+                text("txt"),
+                Cv::Long(vec![1; 300]),
+                Cv::Null,
+                int(0),
+            ],
+            vec![
+                int(2),
+                int(7),
+                Cv::Null,
+                text("b.png"),
+                text("png"),
+                Cv::Long(vec![2; 10]),
+                Cv::Null,
+                int(0),
+            ],
+            vec![
+                int(3),
+                int(8),
+                Cv::Null,
+                text("other.zip"),
+                text("zip"),
+                Cv::Long(vec![3; 5]),
+                Cv::Null,
+                int(0),
+            ],
         ],
         &[],
     );
@@ -533,7 +565,10 @@ fn attachments_multi_values_and_histories_are_read_from_their_hidden_tables() {
     assert_eq!(tags.kind, ComplexKind::MultiValue);
     assert_eq!(
         tags.items[&21],
-        [ComplexItem::Value(Value::Text("red".into())), ComplexItem::Value(Value::Text("blue".into()))]
+        [
+            ComplexItem::Value(Value::Text("red".into())),
+            ComplexItem::Value(Value::Text("blue".into()))
+        ]
     );
 
     let hist = db.complex_data(&objects, page, by("NotesHistory")).unwrap();
@@ -611,7 +646,10 @@ fn property_lists_of_the_catalog_are_read() {
     let db = Db::open(&data).unwrap();
     let props = db.properties_of("msysdb").unwrap();
     assert_eq!(props.len(), 2);
-    assert_eq!((props[0].name.as_str(), &props[0].value), ("StartUpForm", &PropValue::Text("frmMain".into())));
+    assert_eq!(
+        (props[0].name.as_str(), &props[0].value),
+        ("StartUpForm", &PropValue::Text("frmMain".into()))
+    );
     assert_eq!(props[1].value, PropValue::Bool(false));
     assert!(db.properties_of("Other").is_none());
     assert!(db.properties_of("Nothing").is_none());

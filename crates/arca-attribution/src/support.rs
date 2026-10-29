@@ -112,7 +112,13 @@ mod tests {
     use super::*;
 
     fn wallet(value: &'static str) -> SupportAddress {
-        SupportAddress { kind: SupportKind::Crypto, label: "Bitcoin (BTC)", network: "BTC", value, memo: "" }
+        SupportAddress {
+            kind: SupportKind::Crypto,
+            label: "Bitcoin (BTC)",
+            network: "BTC",
+            value,
+            memo: "",
+        }
     }
 
     fn boosty(value: &'static str) -> SupportAddress {

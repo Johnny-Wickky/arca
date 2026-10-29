@@ -49,10 +49,7 @@ pub(super) fn drawing(pages: &[TestPage<'_>], document: &str, masters: &[(u32, &
             ),
         ));
     }
-    parts.push((
-        "visio/pages/pages.xml".into(),
-        format!(r#"<Pages {NS}>{list}</Pages>"#),
-    ));
+    parts.push(("visio/pages/pages.xml".into(), format!(r#"<Pages {NS}>{list}</Pages>"#)));
     let pr: Vec<(&str, &str, &str)> =
         page_rels.iter().map(|(a, b)| (a.as_str(), "page", b.as_str())).collect();
     parts.push(("visio/pages/_rels/pages.xml.rels".into(), rels(&pr)));
@@ -71,13 +68,19 @@ pub(super) fn drawing(pages: &[TestPage<'_>], document: &str, masters: &[(u32, &
                 format!(r#"<MasterContents {NS}><Shapes>{xml}</Shapes></MasterContents>"#),
             ));
         }
-        parts.push(("visio/masters/masters.xml".into(), format!(r#"<Masters {NS}>{mlist}</Masters>"#)));
+        parts.push((
+            "visio/masters/masters.xml".into(),
+            format!(r#"<Masters {NS}>{mlist}</Masters>"#),
+        ));
         let mr: Vec<(&str, &str, &str)> =
             mrels.iter().map(|(a, b)| (a.as_str(), "master", b.as_str())).collect();
         parts.push(("visio/masters/_rels/masters.xml.rels".into(), rels(&mr)));
     }
     parts.push(("visio/_rels/document.xml.rels".into(), rels(&doc_rels)));
-    parts.push(("visio/document.xml".into(), format!(r#"<VisioDocument {NS}>{document}</VisioDocument>"#)));
+    parts.push((
+        "visio/document.xml".into(),
+        format!(r#"<VisioDocument {NS}>{document}</VisioDocument>"#),
+    ));
     let refs: Vec<(&str, &str)> = parts.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     opc(("visio/document.xml", VSDX_CT), &refs)
 }
@@ -183,7 +186,9 @@ fn flips_negate_the_coordinate_about_the_local_pin() {
     let pts = points(paths(&p)[0].0);
     assert!(close(pts[1], (4.0 * 72.0, (11.0 - 4.5) * 72.0)), "{:?}", pts[1]);
     // Both flips and a half turn.
-    let p = render(&one(&rect(r#"<Cell N="FlipX" V="1"/><Cell N="FlipY" V="1"/><Cell N="Angle" V="3.141592653589793"/>"#)));
+    let p = render(&one(&rect(
+        r#"<Cell N="FlipX" V="1"/><Cell N="FlipY" V="1"/><Cell N="Angle" V="3.141592653589793"/>"#,
+    )));
     let pts = points(paths(&p)[0].0);
     // (1,-0.5) -> (-1, 0.5) -> turned by pi: (1, -0.5) -> (4, 3.5).
     assert!(close(pts[1], (4.0 * 72.0, (11.0 - 3.5) * 72.0)), "{:?}", pts[1]);
@@ -209,11 +214,7 @@ fn the_page_scale_turns_drawing_units_into_paper_inches() {
     // A drawing at 1:2 (PageScale 1, DrawingScale 2): 4 drawing inches are 2 paper inches.
     let sheet = r#"<Cell N="PageWidth" V="8.5"/><Cell N="PageHeight" V="11"/><Cell N="PageScale" V="1"/><Cell N="DrawingScale" V="2"/>"#;
     let shapes = rect("");
-    let data = drawing(
-        &[TestPage { attrs: "", sheet, shapes: &shapes, connects: "" }],
-        "",
-        &[],
-    );
+    let data = drawing(&[TestPage { attrs: "", sheet, shapes: &shapes, connects: "" }], "", &[]);
     let p = render(&data);
     let pts = points(paths(&p)[0].0);
     assert!(close(pts[0], (1.0 * 72.0, (11.0 - 1.75) * 72.0)), "{:?}", pts[0]);
@@ -302,7 +303,8 @@ fn infinite_lines_become_long_lines_and_never_fill() {
 fn nurbs_and_splines_are_sampled_and_reported_as_approximations() {
     // A cubic curve through four control points with clamped knots (0 0 0 0 1 1 1 1).
     let rows = r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="NURBSTo" IX="2"><Cell N="X" V="4"/><Cell N="Y" V="0"/><Cell N="A" V="0"/><Cell N="B" V="1"/><Cell N="C" V="0"/><Cell N="D" V="1"/><Cell N="E" V="0" F="NURBS(1, 3, 1, 1, 1, 2, 0, 1, 3, 2, 0, 1)"/></Row>"#;
-    let rendered = render_visio_page_noted(&one(&geometry(rows, "")), 0, &PreviewPolicy::default()).unwrap();
+    let rendered =
+        render_visio_page_noted(&one(&geometry(rows, "")), 0, &PreviewPolicy::default()).unwrap();
     let p = &rendered.page;
     let pts = points(paths(p)[0].0);
     assert!(pts.len() > 8, "sampled: {}", pts.len());
@@ -316,7 +318,8 @@ fn nurbs_and_splines_are_sampled_and_reported_as_approximations() {
 
     // A spline: start, second control point and knots; same treatment.
     let rows = r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="SplineStart" IX="2"><Cell N="X" V="1"/><Cell N="Y" V="2"/><Cell N="A" V="0"/><Cell N="B" V="0"/><Cell N="C" V="1"/><Cell N="D" V="2"/></Row><Row T="SplineKnot" IX="3"><Cell N="X" V="3"/><Cell N="Y" V="2"/><Cell N="A" V="0.5"/></Row><Row T="SplineKnot" IX="4"><Cell N="X" V="4"/><Cell N="Y" V="0"/><Cell N="A" V="1"/></Row>"#;
-    let rendered = render_visio_page_noted(&one(&geometry(rows, "")), 0, &PreviewPolicy::default()).unwrap();
+    let rendered =
+        render_visio_page_noted(&one(&geometry(rows, "")), 0, &PreviewPolicy::default()).unwrap();
     assert!(rendered.page.approximate);
     assert!(rendered.notes.iter().any(|n| n.contains("splines")));
     assert!(points(paths(&rendered.page)[0].0).len() > 8);
@@ -325,7 +328,8 @@ fn nurbs_and_splines_are_sampled_and_reported_as_approximations() {
 #[test]
 fn a_formula_that_is_not_plain_numbers_is_a_line_and_said_so() {
     let rows = r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="PolylineTo" IX="2"><Cell N="X" V="4"/><Cell N="Y" V="0"/><Cell N="A" V="0" F="POLYLINE(0, 0, Width*0.5, Height)"/></Row>"#;
-    let r = render_visio_page_noted(&one(&geometry(rows, "")), 0, &PreviewPolicy::default()).unwrap();
+    let r =
+        render_visio_page_noted(&one(&geometry(rows, "")), 0, &PreviewPolicy::default()).unwrap();
     assert_eq!(points(paths(&r.page)[0].0).len(), 2);
     assert!(r.page.approximate);
 }
@@ -387,9 +391,14 @@ fn master_and_style_cycles_end() {
 fn colour_indices_use_the_document_table_and_patterns_are_flat_colours() {
     let doc = r##"<Colors><ColorEntry IX="0" RGB="#102030"/><ColorEntry IX="1" RGB="#405060"/></Colors>"##;
     let shape = rect("")
-        .replace(r##"<Cell N="FillForegnd" V="#ff0000"/>"##, r#"<Cell N="FillForegnd" V="1"/><Cell N="FillBkgnd" V="0"/>"#)
+        .replace(
+            r##"<Cell N="FillForegnd" V="#ff0000"/>"##,
+            r#"<Cell N="FillForegnd" V="1"/><Cell N="FillBkgnd" V="0"/>"#,
+        )
         .replace(r#"<Cell N="FillPattern" V="1"/>"#, r#"<Cell N="FillPattern" V="5"/>"#);
-    let r = render_visio_page_noted(&drawing(&[page(&shape)], doc, &[]), 0, &PreviewPolicy::default()).unwrap();
+    let r =
+        render_visio_page_noted(&drawing(&[page(&shape)], doc, &[]), 0, &PreviewPolicy::default())
+            .unwrap();
     // Pattern 5 is a hatch: drawn as the mix of the two colours, and reported.
     assert_eq!(paths(&r.page)[0].1, 0xFF28_3848);
     assert!(r.page.approximate);
@@ -445,7 +454,8 @@ fn text_follows_the_rotation_of_the_shape_and_wraps_to_the_block() {
 #[test]
 fn hidden_layers_follow_the_policy() {
     let sheet = r#"<Cell N="PageWidth" V="8.5"/><Cell N="PageHeight" V="11"/><Section N="Layer"><Row IX="0"><Cell N="Name" V="a"/><Cell N="Visible" V="1"/></Row><Row IX="1"><Cell N="Name" V="b"/><Cell N="Visible" V="0"/></Row></Section>"#;
-    let shape = rect(r#"<Section N="LayerMem"><Row IX="0"><Cell N="LayerMember" V="1"/></Row></Section>"#);
+    let shape =
+        rect(r#"<Section N="LayerMem"><Row IX="0"><Cell N="LayerMember" V="1"/></Row></Section>"#);
     let data = drawing(&[TestPage { attrs: "", sheet, shapes: &shape, connects: "" }], "", &[]);
     let shown = render_visio_page_noted(&data, 0, &PreviewPolicy::default()).unwrap();
     assert_eq!(shown.hidden_shown, 1);
@@ -456,7 +466,9 @@ fn hidden_layers_follow_the_policy() {
     assert_eq!(hidden.hidden_omitted, 1);
     assert!(paths(&hidden.page).is_empty());
     // A shape on a visible layer is drawn either way.
-    let shape = rect(r#"<Section N="LayerMem"><Row IX="0"><Cell N="LayerMember" V="0;1"/></Row></Section>"#);
+    let shape = rect(
+        r#"<Section N="LayerMem"><Row IX="0"><Cell N="LayerMember" V="0;1"/></Row></Section>"#,
+    );
     let data = drawing(&[TestPage { attrs: "", sheet, shapes: &shape, connects: "" }], "", &[]);
     assert_eq!(paths(&render_visio_page_noted(&data, 0, &policy).unwrap().page).len(), 1);
 }
@@ -466,7 +478,11 @@ fn three_d_effects_are_reported_as_not_drawn() {
     let shape = rect(r#"<Cell N="BevelTopType" V="3"/><Cell N="BevelTopWidth" V="0.1"/>"#);
     let r = render_visio_page_noted(&one(&shape), 0, &PreviewPolicy::default()).unwrap();
     assert!(r.page.approximate);
-    assert!(r.notes.iter().any(|n| n.contains("3-D effects") && n.contains("not drawn")), "{:?}", r.notes);
+    assert!(
+        r.notes.iter().any(|n| n.contains("3-D effects") && n.contains("not drawn")),
+        "{:?}",
+        r.notes
+    );
     // The shape itself is still drawn; a zero bevel is no effect.
     assert_eq!(paths(&r.page).len(), 1);
     let none = rect(r#"<Cell N="BevelTopType" V="0"/>"#);
@@ -500,7 +516,10 @@ fn connectors_are_drawn_from_their_own_geometry_or_as_a_straight_line() {
     let bare = r#"<Shape ID="9" Type="Shape"><Cell N="BeginX" V="1"/><Cell N="BeginY" V="1"/><Cell N="EndX" V="3"/><Cell N="EndY" V="2"/><Cell N="LinePattern" V="1"/><Cell N="LineWeight" V="0.01"/></Shape>"#;
     let p = render(&one(bare));
     let pts = points(paths(&p)[0].0);
-    assert!(close(pts[0], (72.0, (11.0 - 1.0) * 72.0)) && close(pts[1], (216.0, (11.0 - 2.0) * 72.0)), "{pts:?}");
+    assert!(
+        close(pts[0], (72.0, (11.0 - 1.0) * 72.0)) && close(pts[1], (216.0, (11.0 - 2.0) * 72.0)),
+        "{pts:?}"
+    );
 }
 
 // ---- pages --------------------------------------------------------------------------------------
@@ -550,7 +569,8 @@ fn hostile_numbers_formulas_and_counts_stay_bounded() {
     // NaN, infinity and huge values in cells; a formula that names its own cell.
     let rows = r#"<Row T="MoveTo" IX="1"><Cell N="X" V="NaN"/><Cell N="Y" V="inf"/></Row><Row T="LineTo" IX="2"><Cell N="X" V="1e308"/><Cell N="Y" V="-1e308"/></Row><Row T="ArcTo" IX="3"><Cell N="X" V="1e300"/><Cell N="Y" V="1"/><Cell N="A" V="1e300"/></Row><Row T="EllipticalArcTo" IX="4"><Cell N="X" V="1"/><Cell N="Y" V="1"/><Cell N="A" V="1e300"/><Cell N="B" V="NaN"/><Cell N="C" V="1e300"/><Cell N="D" V="0"/></Row><Row T="Ellipse" IX="5"><Cell N="X" V="1e300"/><Cell N="Y" V="1"/><Cell N="A" V="1"/><Cell N="B" V="1"/><Cell N="C" V="1e300"/><Cell N="D" V="1e300"/></Row>"#;
     let cells = r#"<Cell N="LineWeight" V="1e300" F="LineWeight*2"/><Cell N="Angle" V="1e300"/>"#;
-    let shape = geometry(rows, cells).replace(r#"<Cell N="Width" V="4"/>"#, r#"<Cell N="Width" V="4" F="Width"/>"#);
+    let shape = geometry(rows, cells)
+        .replace(r#"<Cell N="Width" V="4"/>"#, r#"<Cell N="Width" V="4" F="Width"/>"#);
     let p = render(&one(&shape));
     for q in &p.prims {
         if let Prim::Path { ops, width, .. } = q {
@@ -568,7 +588,8 @@ fn hostile_numbers_formulas_and_counts_stay_bounded() {
     let rows = format!(
         r#"<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row><Row T="NURBSTo" IX="2"><Cell N="X" V="4"/><Cell N="Y" V="0"/><Cell N="A" V="1"/><Cell N="B" V="1"/><Cell N="C" V="0"/><Cell N="D" V="1"/><Cell N="E" V="0" F="NURBS(29, 25, 1, 1{few})"/></Row>"#
     );
-    let r = render_visio_page_noted(&one(&geometry(&rows, "")), 0, &PreviewPolicy::default()).unwrap();
+    let r =
+        render_visio_page_noted(&one(&geometry(&rows, "")), 0, &PreviewPolicy::default()).unwrap();
     assert!(r.notes.iter().any(|n| n.contains("degree above 8")));
     assert!(points(paths(&r.page)[0].0).len() <= 600);
 }
@@ -591,7 +612,9 @@ fn a_flood_of_shapes_and_deep_groups_are_cut_not_followed() {
     // Nesting beyond the depth limit.
     let mut deep = String::new();
     for i in 0..200 {
-        deep.push_str(&format!(r#"<Shape ID="{i}" Type="Group"><Cell N="PinX" V="0.01"/><Shapes>"#));
+        deep.push_str(&format!(
+            r#"<Shape ID="{i}" Type="Group"><Cell N="PinX" V="0.01"/><Shapes>"#
+        ));
     }
     deep.push_str(&rect(""));
     for _ in 0..200 {

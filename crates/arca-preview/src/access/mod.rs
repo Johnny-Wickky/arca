@@ -121,9 +121,7 @@ pub(crate) fn extract(
         let complex: Vec<Option<ComplexData>> = table
             .columns
             .iter()
-            .map(|c| {
-                if c.ty == ty::COMPLEX { db.complex_data(&objects, o.page, c) } else { None }
-            })
+            .map(|c| if c.ty == ty::COMPLEX { db.complex_data(&objects, o.page, c) } else { None })
             .collect();
         complex_stopped |= complex.iter().flatten().any(|d| d.stopped);
         let mut grid =
@@ -144,7 +142,9 @@ pub(crate) fn extract(
             }
             for (i, v) in vals.iter().enumerate() {
                 let shown = match v {
-                    Value::Complex(key) => complex_cell(complex.get(i).and_then(Option::as_ref), *key),
+                    Value::Complex(key) => {
+                        complex_cell(complex.get(i).and_then(Option::as_ref), *key)
+                    }
                     other => cell(other),
                 };
                 let Some((kind, text, href)) = shown else { continue };
@@ -351,8 +351,10 @@ fn queries_section(sink: &mut Sink<'_>, db: &Db<'_>, objects: &[Object], shown: 
             }
             Outcome::Unsupported(kind, why) => {
                 as_stored = true;
-                let label = kind
-                    .map_or_else(|| format!("TYPE {:#X}", o.flags & 0xF0), |k| k.label().to_owned());
+                let label = kind.map_or_else(
+                    || format!("TYPE {:#X}", o.flags & 0xF0),
+                    |k| k.label().to_owned(),
+                );
                 (format!("-- {label}: not rebuilt as SQL ({why}); the stored rows follow"), true)
             }
         };
@@ -600,7 +602,10 @@ fn startup_notes(sink: &mut Sink<'_>, db: &Db<'_>) {
         };
         sink.note_detail(
             NoticeKind::Unsupported,
-            format!("access: the database names a {what} ({}); it is never opened or run", short(value)),
+            format!(
+                "access: the database names a {what} ({}); it is never opened or run",
+                short(value)
+            ),
         );
     }
 }
@@ -772,7 +777,10 @@ fn complex_cell(data: Option<&ComplexData>, key: i64) -> Option<(CellKind, Strin
         }
     }
     if data.kind == ComplexKind::VersionHistory {
-        return text(format!("({} versions of this text are kept; only the current one is shown)", items.len()));
+        return text(format!(
+            "({} versions of this text are kept; only the current one is shown)",
+            items.len()
+        ));
     }
     if items.len() > MAX_COMPLEX_IN_CELL {
         parts.push(format!("... ({} more)", items.len() - MAX_COMPLEX_IN_CELL));
@@ -822,8 +830,8 @@ fn date(v: f64) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+mod samples_tests;
 #[cfg(test)]
 mod synthetic_tests;
 #[cfg(test)]
-mod samples_tests;
+mod tests;

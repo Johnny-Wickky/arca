@@ -22,7 +22,9 @@ fn fire_decisions_are_small_json() {
     let noon = T0 + 13 * 3_600_000;
     let j = text(on_fire_json(noon, 0, 0, 1, 1, 0));
     assert!(j.starts_with("{\"action\":\"show\",\"at\":"), "{j}");
-    assert!(text(on_fire_json(noon, 0, 0, 0, 1, 0)).starts_with("{\"action\":\"disabled\",\"at\":0}"));
+    assert!(
+        text(on_fire_json(noon, 0, 0, 0, 1, 0)).starts_with("{\"action\":\"disabled\",\"at\":0}")
+    );
     assert!(text(on_fire_json(noon, 0, 0, 1, 0, 0)).contains("noPermission"));
     assert!(text(on_fire_json(T0 + 3_600_000, 0, 0, 1, 1, 0)).contains("quietHours"));
     assert!(text(on_fire_json(noon, 0, noon - 1000, 1, 1, 0)).contains("tooSoon"));

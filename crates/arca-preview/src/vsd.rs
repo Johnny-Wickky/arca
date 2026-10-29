@@ -380,9 +380,8 @@ impl Walk<'_, '_> {
             });
         }
         let mut element: BTreeMap<u32, String> = BTreeMap::new();
-        for (idx, p) in ptrs
-            .iter()
-            .filter(|(_, p)| p.ty == POINTER_NAME_IDX || p.ty == POINTER_NAME_IDX123)
+        for (idx, p) in
+            ptrs.iter().filter(|(_, p)| p.ty == POINTER_NAME_IDX || p.ty == POINTER_NAME_IDX123)
         {
             self.stream(*p, *idx, level + 1, None, &mut |ev| {
                 let Ev::Chunk(c) = ev else { return };
@@ -408,14 +407,11 @@ impl Walk<'_, '_> {
             }
             // Without a name index, the names are those of the table in order: the first is the
             // document's, then come the pages.
-            let name = element
-                .get(&idx)
-                .cloned()
-                .or_else(|| {
-                    (p.ty == POINTER_PAGE)
-                        .then(|| listed.get(k + 2).or_else(|| fallback.get(k + 2)).cloned())
-                        .flatten()
-                });
+            let name = element.get(&idx).cloned().or_else(|| {
+                (p.ty == POINTER_PAGE)
+                    .then(|| listed.get(k + 2).or_else(|| fallback.get(k + 2)).cloned())
+                    .flatten()
+            });
             w.stream(p, idx, level + 1, name.as_deref(), f);
         };
         let by_index: BTreeMap<u32, Pointer> = ptrs.iter().map(|(i, p)| (*i, *p)).collect();
@@ -580,7 +576,13 @@ pub(crate) fn read_doc(
         .ok_or_else(|| PreviewError::Malformed("the trailer is unreadable".into()))?;
 
     let mut reader = read::Reader::new(version);
-    let mut walk = Walk { v: &mut v, seen: BTreeSet::new(), defer: true, pages: Vec::new(), fallback: Vec::new() };
+    let mut walk = Walk {
+        v: &mut v,
+        seen: BTreeSet::new(),
+        defer: true,
+        pages: Vec::new(),
+        fallback: Vec::new(),
+    };
     walk.seen.insert(trailer.offset);
     walk.container(trailer_content.body(), 0, &mut |ev| reader.event(&ev));
     let refs = std::mem::take(&mut walk.pages);

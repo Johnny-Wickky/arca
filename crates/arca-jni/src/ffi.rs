@@ -625,12 +625,18 @@ pub extern "system" fn Java_org_arca_viewer_Native_reminderPick(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_arca_viewer_Native_reminderItemCount(_env: Env, _class: JObject) -> JInt {
+pub extern "system" fn Java_org_arca_viewer_Native_reminderItemCount(
+    _env: Env,
+    _class: JObject,
+) -> JInt {
     guard(0, api::reminder_item_count)
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_arca_viewer_Native_extraSupport(env: Env, _class: JObject) -> JObject {
+pub extern "system" fn Java_org_arca_viewer_Native_extraSupport(
+    env: Env,
+    _class: JObject,
+) -> JObject {
     bytes_result(env, || Some(api::extra_support()))
 }
 

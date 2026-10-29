@@ -47,11 +47,7 @@ pub(crate) enum Want {
     All,
 }
 
-fn load(
-    data: &[u8],
-    policy: &PreviewPolicy,
-    want: Want,
-) -> Result<model::Doc, PreviewError> {
+fn load(data: &[u8], policy: &PreviewPolicy, want: Want) -> Result<model::Doc, PreviewError> {
     if data.len() > policy.max_input_bytes {
         return Err(PreviewError::TooLarge(policy.max_input_bytes));
     }
@@ -71,10 +67,7 @@ fn load(
 /// [`PreviewError::Unsupported`] for other formats; [`PreviewError::Malformed`] when the page list
 /// cannot be read.
 #[allow(dead_code)] // wired by the page-rendering entry point of the engine
-pub(crate) fn visio_page_count(
-    data: &[u8],
-    policy: &PreviewPolicy,
-) -> Result<usize, PreviewError> {
+pub(crate) fn visio_page_count(data: &[u8], policy: &PreviewPolicy) -> Result<usize, PreviewError> {
     let doc = load(data, policy, Want::Count)?;
     Ok(doc.pages.iter().filter(|p| !p.background).count())
 }
