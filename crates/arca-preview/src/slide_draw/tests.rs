@@ -1198,6 +1198,29 @@ fn odp_shapes_transforms_text_and_hidden_pages() {
 }
 
 #[test]
+fn odp_picture_fills_of_the_page_and_of_shapes_are_drawn() {
+    let auto = r##"<draw:fill-image draw:name="Back" xlink:href="Pictures/back.png"/><style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties draw:fill="bitmap" draw:fill-image-name="Back" style:repeat="stretch"/></style:style><style:style style:name="gr1" style:family="graphic"><style:graphic-properties draw:fill="bitmap" draw:fill-image-name="Back" style:repeat="stretch"/></style:style><style:style style:name="gr2" style:family="graphic"><style:graphic-properties draw:fill="bitmap" draw:fill-image-name="Lost"/></style:style>"##;
+    let pages = r#"<draw:page draw:style-name="dp1" draw:master-page-name="Default"><draw:rect draw:style-name="gr1" svg:x="2cm" svg:y="1cm" svg:width="6cm" svg:height="3cm"/></draw:page>"#;
+    let data = odp(auto, pages, &[("Pictures/back.png", b"PNG!")]);
+    let r = render_slide_noted(&data, 0, &PreviewPolicy::default()).unwrap();
+    let imgs = images(&r.page);
+    assert_eq!(imgs.len(), 2, "the page's picture and the shape's");
+    assert!(imgs.iter().all(|i| i.1 != crate::model::IMAGE_NONE));
+    // The page's picture covers the page and is drawn first; the shape's is in its frame.
+    let m = imgs[0].0;
+    assert!(near(m[0], 20.0 * CM) && near(m[3], -10.0 * CM) && near(m[4], 0.0), "{m:?}");
+    let m = imgs[1].0;
+    assert!(near(m[0], 6.0 * CM) && near(m[3], -3.0 * CM) && near(m[4], 2.0 * CM), "{m:?}");
+    assert!(!r.page.approximate);
+
+    // A fill that names a picture the styles do not have is noted, not drawn.
+    let lost = r#"<draw:page draw:master-page-name="Default"><draw:rect draw:style-name="gr2" svg:x="0cm" svg:y="0cm" svg:width="1cm" svg:height="1cm"/></draw:page>"#;
+    let r = render_slide_noted(&odp(auto, lost, &[]), 0, &PreviewPolicy::default()).unwrap();
+    assert!(images(&r.page).is_empty());
+    assert!(r.page.approximate);
+}
+
+#[test]
 fn odp_tables_lists_and_paths() {
     let auto = r##"<style:style style:name="co1" style:family="table-column"><style:table-column-properties style:column-width="5cm"/></style:style><style:style style:name="ce1" style:family="table-cell"><style:table-cell-properties fo:background-color="#ff0000" fo:border="0.05pt solid #0000ff"/></style:style><text:list-style style:name="L1"><text:list-level-style-bullet text:level="1" text:bullet-char="•"><style:list-level-properties text:space-before="0cm" text:min-label-width="0.6cm"/></text:list-level-style-bullet><text:list-level-style-number text:level="2" style:num-format="1" style:num-suffix="."><style:list-level-properties text:space-before="0.6cm" text:min-label-width="0.6cm"/></text:list-level-style-number></text:list-style>"##;
     let pages = r#"<draw:page draw:master-page-name="Default"><draw:frame svg:x="1cm" svg:y="1cm" svg:width="10cm" svg:height="3cm"><table:table><table:table-column table:style-name="co1" table:number-columns-repeated="2"/><table:table-row><table:table-cell table:style-name="ce1"><text:p>A</text:p></table:table-cell><table:table-cell><text:p>B</text:p></table:table-cell></table:table-row></table:table></draw:frame><draw:frame svg:x="1cm" svg:y="5cm" svg:width="10cm" svg:height="4cm"><draw:text-box><text:list text:style-name="L1"><text:list-item><text:p>top</text:p><text:list><text:list-item><text:p>sub</text:p></text:list-item></text:list></text:list-item></text:list></draw:text-box></draw:frame><draw:path svg:x="12cm" svg:y="1cm" svg:width="4cm" svg:height="4cm" svg:viewBox="0 0 100 100" svg:d="M 0 0 L 100 0 L 100 100 Z"/><draw:custom-shape svg:x="12cm" svg:y="5cm" svg:width="4cm" svg:height="4cm"><draw:enhanced-geometry draw:type="mystery"/></draw:custom-shape></draw:page>"#;
