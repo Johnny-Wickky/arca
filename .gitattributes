@@ -1,7 +1,10 @@
-# Shell scripts must keep LF endings on Windows checkouts (CI runs them with bash).
+# Normalise line endings: the repository and every working copy (including Windows git.exe checkouts) use LF.
+* text=auto eol=lf
 *.sh text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
 *.wasm binary
 # Fixtures are compared byte for byte (dumps, text, RTF): never convert their line endings.
-tests/fixtures/** -text
+tests/fixtures/**  -text
 
 crates/arca-image/tests/fixtures/** binary
