@@ -235,13 +235,7 @@ fn push_run(run: &Run, role: ParaStyle, para_size: f32, para_bold: bool, out: &m
         color = INSERTED;
         underline = true;
     }
-    let shift = if run.style & style::SUPER != 0 {
-        0.65
-    } else if run.style & style::SUB != 0 {
-        0.65
-    } else {
-        1.0
-    };
+    let shift = if run.style & (style::SUPER | style::SUB) != 0 { 0.65 } else { 1.0 };
     let size = size * shift;
     let mut bits = 0u8;
     if bold {

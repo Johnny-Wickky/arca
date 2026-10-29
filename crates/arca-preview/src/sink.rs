@@ -773,7 +773,6 @@ impl ParaBuilder {
             fg: fmt.fg,
             bg: fmt.bg,
             scale: fmt.scale,
-            ..Default::default()
         });
     }
 
