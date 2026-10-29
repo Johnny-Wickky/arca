@@ -21,6 +21,8 @@
 #![forbid(unsafe_code)]
 
 pub mod compat;
+#[cfg(test)]
+mod contrast;
 pub mod dom;
 pub mod elf;
 pub mod genr;
