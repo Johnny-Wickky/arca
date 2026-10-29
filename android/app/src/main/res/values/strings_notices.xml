@@ -44,7 +44,7 @@
     <string name="notice_d_skipped_curves_of_a_degree_above_8_are_drawn_with_degree_8">curves of a degree above 8 are drawn with degree 8</string>
     <string name="notice_d_skipped_damaged_pdf_stream">a damaged PDF stream</string>
     <string name="notice_d_skipped_damaged_word_text">damaged Word text</string>
-    <string name="notice_d_skipped_dashed_and_dotted_lines_are_drawn_solid">dashed and dotted lines are drawn solid</string>
+    <string name="notice_d_skipped_dash_patterns_are_approximated_by_regular_dashes">dash patterns are approximated by regular dashes</string>
     <string name="notice_d_skipped_fill_patterns_and_gradients_are_drawn_as_flat_colours">fill patterns and gradients are drawn as flat colours</string>
     <string name="notice_d_skipped_macro_text">the text of macros (macros are never run)</string>
     <string name="notice_d_skipped_n_slide_part_s_that_the_presentation_does_not_list">%1$s slide part(s) that the presentation does not list</string>

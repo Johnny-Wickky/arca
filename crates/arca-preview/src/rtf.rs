@@ -225,7 +225,7 @@ struct Parser<'a, 's, 'p> {
     page: crate::model::PageSetup,
     /// The group read is a footer, not a header.
     side_footer: bool,
-    /// Tab stops of the paragraph, and the kind and leader said for the next `	x`.
+    /// Tab stops of the paragraph, and the kind and leader said for the next tab stop.
     tabs: Vec<crate::model::TabStop>,
     tab_kind: u8,
     tab_leader: u8,

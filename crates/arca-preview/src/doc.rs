@@ -867,7 +867,11 @@ fn border_rgb(kind: u8, colour: u32) -> u32 {
 fn parse_pap_into(p: &mut Pap, prl: &[u8]) {
     for (op, arg) in Sprms::new(prl) {
         let b = arg.first().copied().unwrap_or(0);
-        let word = |at: usize| arg.get(at..at + 2).map_or(0, |s| i16::from_le_bytes([s[0], s[1]]));
+        let word = |at: usize| {
+            arg.get(at..at + 2)
+                .and_then(|s| <[u8; 2]>::try_from(s).ok())
+                .map_or(0, i16::from_le_bytes)
+        };
         match op {
             0x4600 => p.istd = u16_le(arg, 0).unwrap_or(p.istd),
             0x2416 => p.in_table = b & 1 == 1,
@@ -935,7 +939,9 @@ fn read_tabs(p: &mut Pap, arg: &[u8], at: usize) {
     let mut count = 0usize;
     for i in 0..n {
         let (Some(pos), Some(&tbd)) = (
-            arg.get(at + 1 + i * 2..at + 3 + i * 2).map(|s| i16::from_le_bytes([s[0], s[1]])),
+            arg.get(at + 1 + i * 2..at + 3 + i * 2)
+                .and_then(|s| <[u8; 2]>::try_from(s).ok())
+                .map(i16::from_le_bytes),
             arg.get(at + 1 + n * 2 + i),
         ) else {
             break;
@@ -3022,7 +3028,7 @@ mod tests {
                 &[
                     sp1(0x2403, 1),
                     sp2(0x840F, 720),
-                    sp2(0x8460, (-360i16) as u16),
+                    sp2(0x8460, u16::from_le_bytes((-360i16).to_le_bytes())),
                     sp4(0x6412, 360 | (1 << 16)),
                     sp4(0x6425, u32::from_le_bytes([4, 1, 6, 0])),
                 ]

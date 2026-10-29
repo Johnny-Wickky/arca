@@ -1485,6 +1485,7 @@ impl Handler for PageHandler {
 }
 
 /// The paragraphs of a header or footer part, read in a scratch section of the sink.
+#[allow(clippy::too_many_arguments, reason = "the walker needs the shared state of the document")]
 fn running_text(
     pkg: &mut Package<'_>,
     sink: &mut Sink<'_>,
@@ -1510,6 +1511,7 @@ fn running_text(
 }
 
 /// Sets the page of the body section from the first `w:sectPr`.
+#[allow(clippy::too_many_arguments, reason = "the walker needs the shared state of the document")]
 fn read_page(
     pkg: &mut Package<'_>,
     sink: &mut Sink<'_>,

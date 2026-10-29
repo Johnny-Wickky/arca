@@ -288,16 +288,16 @@ pub fn sniff(data: &[u8]) -> Option<ImageFormat> {
 #[must_use]
 pub fn sniff_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     let be32 = |at: usize| -> Option<u32> {
-        data.get(at..at.checked_add(4)?).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        data.get(at..at.checked_add(4)?)?.try_into().ok().map(u32::from_be_bytes)
     };
     let le32 = |at: usize| -> Option<u32> {
-        data.get(at..at.checked_add(4)?).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        data.get(at..at.checked_add(4)?)?.try_into().ok().map(u32::from_le_bytes)
     };
     let le16 = |at: usize| -> Option<u32> {
-        data.get(at..at.checked_add(2)?).map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])))
+        data.get(at..at.checked_add(2)?)?.try_into().ok().map(u16::from_le_bytes).map(u32::from)
     };
     let be16 = |at: usize| -> Option<u32> {
-        data.get(at..at.checked_add(2)?).map(|b| u32::from(u16::from_be_bytes([b[0], b[1]])))
+        data.get(at..at.checked_add(2)?)?.try_into().ok().map(u16::from_be_bytes).map(u32::from)
     };
     let dims = match sniff(data)? {
         ImageFormat::Png => (be32(16)?, be32(20)?),
