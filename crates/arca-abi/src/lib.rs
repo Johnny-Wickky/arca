@@ -4,7 +4,7 @@
 //! # arca-abi — the contract between the sandbox host and parser guests
 //!
 //! A parser guest is a `wasm32-unknown-unknown` module with **zero imports**.
-//! It exports exactly the following items (version 3):
+//! It exports exactly the following items (version 5):
 //!
 //! | export                         | signature           | meaning |
 //! |--------------------------------|---------------------|---------|
@@ -23,10 +23,11 @@
 //! encoded with the [`wire`] codec.
 //!
 //! Version 2 added the request header: a guest now serves several operations
-//! (scan, sterilise, preview) instead of one. Version 3 (this version) lets the
-//! header carry a password, which the guest uses to open an encrypted document
-//! inside the sandbox. A guest of another version is refused by the sandbox
-//! because its `arca_abi_version` differs.
+//! (scan, sterilise, preview) instead of one. Version 3 lets the header carry a
+//! password, which the guest uses to open an encrypted document inside the
+//! sandbox. Later versions extended the operation set (see [`request`]); the
+//! current one is [`ABI_VERSION`]. A guest of another version is refused by the
+//! sandbox because its `arca_abi_version` differs.
 //!
 //! Nothing in the ABI requires `unsafe` code on either side: the host uses
 //! the interpreter's checked memory accessors and the guest only hands out

@@ -38,7 +38,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_list_is_valid_json_and_empty_while_only_placeholders_are_set() {
+    fn the_list_is_valid_json_and_empty_while_no_entry_is_configured() {
         let json = String::from_utf8(extra_support_json()).expect("utf-8");
         if configured().is_empty() {
             assert_eq!(json, "{\"items\":[]}");
