@@ -114,6 +114,7 @@ fn sample_preview() -> Preview {
         format: FileFormat::Xlsx,
         sections: vec![
             Section {
+            page: Default::default(),
                 kind: SectionKind::Body,
                 name: String::new(),
                 hidden: false,
@@ -127,11 +128,13 @@ fn sample_preview() -> Preview {
                         bytes: 99,
                         external: true,
                         id: 3,
+                        ..ImageInfo::default()
                     }),
                     Block::Para(para("end")),
                 ],
             },
             Section {
+            page: Default::default(),
                 kind: SectionKind::Sheet,
                 name: "Лист \"1\"".into(),
                 hidden: true,
@@ -142,6 +145,7 @@ fn sample_preview() -> Preview {
                 ],
             },
             Section {
+            page: Default::default(),
                 kind: SectionKind::Slide,
                 name: String::new(),
                 hidden: false,
@@ -306,6 +310,7 @@ fn a_huge_sparse_grid_is_indexed_without_materialising_it() {
     let preview = Preview {
         format: FileFormat::Csv,
         sections: vec![Section {
+            page: Default::default(),
             kind: SectionKind::Sheet,
             name: "big".into(),
             hidden: false,

@@ -1082,6 +1082,7 @@ impl Interp<'_, '_> {
                     bytes: u64::try_from(self.pdf.raw_len(&stream)).unwrap_or(0),
                     external: false,
                     id: num.unwrap_or(crate::model::IMAGE_NONE),
+                    ..ImageInfo::default()
                 };
                 self.record_image(&info);
                 self.push_image(info);

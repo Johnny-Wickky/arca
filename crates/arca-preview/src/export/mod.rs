@@ -393,6 +393,7 @@ mod tests {
         let p = Preview {
             format: FileFormat::Xls,
             sections: vec![Section {
+            page: Default::default(),
                 kind: SectionKind::Sheet,
                 name: "S".into(),
                 hidden: false,

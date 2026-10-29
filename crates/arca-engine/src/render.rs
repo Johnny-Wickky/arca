@@ -686,6 +686,10 @@ fn image(w: &mut JsonWriter, i: &ImageInfo) {
     if i.id != IMAGE_NONE {
         w.field_u64("id", u64::from(i.id));
     }
+    if i.width > 0 && i.height > 0 {
+        w.field_u64("w", u64::from(i.width));
+        w.field_u64("h", u64::from(i.height));
+    }
     w.end_object();
 }
 

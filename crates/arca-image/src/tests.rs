@@ -10,6 +10,7 @@
 use super::*;
 use crate::exif::tests::{V, build};
 use crate::testkit::{PngSpec, png};
+use crate::testkit_img::bmp;
 
 fn lim() -> Limits {
     Limits::default()
@@ -566,5 +567,52 @@ fn mutated_jpegs_never_panic() {
             }
             let _ = inspect(&d, &l);
         }
+    }
+}
+
+#[test]
+fn headers_state_the_size_without_decoding() {
+    // PNG: signature, IHDR length, "IHDR", width, height.
+    let mut png_head = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+    png_head.extend_from_slice(b"IHDR");
+    png_head.extend_from_slice(&640u32.to_be_bytes());
+    png_head.extend_from_slice(&480u32.to_be_bytes());
+    assert_eq!(sniff_dimensions(&png_head), Some((640, 480)));
+
+    let mut gif_head = b"GIF89a".to_vec();
+    gif_head.extend_from_slice(&300u16.to_le_bytes());
+    gif_head.extend_from_slice(&200u16.to_le_bytes());
+    assert_eq!(sniff_dimensions(&gif_head), Some((300, 200)));
+
+    // JPEG: a JFIF segment first, then the frame header (height before width).
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 16];
+    jpeg.extend_from_slice(b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0");
+    jpeg.extend_from_slice(&[0xFF, 0xC0, 0, 17, 8]);
+    jpeg.extend_from_slice(&120u16.to_be_bytes());
+    jpeg.extend_from_slice(&90u16.to_be_bytes());
+    assert_eq!(sniff_dimensions(&jpeg), Some((90, 120)));
+
+    // BMP: a bottom-up bitmap stores a positive height, a top-down one a negative height.
+    let rows = vec![vec![0u8; 3]; 2];
+    let up = bmp(1, 2, 24, 0, &[], None, &rows);
+    let down = bmp(1, -2, 24, 0, &[], None, &rows);
+    assert_eq!(sniff_dimensions(&up), Some((1, 2)));
+    assert_eq!(sniff_dimensions(&down), Some((1, 2)));
+}
+
+#[test]
+fn a_damaged_or_foreign_header_gives_no_size() {
+    assert_eq!(sniff_dimensions(&[]), None);
+    assert_eq!(sniff_dimensions(b"not a picture at all"), None);
+    assert_eq!(sniff_dimensions(&[0xFF, 0xD8, 0xFF]), None, "a JPEG without a frame header");
+    assert_eq!(sniff_dimensions(&[0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xFF, 1]), None, "a segment past the end");
+    let mut zero = b"GIF89a".to_vec();
+    zero.extend_from_slice(&[0, 0, 5, 0]);
+    assert_eq!(sniff_dimensions(&zero), None, "a zero width is no size");
+    for cut in 0..40 {
+        let mut h = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        h.extend_from_slice(b"IHDR\0\0\0\x10\0\0\0\x10");
+        h.truncate(cut);
+        let _ = sniff_dimensions(&h);
     }
 }

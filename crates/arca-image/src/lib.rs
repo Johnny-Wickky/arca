@@ -282,6 +282,69 @@ pub fn sniff(data: &[u8]) -> Option<ImageFormat> {
     None
 }
 
+/// The width and height in pixels that the header of a PNG, JPEG, GIF or BMP states, without
+/// decoding a single pixel. `None` for anything else, for a damaged header, or for a size of zero.
+/// What the header says is a claim; [`inspect`] and [`decode`] check it against their limits.
+#[must_use]
+pub fn sniff_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let be32 = |at: usize| -> Option<u32> {
+        data.get(at..at.checked_add(4)?).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let le32 = |at: usize| -> Option<u32> {
+        data.get(at..at.checked_add(4)?).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let le16 = |at: usize| -> Option<u32> {
+        data.get(at..at.checked_add(2)?).map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])))
+    };
+    let be16 = |at: usize| -> Option<u32> {
+        data.get(at..at.checked_add(2)?).map(|b| u32::from(u16::from_be_bytes([b[0], b[1]])))
+    };
+    let dims = match sniff(data)? {
+        ImageFormat::Png => (be32(16)?, be32(20)?),
+        ImageFormat::Gif => (le16(6)?, le16(8)?),
+        ImageFormat::Bmp => {
+            if le32(14)? == 12 {
+                (le16(18)?, le16(20)?)
+            } else {
+                // The height of a bottom-up bitmap is stored negated.
+                let h = i32::from_le_bytes(le32(22)?.to_le_bytes());
+                (le32(18)?, h.unsigned_abs())
+            }
+        }
+        ImageFormat::Jpeg => {
+            let mut at = 2usize;
+            let mut found = None;
+            // Walk the marker segments up to the first frame header.
+            for _ in 0..4096 {
+                if *data.get(at)? != 0xFF {
+                    return None;
+                }
+                let marker = *data.get(at.checked_add(1)?)?;
+                match marker {
+                    0xFF => {
+                        at += 1;
+                        continue;
+                    }
+                    0xD8 | 0x01 | 0xD0..=0xD7 => {
+                        at += 2;
+                        continue;
+                    }
+                    0xD9 | 0xDA => return None,
+                    0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
+                        found = Some((be16(at.checked_add(7)?)?, be16(at.checked_add(5)?)?));
+                        break;
+                    }
+                    _ => {}
+                }
+                at = at.checked_add(2)?.checked_add(usize::try_from(be16(at.checked_add(2)?)?).ok()?)?;
+            }
+            found?
+        }
+        ImageFormat::Raw => return None,
+    };
+    if dims.0 == 0 || dims.1 == 0 { None } else { Some(dims) }
+}
+
 /// What the first bytes say about a format this crate does not read, if anything.
 #[must_use]
 pub fn sniff_unsupported(data: &[u8]) -> Option<&'static str> {

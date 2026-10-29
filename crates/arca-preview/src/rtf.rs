@@ -134,6 +134,11 @@ struct Font {
 
 /// RTF character set (`\fcharsetN`) → Windows code page.
 /// A colour table index from a control word parameter (`0` and anything out of range: none).
+/// Twips as the whole points a picture size is kept in.
+fn pt_of_twips(twips: i32) -> u16 {
+    u16::try_from((twips / 20).clamp(0, 5_000)).unwrap_or(0)
+}
+
 fn color_index(param: Option<i32>) -> u16 {
     param.and_then(|n| u16::try_from(n).ok()).filter(|n| *n < 256).unwrap_or(0)
 }
@@ -217,6 +222,8 @@ struct Parser<'a, 's, 'p> {
     side_b: ParaBuilder,
     headers: Vec<Paragraph>,
     pict_media: String,
+    /// `picwgoal` and `pichgoal` of the picture being read, in twips.
+    pict_goal: (i32, i32),
     pict_bin: u64,
 
     // Text decoding.
@@ -291,6 +298,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             side_b: ParaBuilder::new(),
             headers: Vec::new(),
             pict_media: String::new(),
+            pict_goal: (0, 0),
             pict_bin: 0,
             skip_left: 0,
             high_surrogate: None,
@@ -423,6 +431,8 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                     bytes,
                     external: false,
                     id: u32::try_from(g.start).unwrap_or(crate::model::IMAGE_NONE),
+                    width: pt_of_twips(self.pict_goal.0),
+                    height: pt_of_twips(self.pict_goal.1),
                 };
                 self.pict_bin = 0;
                 self.pending_blocks.push(Block::Image(info));
@@ -589,6 +599,11 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                 return;
             }
             Dest::Pict => {
+                match name {
+                    "picwgoal" => self.pict_goal.0 = param.unwrap_or(0),
+                    "pichgoal" => self.pict_goal.1 = param.unwrap_or(0),
+                    _ => {}
+                }
                 self.pict_media = match name {
                     "pngblip" => "png",
                     "jpegblip" => "jpeg",
@@ -596,7 +611,9 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
                     "wmetafile" => "wmf",
                     "dibitmap" | "wbitmap" => "bmp",
                     "macpict" => "pict",
-                    _ => return,
+                    _ => {
+                        return;
+                    }
                 }
                 .to_owned();
                 return;
@@ -794,6 +811,7 @@ impl<'a, 's, 'p> Parser<'a, 's, 'p> {
             }
             Dest::Pict => {
                 self.pict_media.clear();
+                self.pict_goal = (0, 0);
                 self.pict_bin = 0;
             }
             Dest::ObjClass => self.objclass.clear(),
