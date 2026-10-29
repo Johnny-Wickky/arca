@@ -14,7 +14,7 @@ use crate::model::{
 };
 use crate::opc::Package;
 use crate::sink::{ParaBuilder, Sink};
-use crate::xml::{self, Flow, Handler, Tag, XmlError, unescape};
+use crate::xml::{self, Flow, Handler, Tag, XmlError, XmlLimits, unescape};
 
 #[derive(Debug, Clone, Default)]
 struct RelInfo {
@@ -114,7 +114,7 @@ impl Handler for DiagramHandler {
 }
 
 /// The paragraphs of the diagram data part `xml_text`.
-fn diagram_lines(xml_text: &str, limits: &crate::xml::XmlLimits) -> Vec<String> {
+fn diagram_lines(xml_text: &str, limits: &XmlLimits) -> Vec<String> {
     let mut h = DiagramHandler::default();
     // A damaged part keeps what was read before the damage.
     let _ = xml::drive(xml_text, limits, &mut h);
@@ -693,10 +693,10 @@ pub(crate) fn extract(pkg: &mut Package<'_>, sink: &mut Sink<'_>) -> Result<(), 
         }
     }
     if unsupported {
-        sink.note(NoticeKind::Unsupported, "charts, SmartArt without text and embedded objects");
+        sink.note(NoticeKind::Unsupported, "charts, SmartArt and embedded objects");
     }
     if smartart {
-        sink.note(NoticeKind::Unsupported, "SmartArt layout (its text is shown as a list)");
+        sink.note(NoticeKind::Unsupported, "SmartArt shown as a text list");
     }
     Ok(())
 }
@@ -950,14 +950,14 @@ mod tests {
     #[test]
     fn smartart_text_is_read_from_the_diagram_data() {
         let gf = r#"<p:graphicFrame><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" r:dm="rId5" r:lo="rId6"/></a:graphicData></a:graphic></p:graphicFrame>"#;
-        let data = format!(
+        let data = String::from(
             r#"<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><dgm:ptLst>
                <dgm:pt modelId="1" type="doc"><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:p><a:endParaRPr/></a:p></dgm:t></dgm:pt>
                <dgm:pt modelId="2"><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:p><a:r><a:rPr/><a:t>Планирование</a:t></a:r></a:p></dgm:t></dgm:pt>
                <dgm:pt modelId="3" type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Execu</a:t></a:r><a:r><a:t>tion</a:t></a:r></a:p></dgm:t></dgm:pt>
                <dgm:pt modelId="4" type="pres"><dgm:t><a:bodyPr/><a:p><a:r><a:t>layout noise</a:t></a:r></a:p></dgm:t></dgm:pt>
                <dgm:pt modelId="5" type="parTrans"><dgm:t><a:bodyPr/><a:p><a:r><a:t>transition noise</a:t></a:r></a:p></dgm:t></dgm:pt>
-               </dgm:ptLst></dgm:dataModel>"#
+               </dgm:ptLst></dgm:dataModel>"#,
         );
         let slide_rels = rels(&[("rId5", "diagramData", "../diagrams/data1.xml")]);
         let p = ok(&deck(&[(gf, &slide_rels)], &[("ppt/diagrams/data1.xml", &data)]));

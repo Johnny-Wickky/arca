@@ -393,7 +393,7 @@ fn code_page_of_charset(charset: u8) -> Option<u16> {
 /// environment), otherwise Windows-1252. A text atom of one-byte characters carries no code page
 /// of its own; reading it as Latin-1 turned every Cyrillic or Central European deck to noise.
 fn document_code_page(doc: &Rec<'_>) -> u16 {
-    let mut page = 1252;
+    let page = 1252;
     for env in doc.children().take(MAX_RECORDS).filter(|r| r.typ == RT_ENVIRONMENT) {
         for fonts in env.children().take(MAX_RECORDS).filter(|r| r.typ == RT_FONT_COLLECTION) {
             for font in fonts.children().take(MAX_RECORDS).filter(|r| r.typ == RT_FONT_ENTITY) {

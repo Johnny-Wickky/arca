@@ -88,6 +88,7 @@
     <string name="notice_d_truncated_repeated_cells">repeated cells beyond the limit</string>
     <string name="notice_d_truncated_repeated_rows">repeated rows beyond the limit</string>
     <string name="notice_d_truncated_runs_per_paragraph">pieces of formatted text in a paragraph beyond the limit</string>
+    <string name="notice_d_truncated_schema">table columns beyond the limit</string>
     <string name="notice_d_truncated_section_name">a section name was too long</string>
     <string name="notice_d_truncated_sections">sections beyond the limit</string>
     <string name="notice_d_truncated_shape_data_texts_and_connections">shape data, texts and connections beyond the limit</string>
@@ -102,6 +103,7 @@
     <string name="notice_d_unsupported_attachments_are_listed_not_opened">opening attachments (they are only listed)</string>
     <string name="notice_d_unsupported_charts">charts</string>
     <string name="notice_d_unsupported_charts_smartart_and_embedded_objects">charts, SmartArt and embedded objects</string>
+    <string name="notice_d_unsupported_smartart_shown_as_a_text_list">SmartArt diagrams are shown as a list of their text</string>
     <string name="notice_d_unsupported_drawings_and_charts">drawings and charts</string>
     <string name="notice_d_unsupported_drawings_and_shapes">drawings and shapes</string>
     <string name="notice_d_unsupported_elements_in_a_foreign_namespace_were_ignored">elements from a foreign XML namespace (they were ignored)</string>

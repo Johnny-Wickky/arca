@@ -74,7 +74,7 @@ Environment secrets*. Окружение создайте заранее (имя
 Отпечаток сертификата подписи автоматически попадает в заметки релиза: сохраните его и
 сверяйте с ним все следующие версии.
 
-**Постоянный ключ 0.3.0 (ручная подпись).** Ключ `PKCS12 RSA-4096` лежит вне репозитория:
+**Постоянный ключ (с 0.3.0; ручная подпись).** Ключ `PKCS12 RSA-4096` лежит вне репозитория:
 `../arca-keys/arca-release.p12` (рядом с каталогом проекта), алиас `arca`, срок 100 лет, пароль хранится только у
 владельца ключа и не попадает в Git, логи сборки и скрипты. Отпечаток сертификата (SHA-256):
 `3b3b819dea6a02ffdea05ac7ce53df9b2bdf004dac3082c048557383cfaf737e`. Сборка и подпись вручную (Linux или контейнер
@@ -83,8 +83,8 @@ Environment secrets*. Окружение создайте заранее (имя
 ```sh
 export ARCA_RELEASE=1 ARCA_KEYSTORE=../arca-keys/arca-release.p12 ARCA_KEY_ALIAS=arca
 read -rs ARCA_KEYSTORE_PASS && export ARCA_KEYSTORE_PASS   # пароль вводится, а не записывается
-bash tools/android/build-local.sh                           # гость -> библиотеки -> dist/arca-0.3.0.apk
-apksigner verify --verbose --print-certs dist/arca-0.3.0.apk
+bash tools/android/build-local.sh                           # гость -> библиотеки -> dist/arca-0.4.0.apk
+apksigner verify --verbose --print-certs dist/arca-0.4.0.apk
 ```
 
 Файлы ключей (`.p12`, `.pfx`, `.jks`, `.keystore`, `.key`, `.pem`) запрещены в репозитории:

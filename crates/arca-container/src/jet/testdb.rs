@@ -14,8 +14,16 @@
 //! (saved queries, complex columns, calculated columns, property lists) that no available
 //! database-writing library can produce.
 
+// The builder is test code (it is compiled for tests, and for the tests of other crates through the
+// `test-support` feature): it indexes its own buffers freely.
 #![allow(
     dead_code,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::string_slice,
+    missing_docs,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
@@ -566,16 +574,4 @@ pub(crate) fn text(s: &str) -> Cv {
 
 pub(crate) fn int(v: i64) -> Cv {
     Cv::Int(v)
-}
-
-/// A database whose catalog lists exactly the given objects, `(type, name)`, besides itself.
-/// `version` is the version byte (1 for Access 2000, 3 for 2010). For the tests of other crates.
-#[cfg(feature = "test-support")]
-#[must_use]
-pub fn database_with_objects(version: u8, objects: &[(i64, &str)]) -> Vec<u8> {
-    let mut db = TestDb::new(version);
-    for (n, (kind, name)) in (10i64..).zip(objects) {
-        db.add_object(n, *kind, name, 0);
-    }
-    db.finish()
 }
