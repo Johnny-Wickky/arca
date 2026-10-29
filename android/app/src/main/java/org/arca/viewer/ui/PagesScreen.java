@@ -13,6 +13,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 import org.arca.viewer.MainActivity;
+import org.arca.viewer.Prefs;
 import org.arca.viewer.R;
 import org.arca.viewer.Session;
 import org.arca.viewer.core.PageDrawing;
@@ -176,6 +177,17 @@ public final class PagesScreen extends Screen {
                 act.back();
             }
         }));
+        // Pictures in the text: on, the pictures of the page are decoded in the sandbox as soon as it
+        // is drawn; off, each is a grey box to tap. The same switch as in the reading view.
+        final boolean pictures = Prefs.autoImages(act);
+        row.addView(ui.iconButton(pictures ? R.drawable.ic_eye : R.drawable.ic_eye_off,
+            pictures ? R.string.pictures_hide : R.string.pictures_show, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Prefs.setAutoImages(act, !pictures);
+                    act.refresh();
+                }
+            }));
         row.addView(new View(act), new LinearLayout.LayoutParams(0, 1, 1f));
         row.addView(ui.iconButton(R.drawable.ic_minus, R.string.zoom_out, new View.OnClickListener() {
             @Override

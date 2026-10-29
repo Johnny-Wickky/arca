@@ -1010,8 +1010,14 @@ public final class Session {
     private final java.util.Map<Integer, List<ImageCallback>> imageWaiting = new java.util.HashMap<>();
     private final java.util.Set<Long> imageJobs = new java.util.HashSet<>();
 
-    /** Most pictures that may wait for the sandbox at once (the one being decoded included). */
-    static final int MAX_IMAGE_PENDING = 4;
+    /**
+     * Most pictures that may wait for the sandbox at once (the one being decoded included). They
+     * are decoded one after another in the order they were asked for, and a request that nobody
+     * waits for any more is dropped while it is queued ({@link #cancelImage}), so this is only a
+     * ceiling against a document with an absurd number of pictures: a page or a section asks for
+     * all the pictures it shows at once, and none of them may push another one out.
+     */
+    static final int MAX_IMAGE_PENDING = 256;
 
     /** A request for a picture that has not finished. Guarded by {@code lock} where it says so. */
     private static final class ImageTask {
@@ -1084,6 +1090,11 @@ public final class Session {
         if (phase != Phase.READY) {
             return;
         }
+        if (imageTasks.size() >= MAX_IMAGE_PENDING && !imageTasks.containsKey(id)) {
+            // Over the ceiling: this one is not queued, and its asker may try again later.
+            callback.onImage(id, new ImageResult(null, null, new Failure(Native.CANCELLED, "queue")));
+            return;
+        }
         waiting = new ArrayList<>();
         waiting.add(callback);
         imageWaiting.put(id, waiting);
@@ -1091,7 +1102,6 @@ public final class Session {
             // Asked for again while it is being decoded (the row that asked first went away): the result is delivered to the new waiter.
             return;
         }
-        makeRoomForImage();
         final ImageTask task = new ImageTask(id);
         imageTasks.put(id, task);
         final int ep = epoch;
@@ -1207,39 +1217,6 @@ public final class Session {
         android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
         bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(pixels));
         return bitmap;
-    }
-
-    /**
-     * Makes room for one more request: while {@link #MAX_IMAGE_PENDING} are pending, the oldest one
-     * that the worker has not begun is dropped (its waiters are told it was cancelled and may ask
-     * again). What the reader is looking at is asked for last, so it is what stays.
-     */
-    private void makeRoomForImage() {
-        while (imageTasks.size() >= MAX_IMAGE_PENDING) {
-            ImageTask oldest = null;
-            synchronized (lock) {
-                for (ImageTask t : imageTasks.values()) {
-                    if (!t.started) {
-                        oldest = t;
-                        break;
-                    }
-                }
-                if (oldest != null) {
-                    oldest.cancelled = true;
-                }
-            }
-            if (oldest == null) {
-                return;
-            }
-            imageTasks.remove(oldest.id);
-            List<ImageCallback> callbacks = imageWaiting.remove(oldest.id);
-            if (callbacks != null) {
-                ImageResult r = new ImageResult(null, null, new Failure(Native.CANCELLED, "queue"));
-                for (ImageCallback cb : callbacks) {
-                    cb.onImage(oldest.id, r);
-                }
-            }
-        }
     }
 
     /**
