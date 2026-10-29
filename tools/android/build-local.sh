@@ -41,10 +41,11 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$BIN/aarch64-linux-android$API
 export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$BIN/armv7a-linux-androideabi$API-clang"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$BIN/x86_64-linux-android$API-clang"
 align="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+harden="-C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack"
 remap="--remap-path-prefix=$ROOT=/arca --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
-export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $remap"
-export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $remap"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
+export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $harden $remap"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 NATIVE="${ARCA_NATIVE_DIR:-$ROOT/native}"
 rm -rf "$NATIVE"; mkdir -p "$NATIVE"
@@ -53,7 +54,7 @@ for entry in aarch64-linux-android:arm64-v8a:aarch64 armv7-linux-androideabi:arm
     cargo build --release --locked -p arca-jni --target "$triple"
     mkdir -p "$NATIVE/$abi"
     cp "$TARGET_DIR/$triple/release/libarca_jni.so" "$NATIVE/$abi/"
-    cargo run --quiet --locked -p arca-devtools -- elf-check "$NATIVE/$abi/libarca_jni.so" --align 16384 --machine "$machine"
+    cargo run --quiet --locked -p arca-devtools -- elf-check "$NATIVE/$abi/libarca_jni.so" --align 16384 --harden --machine "$machine"
 done
 sha256sum "$NATIVE"/*/libarca_jni.so "$ARCA_GUEST_WASM" | tee "$NATIVE/SHA256SUMS"
 

@@ -38,6 +38,7 @@ const NEWER_ATTRS: &[&str] = &[
     "dataExtractionRules",
     "windowLightNavigationBar",
     "navigationBarColor",
+    "useAppZygote",
 ];
 
 /// Name prefixes that `Labels.java` builds at run time (so those strings are not dead).
@@ -53,7 +54,6 @@ const DYNAMIC_PREFIXES: &[&str] = &[
     "macro_lang_",
     "action_",
     "notice_",
-    "push_",
 ];
 
 /// Components that may be exported (reachable by other apps): the launcher / VIEW / SEND
