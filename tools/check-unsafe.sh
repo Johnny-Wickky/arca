@@ -57,7 +57,7 @@ pairs=$(grep -A1 'allow(unsafe_code' "$GUEST/src/lib.rs" | grep -cE '^[[:space:]
 if grep -rn 'allow(unsafe_code' --include='*.rs' crates | grep -v "^$GUEST/src/lib.rs:" | grep -v "^$JNI_FFI:" | grep -v "^$FFI_C:"; then
     violation "allow(unsafe_code) outside the guest export table and the JNI boundary file"
 fi
-table() { awk -v h="$2" '$0==h{f=1;next} /^\[/{f=0} f && NF' "$1" | sed 's/[[:space:]]*#.*//' | grep -v '^$' | sort; }
+table() { tr -d '\r' < "$1" | awk -v h="$2" '$0==h{f=1;next} /^\[/{f=0} f && NF' | sed 's/[[:space:]]*#.*//' | grep -v '^$' | sort; }
 diff <(table Cargo.toml '[workspace.lints.clippy]') <(table "$GUEST/Cargo.toml" '[lints.clippy]') >/dev/null \
     || violation "$GUEST/Cargo.toml [lints.clippy] differs from [workspace.lints.clippy]"
 diff <(table Cargo.toml '[workspace.lints.rust]' | sed 's/^unsafe_code = "forbid"$/unsafe_code = "deny"/') \
