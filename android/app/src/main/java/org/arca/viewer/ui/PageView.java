@@ -278,6 +278,11 @@ final class PageView extends View {
         }
     }
 
+    /** How many times a picture whose request was dropped is asked for again, and the pause before each. */
+    private static final int RETRIES = 3;
+    private static final long RETRY_MS = 400L;
+    private final Map<Integer, Integer> retried = new HashMap<>();
+
     private void ask(final int id) {
         asked.add(id);
         Session.ImageCallback cb = new Session.ImageCallback() {
@@ -285,17 +290,61 @@ final class PageView extends View {
             public void onImage(int got, Session.ImageResult r) {
                 waiting.remove(got);
                 if (r.bitmap != null) {
-                    if (pictures.put(got, r.bitmap) == null) {
-                        pictureBytes += r.bitmap.getByteCount();
+                    android.graphics.Bitmap shown = fitted(got, r.bitmap);
+                    if (pictures.put(got, shown) == null) {
+                        pictureBytes += shown.getByteCount();
                     }
                 } else if (r.failure != null && r.failure.status == Native.CANCELLED) {
+                    // The request was dropped (the queue was full, or the loading was stopped): ask
+                    // again a little later, a few times, not at once (that would be a busy loop).
                     asked.remove(got);
+                    Integer n = retried.get(got);
+                    int tries = n == null ? 0 : n;
+                    if (tries < RETRIES) {
+                        retried.put(got, tries + 1);
+                        postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                invalidate();
+                            }
+                        }, RETRY_MS * (tries + 1));
+                    }
+                    return;
                 }
                 invalidate();
             }
         };
         waiting.put(id, cb);
         Session.get().loadImage(id, cb);
+    }
+
+    /**
+     * The picture as the page keeps it: no larger than twice the size it is drawn at (the sandbox
+     * reduces a picture to 4 megapixels, which is far more than a slide shows, and a slide has
+     * several), so the pictures of one page stay inside {@link #PICTURE_BYTES}.
+     */
+    private android.graphics.Bitmap fitted(int id, android.graphics.Bitmap src) {
+        float shown = 0f;
+        for (PageDrawing.Prim p : page.prims) {
+            if (p.kind == PageDrawing.IMAGE && p.id == id && p.m != null) {
+                float w = (float) Math.hypot(p.m[0], p.m[1]);
+                float h = (float) Math.hypot(p.m[2], p.m[3]);
+                shown = Math.max(shown, Math.max(w, h));
+            }
+        }
+        float want = shown * scale * 2f;
+        int side = Math.max(src.getWidth(), src.getHeight());
+        if (!(want >= 64f) || side <= want) {
+            return src;
+        }
+        float k = want / side;
+        int w = Math.max(1, Math.round(src.getWidth() * k));
+        int h = Math.max(1, Math.round(src.getHeight() * k));
+        try {
+            return android.graphics.Bitmap.createScaledBitmap(src, w, h, true);
+        } catch (OutOfMemoryError e) {
+            return src;
+        }
     }
 
     @Override
