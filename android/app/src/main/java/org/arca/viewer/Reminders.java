@@ -98,6 +98,11 @@ public final class Reminders {
         if (context == null || !Native.isLoaded()) {
             return null;
         }
+        if (!Prefs.reminders(context)) {
+            // Switched off in Settings: no card, and one already offered is withdrawn.
+            shown = null;
+            return null;
+        }
         if (shown != null) {
             return shown;
         }

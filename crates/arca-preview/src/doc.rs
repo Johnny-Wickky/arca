@@ -25,7 +25,8 @@ use arca_container::cfb::CompoundFile;
 use crate::PreviewError;
 use crate::listfmt;
 use crate::model::{
-    Align, Block, Cell, ImageInfo, NoticeKind, ParaStyle, Paragraph, Row, SectionKind, Table, style,
+    Align, Block, Cell, ImageInfo, NoticeKind, ParaFmt, ParaStyle, Paragraph, Row, RunFmt,
+    SectionKind, Table, style,
 };
 use crate::sink::{ParaBuilder, SectionId, Sink};
 
@@ -525,61 +526,178 @@ impl<'a> Iterator for Sprms<'a> {
     }
 }
 
-/// Character properties that matter for a text preview.
+/// An explicit "automatic" colour (overrides a colour of the style); shown as the viewer's own.
+const AUTO: u32 = 1;
+
+/// The 16 colours of `ico` (`sprmCIco`, `sprmCHighlight`), indices 1 to 16.
+const ICO: [u32; 16] = [
+    0x00_0000, 0x00_00FF, 0x00_FFFF, 0x00_FF00, 0xFF_00FF, 0xFF_0000, 0xFF_FF00, 0xFF_FFFF,
+    0x00_0080, 0x00_8080, 0x00_8000, 0x80_0080, 0x80_0000, 0x80_8000, 0x80_8080, 0xC0_C0C0,
+];
+
+fn ico_rgb(ico: u8) -> u32 {
+    match ico {
+        0 => AUTO,
+        1..=16 => ICO.get(usize::from(ico) - 1).map_or(0, |c| 0xFF00_0000 | c),
+        _ => 0,
+    }
+}
+
+/// A `COLORREF` (red, green, blue, `0xFF` for automatic).
+fn colorref(b: &[u8]) -> u32 {
+    match (b.first(), b.get(1), b.get(2), b.get(3)) {
+        (_, _, _, Some(0xFF)) => AUTO,
+        (Some(&r), Some(&g), Some(&bl), _) => {
+            0xFF00_0000 | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(bl)
+        }
+        _ => 0,
+    }
+}
+
+/// The fill of a shading: the background of a clear pattern, the foreground of a solid one.
+fn shade(fore: u32, back: u32, pattern: u16) -> u32 {
+    if pattern == 1 { fore } else { back }
+}
+
+/// Character properties: either what one `grpprl` says (a delta) or, after [`Chp::apply`],
+/// the resolved properties of a span of text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Chp {
-    /// [`style`] bits.
-    bits: u16,
+    /// [`style`] bits switched on.
+    on: u16,
+    /// Bits switched off (a delta only).
+    off: u16,
+    /// Bits that take the opposite of the style's value (a delta only).
+    flip: u16,
     /// `fSpec`: the character is a placeholder (picture, reference mark, symbol, …).
     spec: bool,
     /// `fOle2`: the placeholder stands for an embedded object.
     ole: bool,
     /// `sprmCSymbol` character, `0` if none.
     symbol: u16,
+    /// Text colour `0xFFRRGGBB`; `0` unset, [`AUTO`] automatic.
+    fg: u32,
+    /// Highlight or shading, as `fg`.
+    bg: u32,
+    /// Size in half-points, `0` unset.
+    hps: u16,
+    /// Character style (`sprmCIstd`), `0` none.
+    cstyle: u16,
 }
 
-fn toggle(bits: &mut u16, mask: u16, v: u8) {
-    match v {
-        0 => *bits &= !mask,
-        // "On", or "opposite of the style" (the styles are not consulted: assume off).
-        1 | 0x81 => *bits |= mask,
-        _ => {}
+impl Chp {
+    fn set(&mut self, mask: u16, v: u8) {
+        match v {
+            0 => {
+                self.off |= mask;
+                self.on &= !mask;
+                self.flip &= !mask;
+            }
+            1 => {
+                self.on |= mask;
+                self.off &= !mask;
+                self.flip &= !mask;
+            }
+            0x81 => {
+                self.flip |= mask;
+                self.on &= !mask;
+                self.off &= !mask;
+            }
+            _ => {}
+        }
+    }
+
+    /// These properties on top of the resolved `base`.
+    fn apply(&self, base: &Chp) -> Chp {
+        Chp {
+            on: ((base.on & !self.off) | self.on) ^ self.flip,
+            off: 0,
+            flip: 0,
+            spec: self.spec,
+            ole: self.ole,
+            symbol: self.symbol,
+            fg: if self.fg != 0 { self.fg } else { base.fg },
+            bg: if self.bg != 0 { self.bg } else { base.bg },
+            hps: if self.hps != 0 { self.hps } else { base.hps },
+            cstyle: 0,
+        }
+    }
+
+    /// The colours and relative size for the model; `body` is the body size in half-points.
+    /// Headings and titles (`sized == false`) keep the viewer's own sizes.
+    fn run_fmt(&self, body: u16, sized: bool) -> RunFmt {
+        let scale = if self.hps == 0 || !sized {
+            0
+        } else {
+            let pct = u32::from(self.hps) * 100 / u32::from(body.max(8));
+            if (96..=104).contains(&pct) { 0 } else { u16::try_from(pct.clamp(40, 400)).unwrap_or(0) }
+        };
+        let shown = |c: u32| if c == AUTO { 0 } else { c };
+        RunFmt { fg: shown(self.fg), bg: shown(self.bg), scale }
     }
 }
 
-fn parse_chp(prl: &[u8]) -> Chp {
-    let mut c = Chp::default();
+/// Adds the sprms of a character `grpprl` to `c`.
+fn parse_chp_into(c: &mut Chp, prl: &[u8]) {
     for (op, arg) in Sprms::new(prl) {
         let b = arg.first().copied().unwrap_or(0);
         match op {
-            0x0800 => toggle(&mut c.bits, style::DELETED, b),
-            0x0801 => toggle(&mut c.bits, style::INSERTED, b),
-            0x0835 => toggle(&mut c.bits, style::BOLD, b),
-            0x0836 => toggle(&mut c.bits, style::ITALIC, b),
-            0x0837 | 0x2A53 => toggle(&mut c.bits, style::STRIKE, b),
-            0x083C => toggle(&mut c.bits, style::HIDDEN, b),
-            0x2A3E => {
-                if b == 0 {
-                    c.bits &= !style::UNDERLINE;
-                } else {
-                    c.bits |= style::UNDERLINE;
-                }
-            }
+            0x0800 => c.set(style::DELETED, b),
+            0x0801 => c.set(style::INSERTED, b),
+            0x0835 => c.set(style::BOLD, b),
+            0x0836 => c.set(style::ITALIC, b),
+            0x0837 | 0x2A53 => c.set(style::STRIKE, b),
+            0x083C => c.set(style::HIDDEN, b),
+            0x2A3E => c.set(style::UNDERLINE, u8::from(b != 0)),
             0x2A48 => {
-                c.bits &= !(style::SUPER | style::SUB);
+                c.set(style::SUPER | style::SUB, 0);
                 match b {
-                    1 => c.bits |= style::SUPER,
-                    2 => c.bits |= style::SUB,
+                    1 => c.set(style::SUPER, 1),
+                    2 => c.set(style::SUB, 1),
                     _ => {}
                 }
             }
             0x0855 => c.spec = b & 1 == 1,
             0x080A => c.ole = b & 1 == 1,
             0x6A09 => c.symbol = arg.get(2..4).and_then(|s| u16_le(s, 0)).unwrap_or(0),
+            0x4A30 => c.cstyle = u16_le(arg, 0).unwrap_or(0),
+            0x4A43 => c.hps = u16_le(arg, 0).unwrap_or(0),
+            0x2A42 => c.fg = ico_rgb(b),
+            0x6870 => c.fg = colorref(arg),
+            0x2A0C => c.bg = ico_rgb(b),
+            0x4866 => {
+                // Shd80: icoFore (5 bits), icoBack (5 bits), ipat (6 bits).
+                let w = u16_le(arg, 0).unwrap_or(0);
+                let fore = ico_rgb(u8::try_from(w & 0x1F).unwrap_or(0));
+                let back = ico_rgb(u8::try_from((w >> 5) & 0x1F).unwrap_or(0));
+                c.bg = shade(fore, back, w >> 10);
+            }
+            0xCA71 => {
+                // Shd: cb, cvFore, cvBack, ipat.
+                let fore = arg.get(1..5).map_or(0, colorref);
+                let back = arg.get(5..9).map_or(0, colorref);
+                let pat = arg.get(9..11).and_then(|s| u16_le(s, 0)).unwrap_or(0);
+                c.bg = shade(fore, back, pat);
+            }
             _ => {}
         }
     }
+}
+
+fn parse_chp(prl: &[u8]) -> Chp {
+    let mut c = Chp::default();
+    parse_chp_into(&mut c, prl);
     c
+}
+
+/// `Pap::set` flags: which formatting a paragraph says itself (the rest comes from its style).
+mod has {
+    pub(super) const JC: u8 = 1;
+    pub(super) const LEFT: u8 = 2;
+    pub(super) const FIRST: u8 = 4;
+    pub(super) const LINE: u8 = 8;
+    pub(super) const BRC_LEFT: u8 = 16;
+    pub(super) const BRC_OTHER: u8 = 32;
 }
 
 /// Paragraph properties that matter for a text preview.
@@ -597,6 +715,25 @@ struct Pap {
     ilfo: u16,
     ilvl: u8,
     outline: Option<u8>,
+    /// [`has`] flags.
+    set: u8,
+    /// Left indent in twips.
+    left: i16,
+    /// Extra indent of the first line in twips (negative: hanging).
+    first: i16,
+    /// `dyaLine` of `LSPD`.
+    line: i16,
+    /// `fMultLinespace`: `line` is in 240ths of a line.
+    mult: bool,
+    /// Colour of the left border, `0` for none.
+    brc_left: u32,
+    /// A border on another side too (the paragraph is framed).
+    brc_other: bool,
+}
+
+/// Twips to whole points as the model keeps them.
+fn pt_of(twips: i32) -> i64 {
+    i64::from((twips / 20).clamp(-2000, 2000))
 }
 
 impl TableAcc {
@@ -657,36 +794,137 @@ impl Pap {
             _ => Align::Start,
         }
     }
+
+    /// These properties on top of the resolved properties `base` of the paragraph's style.
+    fn apply(&self, base: &Pap) -> Pap {
+        let mut p = *self;
+        let pick = |flag: u8| self.set & flag != 0;
+        if !pick(has::JC) {
+            p.jc = base.jc;
+        }
+        if !pick(has::LEFT) {
+            p.left = base.left;
+        }
+        if !pick(has::FIRST) {
+            p.first = base.first;
+        }
+        if !pick(has::LINE) {
+            p.line = base.line;
+            p.mult = base.mult;
+        }
+        if !pick(has::BRC_LEFT) {
+            p.brc_left = base.brc_left;
+        }
+        if !pick(has::BRC_OTHER) {
+            p.brc_other = base.brc_other;
+        }
+        p.set = self.set | base.set;
+        p
+    }
+
+    /// Indents, line spacing and border as the model keeps them.
+    fn para_fmt(&self) -> ParaFmt {
+        let line_spacing = if self.mult && self.line > 0 {
+            u16::try_from((i32::from(self.line) * 100 / 240).clamp(50, 500)).unwrap_or(0)
+        } else {
+            0
+        };
+        ParaFmt {
+            indent_left: u16::try_from(pt_of(i32::from(self.left)).max(0)).unwrap_or(0),
+            indent_first: pt_of(i32::from(self.first)),
+            line_spacing,
+            border: self.brc_left,
+            boxed: self.brc_left != 0 && self.brc_other,
+        }
+    }
 }
 
-fn parse_pap(istd: u16, prl: &[u8]) -> Pap {
-    let mut p = Pap { istd, ..Pap::default() };
+/// The colour of a border: none for line type `0`/`255`, grey where the colour is automatic.
+fn border_rgb(kind: u8, colour: u32) -> u32 {
+    if kind == 0 || kind == 0xFF {
+        0
+    } else if colour == 0 || colour == AUTO {
+        0xFF80_8080
+    } else {
+        colour
+    }
+}
+
+/// Adds the sprms of a paragraph `grpprl` to `p`.
+fn parse_pap_into(p: &mut Pap, prl: &[u8]) {
     for (op, arg) in Sprms::new(prl) {
         let b = arg.first().copied().unwrap_or(0);
+        let word = |at: usize| {
+            arg.get(at..at + 2).map_or(0, |s| i16::from_le_bytes([s[0], s[1]]))
+        };
         match op {
             0x4600 => p.istd = u16_le(arg, 0).unwrap_or(p.istd),
             0x2416 => p.in_table = b & 1 == 1,
             0x2417 | 0x244C => p.ttp = b & 1 == 1,
             0x244B => p.inner_cell = b & 1 == 1,
             0x6649 => p.itap = u8::try_from(u32_le(arg, 0).unwrap_or(0).min(255)).unwrap_or(0),
-            0x2403 | 0x2461 => p.jc = b,
+            0x2403 | 0x2461 => {
+                p.jc = b;
+                p.set |= has::JC;
+            }
             0x460B => p.ilfo = u16_le(arg, 0).unwrap_or(0),
             0x260A => p.ilvl = b,
             0x2640 => p.outline = Some(b),
+            0x840F | 0x845E => {
+                p.left = word(0);
+                p.set |= has::LEFT;
+            }
+            0x8411 | 0x8460 => {
+                p.first = word(0);
+                p.set |= has::FIRST;
+            }
+            0x6412 => {
+                p.line = word(0);
+                p.mult = word(2) != 0;
+                p.set |= has::LINE;
+            }
+            // Left border: Brc80 (line width, type, ico, flags) or Brc (cb, COLORREF, width, type).
+            0x6425 => {
+                p.brc_left = border_rgb(arg.get(1).copied().unwrap_or(0), ico_rgb(arg.get(2).copied().unwrap_or(0)));
+                p.set |= has::BRC_LEFT;
+            }
+            0xC64F => {
+                p.brc_left = border_rgb(arg.get(6).copied().unwrap_or(0), arg.get(1..5).map_or(0, colorref));
+                p.set |= has::BRC_LEFT;
+            }
+            // Top, bottom and right borders: only whether one is drawn.
+            0x6424 | 0x6426 | 0x6427 => {
+                p.brc_other |= border_rgb(arg.get(1).copied().unwrap_or(0), 0) != 0;
+                p.set |= has::BRC_OTHER;
+            }
+            0xC64E | 0xC650 | 0xC651 => {
+                p.brc_other |= border_rgb(arg.get(6).copied().unwrap_or(0), 0) != 0;
+                p.set |= has::BRC_OTHER;
+            }
             _ => {}
         }
     }
+}
+
+fn parse_pap(istd: u16, prl: &[u8]) -> Pap {
+    let mut p = Pap { istd, ..Pap::default() };
+    parse_pap_into(&mut p, prl);
     p
 }
 
 /// The pages named by a `PlcfBte` (an array of `n + 1` file positions and `n` page numbers).
-fn fkp_pages(table: &[u8], fc: usize, lcb: usize) -> Vec<usize> {
+fn fkp_pages(table: &[u8], fc: usize, lcb: usize, modern: bool) -> Vec<usize> {
     let Some(plc) = slice(table, fc, lcb) else { return Vec::new() };
-    let n = plc.len().saturating_sub(4) / 8;
+    // Word 97: 4-byte page numbers (22 bits); Word 6/95: 2-byte ones.
+    let width = if modern { 4 } else { 2 };
+    let n = plc.len().saturating_sub(4) / (4 + width);
     let first = n.saturating_add(1).saturating_mul(4);
     (0..n.min(MAX_PAGES))
-        .filter_map(|i| u32_le(plc, first.checked_add(i.checked_mul(4)?)?))
-        .map(|pn| usz(pn & 0x3F_FFFF))
+        .filter_map(|i| {
+            let at = first.checked_add(i.checked_mul(width)?)?;
+            if modern { u32_le(plc, at).map(|pn| pn & 0x3F_FFFF) } else { u16_le(plc, at).map(u32::from) }
+        })
+        .map(usz)
         .collect()
 }
 
@@ -701,7 +939,7 @@ fn collect_chp(
 ) -> (RunSet<Chp>, bool) {
     let Some((fc, lcb)) = fib.pair(pair::PLCF_BTE_CHPX) else { return (RunSet::empty(), true) };
     let mut out: Vec<(u32, u32, Chp)> = Vec::new();
-    for pn in fkp_pages(table, fc, lcb) {
+    for pn in fkp_pages(table, fc, lcb, fib.modern) {
         let Some(page) = pn.checked_mul(PAGE).and_then(|off| slice(wd, off, PAGE)) else {
             continue;
         };
@@ -721,7 +959,7 @@ fn collect_chp(
             let off = b * 2;
             let cb = usize::from(page.get(off).copied().unwrap_or(0));
             let Some(prl) = slice(page, off + 1, cb) else { continue };
-            let chp = parse_chp(prl);
+            let chp = if fib.modern { parse_chp(prl) } else { parse_chp(&sprm6_to_97(prl)) };
             if chp == Chp::default() {
                 continue;
             }
@@ -744,20 +982,22 @@ fn collect_pap(
 ) -> (RunSet<Pap>, bool) {
     let Some((fc, lcb)) = fib.pair(pair::PLCF_BTE_PAPX) else { return (RunSet::empty(), true) };
     let mut out: Vec<(u32, u32, Pap)> = Vec::new();
-    for pn in fkp_pages(table, fc, lcb) {
+    for pn in fkp_pages(table, fc, lcb, fib.modern) {
         let Some(page) = pn.checked_mul(PAGE).and_then(|off| slice(wd, off, PAGE)) else {
             continue;
         };
         let crun = usize::from(page.get(PAGE - 1).copied().unwrap_or(0));
         let rgbx = (crun + 1) * 4;
-        if rgbx + crun * 13 > PAGE - 1 {
+        // A BX is an offset and a 12-byte PHE (Word 97), or an offset and a 6-byte one.
+        let bxw = if fib.modern { 13 } else { 7 };
+        if rgbx + crun * bxw > PAGE - 1 {
             continue;
         }
         for i in 0..crun {
             let (Some(f0), Some(f1)) = (u32_le(page, i * 4), u32_le(page, (i + 1) * 4)) else {
                 continue;
             };
-            let bx = usize::from(page.get(rgbx + i * 13).copied().unwrap_or(0)) * 2;
+            let bx = usize::from(page.get(rgbx + i * bxw).copied().unwrap_or(0)) * 2;
             let pap = if bx == 0 {
                 Pap::default()
             } else {
@@ -769,7 +1009,11 @@ fn collect_pap(
                     slice(page, bx + 1, cb * 2 - 1)
                 };
                 match content {
-                    Some(c) => parse_pap(u16_le(c, 0).unwrap_or(0), c.get(2..).unwrap_or(&[])),
+                    Some(c) if fib.modern => {
+                        parse_pap(u16_le(c, 0).unwrap_or(0), c.get(2..).unwrap_or(&[]))
+                    }
+                    // Word 6/95: a one-byte istd, then one-byte sprms.
+                    Some(c) => parse_pap(0, &sprm6_to_97(c.get(1..).unwrap_or(&[]))),
                     None => Pap::default(),
                 }
             };
@@ -785,6 +1029,59 @@ fn collect_pap(
     (RunSet::build(out), true)
 }
 
+
+/// The formatting sprms of Word 6/95 (one-byte opcodes) as the Word 97 sprms they became, so
+/// one reader serves both. `(Word 6 opcode, Word 97 opcode, operand bytes, widened to 16 bits)`.
+const SPRM6: [(u8, u16, usize, bool); 13] = [
+    (5, 0x2403, 1, false),   // sprmPJc
+    (17, 0x840F, 2, false),  // sprmPDxaLeft
+    (19, 0x8411, 2, false),  // sprmPDxaLeft1
+    (20, 0x6412, 4, false),  // sprmPDyaLine
+    (85, 0x0835, 1, false),  // sprmCFBold
+    (86, 0x0836, 1, false),  // sprmCFItalic
+    (87, 0x0837, 1, false),  // sprmCFStrike
+    (92, 0x083C, 1, false),  // sprmCFVanish
+    (94, 0x2A3E, 1, false),  // sprmCKul
+    (98, 0x2A42, 1, false),  // sprmCIco
+    (99, 0x4A43, 1, true),   // sprmCHps
+    (104, 0x2A48, 1, false), // sprmCIss
+    (0, 0, 0, false),
+];
+
+/// Operand sizes of the Word 6/95 sprms that are read past without being used.
+fn sprm6_skip(op: u8) -> Option<usize> {
+    match op {
+        4 | 6..=14 | 88..=91 | 100..=102 => Some(1),
+        16 | 18 | 21 | 22 | 93 | 96 | 97 => Some(2),
+        95 => Some(3),
+        _ => None,
+    }
+}
+
+/// Translates a Word 6/95 property list; it ends at the first sprm whose size is not known.
+fn sprm6_to_97(prl: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while let Some(&op) = prl.get(i) {
+        let entry = SPRM6.iter().find(|e| e.0 == op && op != 0);
+        let len = match (entry, sprm6_skip(op)) {
+            (Some(e), _) => e.2,
+            (None, Some(n)) => n,
+            (None, None) => break,
+        };
+        let Some(arg) = slice(prl, i + 1, len) else { break };
+        if let Some(&(_, op97, _, widen)) = entry {
+            out.extend(op97.to_le_bytes());
+            out.extend(arg);
+            if widen {
+                out.push(0);
+            }
+        }
+        i += 1 + len;
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------------------------
 // Style sheet and lists
 // ---------------------------------------------------------------------------------------------
@@ -793,6 +1090,54 @@ fn collect_pap(
 struct StyleInfo {
     sti: u16,
     base: u16,
+    /// Paragraph and character formatting the style itself carries (a delta on its base).
+    pap: Pap,
+    chp: Chp,
+}
+
+impl StyleInfo {
+    const NONE: Self = Self {
+        sti: 0x0FFF,
+        base: 0x0FFF,
+        pap: Pap {
+            istd: 0,
+            in_table: false,
+            ttp: false,
+            inner_cell: false,
+            itap: 0,
+            jc: 0,
+            ilfo: 0,
+            ilvl: 0,
+            outline: None,
+            set: 0,
+            left: 0,
+            first: 0,
+            line: 0,
+            mult: false,
+            brc_left: 0,
+            brc_other: false,
+        },
+        chp: Chp {
+            on: 0,
+            off: 0,
+            flip: 0,
+            spec: false,
+            ole: false,
+            symbol: 0,
+            fg: 0,
+            bg: 0,
+            hps: 0,
+            cstyle: 0,
+        },
+    };
+}
+
+/// Reads one `UPX` of a style: a size, the data, and a pad byte to an even offset.
+fn next_upx<'a>(std: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    let cb = usize::from(u16_le(std, *pos)?);
+    let data = slice(std, pos.checked_add(2)?, cb)?;
+    *pos = pos.checked_add(2)?.checked_add(cb)?.checked_add(cb & 1)?;
+    Some(data)
 }
 
 fn parse_styles(table: &[u8], fib: &Fib) -> Vec<StyleInfo> {
@@ -800,6 +1145,8 @@ fn parse_styles(table: &[u8], fib: &Fib) -> Vec<StyleInfo> {
     let Some(blob) = slice(table, fc, lcb) else { return Vec::new() };
     let cb_stshi = usize::from(u16_le(blob, 0).unwrap_or(0));
     let cstd = usize::from(u16_le(blob, 2).unwrap_or(0)).min(MAX_STYLES);
+    // `cbSTDBaseInFile`: the fixed part of every STD (10 bytes in all Word versions seen).
+    let base_len = usize::from(u16_le(blob, 4).unwrap_or(10)).clamp(10, 64);
     let mut pos = cb_stshi.saturating_add(2);
     let mut out = Vec::with_capacity(cstd);
     for _ in 0..cstd {
@@ -807,14 +1154,68 @@ fn parse_styles(table: &[u8], fib: &Fib) -> Vec<StyleInfo> {
         let cb = usize::from(cb);
         pos = pos.saturating_add(2);
         if cb == 0 {
-            out.push(StyleInfo { sti: 0x0FFF, base: 0x0FFF });
+            out.push(StyleInfo::NONE);
             continue;
         }
         let Some(std) = slice(blob, pos, cb) else { break };
         let w0 = u16_le(std, 0).unwrap_or(0);
         let w1 = u16_le(std, 2).unwrap_or(0);
-        out.push(StyleInfo { sti: w0 & 0x0FFF, base: w1 >> 4 });
+        let w2 = u16_le(std, 4).unwrap_or(0);
+        let mut info = StyleInfo { sti: w0 & 0x0FFF, base: w1 >> 4, ..StyleInfo::NONE };
+        // After the fixed part: the name (length, UTF-16 text, terminator), then the UPXs from
+        // an even offset.
+        let cch = usize::from(u16_le(std, base_len).unwrap_or(0));
+        let mut at = base_len.saturating_add(2).saturating_add(cch.saturating_mul(2)).saturating_add(2);
+        at = at.saturating_add(at & 1);
+        match (w1 & 0xF, w2 & 0xF) {
+            // Paragraph style: UpxPapx (its own istd, then the sprms) and UpxChpx.
+            (1, upx) if upx >= 1 => {
+                if let Some(papx) = next_upx(std, &mut at) {
+                    info.pap = parse_pap(0, papx.get(2..).unwrap_or(&[]));
+                }
+                if let Some(chpx) = next_upx(std, &mut at) {
+                    info.chp = parse_chp(chpx);
+                }
+            }
+            // Character style: UpxChpx only.
+            (2, upx) if upx >= 1 => {
+                if let Some(chpx) = next_upx(std, &mut at) {
+                    info.chp = parse_chp(chpx);
+                }
+            }
+            _ => {}
+        }
+        out.push(info);
         pos = pos.saturating_add(cb);
+    }
+    out
+}
+
+/// The style chain of each style resolved from the root: `(paragraph, character)` properties.
+fn resolve_styles(styles: &[StyleInfo]) -> Vec<(Pap, Chp)> {
+    let mut out: Vec<(Pap, Chp)> = Vec::with_capacity(styles.len());
+    for (i, _) in styles.iter().enumerate() {
+        // The chain from this style up to the root, bounded and cycle-safe.
+        let mut chain: Vec<usize> = Vec::new();
+        let mut cur = i;
+        while chain.len() < 16 && !chain.contains(&cur) {
+            chain.push(cur);
+            match styles.get(cur) {
+                Some(s) if s.base != 0x0FFF && usize::from(s.base) < styles.len() => {
+                    cur = usize::from(s.base);
+                }
+                _ => break,
+            }
+        }
+        let mut pap = Pap::default();
+        let mut chp = Chp::default();
+        for &k in chain.iter().rev() {
+            if let Some(s) = styles.get(k) {
+                pap = s.pap.apply(&pap);
+                chp = s.chp.apply(&chp);
+            }
+        }
+        out.push((pap, chp));
     }
     out
 }
@@ -1025,6 +1426,8 @@ struct Env {
     chp: RunSet<Chp>,
     pap: RunSet<Pap>,
     styles: Vec<StyleInfo>,
+    /// The style chains resolved, by style index.
+    resolved: Vec<(Pap, Chp)>,
     lists: Lists,
     /// Positions of the footnote and endnote reference marks in the main text.
     fn_refs: Vec<u32>,
@@ -1034,6 +1437,39 @@ struct Env {
 }
 
 impl Env {
+    /// The formatting of paragraph style `istd`, resolved through its base styles.
+    fn style_pap(&self, istd: u16) -> Pap {
+        self.resolved.get(usize::from(istd)).map(|r| r.0).unwrap_or_default()
+    }
+
+    /// A paragraph's own properties on top of its style.
+    fn effective_pap(&self, direct: &Pap) -> Pap {
+        direct.apply(&self.style_pap(direct.istd))
+    }
+
+    /// The character properties the paragraph style gives to all text of a paragraph.
+    fn style_chp(&self, istd: u16) -> Chp {
+        self.resolved.get(usize::from(istd)).map(|r| r.1).unwrap_or_default()
+    }
+
+    /// Properties of a span: the paragraph style, a character style, then the span's own.
+    fn effective_chp(&self, direct: &Chp, pbase: &Chp) -> Chp {
+        let under = if direct.cstyle != 0 {
+            self.style_chp(direct.cstyle).apply(pbase)
+        } else {
+            *pbase
+        };
+        direct.apply(&under)
+    }
+
+    /// The body text size in half-points (Word's default is 10 pt).
+    fn body_hps(&self) -> u16 {
+        match self.style_chp(0).hps {
+            0 => 20,
+            h => h,
+        }
+    }
+
     fn para_style(&self, pap: &Pap) -> ParaStyle {
         let mut cur = pap.istd;
         if self.styles.is_empty() {
@@ -1109,6 +1545,9 @@ struct Walker<'e, 's, 'p> {
     buf: String,
     buf_style: u16,
     buf_href: String,
+    buf_fmt: RunFmt,
+    /// Colours and size of the text being read.
+    cur_fmt: RunFmt,
     fields: Vec<Field>,
     skipped_fields: usize,
     table: Option<TableAcc>,
@@ -1133,6 +1572,8 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
             buf: String::new(),
             buf_style: 0,
             buf_href: String::new(),
+            buf_fmt: RunFmt::default(),
+            cur_fmt: RunFmt::default(),
             fields: Vec::new(),
             skipped_fields: 0,
             table: None,
@@ -1162,7 +1603,7 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
     fn flush(&mut self) {
         if !self.buf.is_empty() {
             let href = std::mem::take(&mut self.buf_href);
-            self.para.text(&self.buf, self.buf_style, &href);
+            self.para.text_fmt(&self.buf, self.buf_style, &href, self.buf_fmt);
             self.buf.clear();
         }
     }
@@ -1178,12 +1619,15 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
             return;
         }
         let href = self.href();
-        if (self.buf_style != bits || self.buf_href != href) && !self.buf.is_empty() {
+        if (self.buf_style != bits || self.buf_href != href || self.buf_fmt != self.cur_fmt)
+            && !self.buf.is_empty()
+        {
             self.flush();
         }
         if self.buf.is_empty() {
             self.buf_style = bits;
             self.buf_href = href;
+            self.buf_fmt = self.cur_fmt;
         }
         self.buf.push(c);
     }
@@ -1230,16 +1674,32 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
         let mut cp = cp0;
         let mut chp = Chp::default();
         let mut valid = u32::MAX..u32::MAX;
+        // The paragraph being read: the mark that ends it, the character properties of its
+        // style and whether its text keeps the size the document gives it.
+        let mut para_end = usize::MAX;
+        let mut pbase = Chp::default();
+        let mut sized = true;
+        let body = self.env.body_hps();
         while cp < end && !self.stop {
+            if para_end == usize::MAX || cp > para_end {
+                para_end = (cp..end)
+                    .find(|&i| matches!(self.env.text.get(i), Some(0x0D | 0x07 | 0x0C)))
+                    .unwrap_or_else(|| end.saturating_sub(1).max(cp0));
+                let ppap = self.env.effective_pap(&self.env.pap.at(narrow(para_end)).0);
+                pbase = self.env.style_chp(ppap.istd);
+                sized = self.env.para_style(&ppap) == ParaStyle::Body;
+                valid = u32::MAX..u32::MAX;
+            }
             let at = narrow(cp);
             if !valid.contains(&at) {
                 let (c, range) = self.env.chp.at(at);
-                chp = c;
-                valid = range;
+                chp = self.env.effective_chp(&c, &pbase);
+                self.cur_fmt = chp.run_fmt(body, sized);
+                valid = range.start..range.end.min(narrow(para_end.saturating_add(1)));
             }
             let Some(&u) = self.env.text.get(cp) else { break };
             cp += 1;
-            let bits = chp.bits;
+            let bits = chp.on;
             match u {
                 0x0D => self.end_para(cp - 1, 0x0D),
                 0x07 => self.end_para(cp - 1, 0x07),
@@ -1342,7 +1802,7 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
         if last && self.para.is_empty() && self.images == 0 && self.label.is_none() {
             return;
         }
-        let pap = self.env.pap.at(narrow(cp)).0;
+        let pap = self.env.effective_pap(&self.env.pap.at(narrow(cp)).0);
         let depth = if self.mode == Mode::Comment { 0 } else { pap.depth() };
 
         if depth == 0 {
@@ -1442,7 +1902,7 @@ impl<'e, 's, 'p> Walker<'e, 's, 'p> {
             Mode::Body if !in_cell => self.env.para_style(pap),
             Mode::Body | Mode::TextBox => ParaStyle::Body,
         };
-        let mut para = self.para.take(style);
+        let mut para = self.para.take(style).with_fmt(pap.para_fmt());
         para.align = pap.align();
         if self.mode == Mode::Body
             && pap.ilfo != 0
@@ -1584,7 +2044,7 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
     }
 
     // Properties.
-    let (chp, pap, styles, lists) = if fib.modern {
+    let (chp, pap, styles, lists) = {
         let map = FcMap::new(&pieces);
         let mut visits = MAX_PIECE_VISITS;
         let (chp, chp_whole) = collect_chp(&wd, &table, &fib, &map, &mut visits);
@@ -1595,9 +2055,12 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
         if !pap_whole {
             sink.truncated("paragraph formatting");
         }
-        (chp, pap, parse_styles(&table, &fib), Lists::parse(&table, &fib))
-    } else {
-        (RunSet::empty(), RunSet::empty(), Vec::new(), Lists::default())
+        if fib.modern {
+            (chp, pap, parse_styles(&table, &fib), Lists::parse(&table, &fib))
+        } else {
+            // Word 6/95: the formatting the paragraphs and runs carry themselves.
+            (chp, pap, Vec::new(), Lists::default())
+        }
     };
     let refs_of = |index: usize, record: usize| -> Vec<u32> {
         // A `Plcf` of references: n + 1 character positions, then n fixed-size records.
@@ -1611,7 +2074,8 @@ pub(crate) fn extract(cf: &CompoundFile<'_>, sink: &mut Sink<'_>) -> Result<(), 
     let fn_refs = refs_of(pair::PLCF_FND_REF, 2);
     let en_refs = refs_of(pair::PLCF_END_REF, 2);
     let cm_refs = refs_of(pair::PLCF_AND_REF, 30);
-    let env = Env { text, chp, pap, styles, lists, fn_refs, en_refs, cm_refs };
+    let resolved = resolve_styles(&styles);
+    let env = Env { text, chp, pap, styles, resolved, lists, fn_refs, en_refs, cm_refs };
     if !fib.modern || best_effort {
         sink.note(NoticeKind::BestEffort, "word 6/95 or damaged structure");
     }
@@ -2188,7 +2652,10 @@ mod tests {
             &[sp1(BOLD, 1), sp1(0x0836, 0x80), sp1(0x0837, 0x81), sp1(HIDDEN, 1), sp1(HIDDEN, 0)]
                 .concat(),
         );
-        assert_eq!(c.bits, style::BOLD | style::STRIKE);
+        assert_eq!(c.apply(&Chp::default()).on, style::BOLD | style::STRIKE);
+        // "opposite of the style" flips what the style gives.
+        let base = Chp { on: style::STRIKE, ..Chp::default() };
+        assert_eq!(c.apply(&base).on, style::BOLD);
     }
 
     #[test]
@@ -2349,6 +2816,177 @@ mod tests {
             styles,
             vec![ParaStyle::Heading1, ParaStyle::Title, ParaStyle::Body, ParaStyle::Heading3]
         );
+    }
+
+    /// A style record: the fixed part, an empty name, then the paragraph and character `UPX`s.
+    fn std_with(sti: u16, base: u16, stk: u16, pap: &[u8], chp: &[u8]) -> Vec<u8> {
+        let mut s = Vec::new();
+        s.extend(sti.to_le_bytes());
+        s.extend(((base << 4) | stk).to_le_bytes());
+        s.extend((if stk == 1 { 2u16 } else { 1u16 }).to_le_bytes()); // cupx
+        s.extend([0u8; 4]);
+        s.extend([0u8; 4]); // the name: length 0 and its terminator
+        let mut upx = |data: &[u8]| {
+            s.extend((data.len() as u16).to_le_bytes());
+            s.extend(data);
+            if data.len() % 2 == 1 {
+                s.push(0);
+            }
+        };
+        if stk == 1 {
+            let mut papx = 0u16.to_le_bytes().to_vec(); // the style's own istd
+            papx.extend(pap);
+            upx(&papx);
+        }
+        upx(chp);
+        s
+    }
+
+    fn stsh_of(stds: &[Vec<u8>]) -> Vec<u8> {
+        let mut stsh = Vec::new();
+        stsh.extend(18u16.to_le_bytes()); // cbStshi
+        stsh.extend((stds.len() as u16).to_le_bytes()); // cstd
+        stsh.extend(10u16.to_le_bytes()); // cbSTDBase
+        stsh.extend([0u8; 14]);
+        for s in stds {
+            stsh.extend((s.len() as u16).to_le_bytes());
+            stsh.extend(s);
+        }
+        stsh
+    }
+
+    #[test]
+    fn styles_of_the_binary_document_reach_the_model() {
+        let red = u32::from_le_bytes([0xCC, 0, 0, 0]);
+        let blue = u32::from_le_bytes([0, 0, 0xEE, 0]);
+        let stsh = stsh_of(&[
+            // Normal: 12 pt body text.
+            std_with(0, 0x0FFF, 1, &[], &sp2(0x4A43, 24)),
+            // "Quote": centred, 36 pt in, hanging 18 pt, 150 % lines, a red bar, red text.
+            std_with(
+                1,
+                0,
+                1,
+                &[
+                    sp1(0x2403, 1),
+                    sp2(0x840F, 720),
+                    sp2(0x8460, (-360i16) as u16),
+                    sp4(0x6412, 360 | (1 << 16)),
+                    sp4(0x6425, u32::from_le_bytes([4, 1, 6, 0])),
+                ]
+                .concat(),
+                &sp4(0x6870, red),
+            ),
+            // A child of "Quote" that only changes the alignment.
+            std_with(2, 1, 1, &sp1(0x2403, 2), &[]),
+        ]);
+        let text = "Quoted text\rPlain\rBigRed word\rIco text\rChild\r";
+        let w = W::new()
+            .piece(text, true)
+            .extra(pair::STSHF, stsh)
+            .pap(0, 12, 1, vec![])
+            .pap(18, 30, 0, [sp2(0x840F, 400), sp1(0x2403, 2), sp4(0x6424, 0x0000_0101)].concat())
+            .pap(39, 45, 2, vec![])
+            .chp(18, 24, [sp2(0x4A43, 48), sp1(0x2A0C, 7), sp4(0x6870, blue)].concat())
+            .chp(30, 33, [sp1(0x2A42, 6), sp2(0x4866, 7 << 5)].concat());
+        let p = ok(&w.build());
+        let paras = paragraphs(body(&p));
+        let by = |t: &str| paras.iter().find(|q| q.text().starts_with(t)).cloned().expect(t);
+
+        let quote = by("Quoted");
+        assert_eq!(quote.align, Align::Center);
+        assert_eq!((quote.indent_left, quote.indent_first, quote.line_spacing), (36, -18, 150));
+        assert_eq!((quote.border, quote.boxed), (0xFFFF_0000, false), "a bar down the left");
+        assert_eq!((quote.runs[0].fg, quote.runs[0].scale), (0xFFCC_0000, 0), "red, body size");
+
+        let plain = by("Plain");
+        assert_eq!((plain.align, plain.indent_left, plain.border, plain.runs[0].fg), (Align::Start, 0, 0, 0));
+
+        let big = by("BigRed");
+        assert_eq!((big.align, big.indent_left), (Align::End, 20), "direct formatting wins");
+        assert!(big.boxed || big.border == 0, "a frame needs a left border too");
+        let first = &big.runs[0];
+        assert_eq!(first.text, "BigRed");
+        assert_eq!((first.fg, first.bg, first.scale), (0xFF00_00EE, 0xFFFF_FF00, 200));
+        assert_eq!(big.runs[1].scale, 0);
+
+        let ico = by("Ico");
+        assert_eq!((ico.runs[0].text.as_str(), ico.runs[0].fg, ico.runs[0].bg), ("Ico", 0xFFFF_0000, 0xFFFF_FF00));
+
+        let child = by("Child");
+        assert_eq!(child.align, Align::End, "its own alignment");
+        assert_eq!((child.indent_left, child.indent_first, child.border), (36, -18, 0xFFFF_0000), "from its base");
+        assert_eq!(child.runs[0].fg, 0xFFCC_0000, "text colour of the base style");
+    }
+
+    #[test]
+    fn a_frame_needs_the_left_border_and_another_side() {
+        let stsh = stsh_of(&[std_with(0, 0x0FFF, 1, &[], &[])]);
+        let both = [sp4(0x6425, u32::from_le_bytes([4, 1, 2, 0])), sp4(0x6426, u32::from_le_bytes([4, 1, 2, 0]))]
+            .concat();
+        let w = W::new()
+            .piece("framed\rbar\r", true)
+            .extra(pair::STSHF, stsh)
+            .pap(0, 7, 0, both)
+            .pap(7, 11, 0, sp4(0x6425, u32::from_le_bytes([4, 1, 2, 0])));
+        let p = ok(&w.build());
+        let paras = paragraphs(body(&p));
+        assert_eq!((paras[0].border, paras[0].boxed), (0xFF00_00FF, true));
+        assert_eq!((paras[1].border, paras[1].boxed), (0xFF00_00FF, false));
+    }
+
+
+    /// Files written by LibreOffice: the style sheet, the list indents and the colours of
+    /// real documents are read, not only those of the synthetic ones above.
+    #[test]
+    fn real_documents_keep_colours_indents_and_line_spacing() {
+        let load = |name: &str| {
+            let data = std::fs::read(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/").to_owned() + name,
+            )
+            .expect("a fixture");
+            ok(&data)
+        };
+        let paras = |p: &Preview| -> Vec<Paragraph> { paragraphs(body(p)).into_iter().cloned().collect() };
+
+        let report = paras(&load("report.doc"));
+        let item = report.iter().find(|q| q.text().starts_with("Первый пункт")).expect("item");
+        assert_eq!((item.indent_left, item.indent_first), (35, -14), "list indent and hanging");
+        let nested = report.iter().find(|q| q.text().starts_with("Вложенный пункт A")).expect("item");
+        assert_eq!(nested.indent_left, 70);
+        assert!(
+            report.iter().flat_map(|q| &q.runs).any(|r| r.fg == 0xFF00_0080),
+            "the hyperlink style colours its text dark blue"
+        );
+
+        let doc = paras(&load("nested.doc"));
+        assert!(doc.iter().any(|q| q.line_spacing == 115), "line spacing of the paragraph style");
+        assert!(
+            doc.iter().flat_map(|q| &q.runs).any(|r| r.fg != 0),
+            "the heading's colour comes from its style"
+        );
+
+        let rich = load("lo-rich.doc");
+        let notes = rich.sections.iter().flat_map(|s| &s.blocks).filter_map(|b| match b {
+            Block::Para(q) if q.text().starts_with("Текст сноски") => Some(q.clone()),
+            _ => None,
+        });
+        assert!(notes.into_iter().any(|q| q.runs.iter().any(|r| r.scale > 0 && r.scale < 100)), "footnote text is smaller");
+    }
+
+    #[test]
+    fn word_6_property_lists_become_word_97_ones() {
+        // Bold, 24 half-points, a sprm whose size is unknown (stops the list), then bold off.
+        let prl = [85, 1, 99, 24, 94, 1, 250, 9, 9, 85, 0];
+        let c = parse_chp(&sprm6_to_97(&prl));
+        assert_eq!((c.on, c.hps), (style::BOLD | style::UNDERLINE, 24));
+        // Centred, 720 twips in, 360 hanging as an unsigned 16-bit value, and 250 % lines.
+        let prl = [5, 1, 17, 0xD0, 0x02, 19, 0x98, 0xFE, 20, 0x58, 0x02, 1, 0];
+        let p = parse_pap(0, &sprm6_to_97(&prl));
+        assert_eq!(p.align(), Align::Center);
+        let f = p.para_fmt();
+        assert_eq!((f.indent_left, f.indent_first, f.line_spacing), (36, -18, 250));
+        assert!(sprm6_to_97(&[85]).is_empty(), "a sprm without its operand is dropped");
     }
 
     fn list_tables(nfc: u8, text: &[u16], start: i32) -> (Vec<u8>, Vec<u8>) {

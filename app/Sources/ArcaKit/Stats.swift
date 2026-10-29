@@ -151,3 +151,18 @@ public enum ArcaReminderRules {
 
     public static var itemCount: Int32 { arca_reminder_item_count() }
 }
+
+/// The person's switch for the weekly support card ("Weekly support reminders" / "Еженедельные
+/// напоминания о поддержке"). On until they turn it off; "About and support" stays reachable.
+public enum SupportReminderSetting {
+    public static let key = "arca.weeklySupportReminders"
+
+    /// The stored choice, or `true` (the Rust default, `reminder::ENABLED_BY_DEFAULT`) if none.
+    public static func isEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
+    }
+
+    public static func set(_ on: Bool, _ defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: key)
+    }
+}

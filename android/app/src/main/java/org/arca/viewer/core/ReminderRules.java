@@ -14,6 +14,14 @@ import java.util.Map;
 public final class ReminderRules {
     private ReminderRules() {}
 
+    /** The weekly support card is on until the person turns it off (same rule as {@code reminder::ENABLED_BY_DEFAULT} in Rust). */
+    public static final boolean ENABLED_BY_DEFAULT = true;
+
+    /** The stored choice, or the default when the person never made one. */
+    public static boolean enabledOrDefault(boolean hasStored, boolean stored) {
+        return hasStored ? stored : ENABLED_BY_DEFAULT;
+    }
+
     /** Actions of the fire decision. */
     public static final String SHOW = "show";
     public static final String DISABLED = "disabled";

@@ -56,6 +56,19 @@ pub const OVERDUE_GRACE_MS: i64 = 12 * HOUR_MS;
 /// "Soon" for an overdue alarm that is still run.
 pub const SOON_MS: i64 = MINUTE_MS;
 
+/// The weekly support card is on until the person switches it off in Settings.
+pub const ENABLED_BY_DEFAULT: bool = true;
+
+/// Whether the support card is on: the person's stored choice, or [`ENABLED_BY_DEFAULT`] if they
+/// never made one. The one rule every platform follows for its "Weekly support reminders" switch.
+#[must_use]
+pub const fn enabled_or_default(stored: Option<bool>) -> bool {
+    match stored {
+        Some(on) => on,
+        None => ENABLED_BY_DEFAULT,
+    }
+}
+
 /// Time zones lie within UTC-12 … UTC+14; anything beyond ±18 h is a host error and clamped.
 const MAX_OFFSET_MS: i64 = 18 * HOUR_MS;
 /// Far enough from `i64::MAX` that no sum of the constants above overflows.

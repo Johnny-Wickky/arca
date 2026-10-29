@@ -412,8 +412,8 @@
     <string name="support_msg_30">You trust Arca to inspect your riskiest files; we trust the community to keep this project independent. Thank you for standing with open-source security!</string>
     <string name="support_msg_privacy">True Zero-Trust: Arca has no internet access, collects zero telemetry, never studies or logs your in-app behavior, and sells zero ads. We build this solely to keep you safe.</string>
     <string name="settings_reminders_title">Reminders</string>
-    <string name="settings_reminders">Support reminders</string>
-    <string name="settings_reminders_desc">A gentle card on the home screen about once a week, asking you to support the developers. No notifications and no permissions; nothing is sent anywhere.</string>
+    <string name="settings_reminders">Weekly support reminders</string>
+    <string name="settings_reminders_desc">Show a non-intrusive card once every 7 days on the home screen</string>
 
     <!-- Local statistics (counted by the Rust core, kept only on this device) -->
     <string name="stats_title">Statistics</string>
