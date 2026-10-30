@@ -29,7 +29,9 @@ settings:
 
 packages:
   ArcaKit:
-    path: .
+    # Xcode resolves a local package against the directory of the .xcodeproj (app/Xcode), and
+    # XcodeGen writes this path as is.
+    path: ..
 
 targets:
   Arca:
