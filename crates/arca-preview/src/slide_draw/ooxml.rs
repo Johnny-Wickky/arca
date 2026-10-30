@@ -8,6 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod chart;
+
 use super::presets::{self, arc_to};
 use super::{
     Align, Anchor, Canvas, CellDraw, Mat, Node, Outcome, Para, Piece, Rendered, RunStyle, Seg,
@@ -20,9 +22,9 @@ use crate::page::Prim;
 use crate::{PreviewError, PreviewPolicy};
 
 /// Elements whose text is kept: runs and the table style id.
-const KEEP_TEXT: [&str; 2] = ["t", "tableStyleId"];
+const KEEP_TEXT: [&str; 4] = ["t", "tableStyleId", "v", "formatCode"];
 /// Elements whose relationship attributes are read.
-const REL_ELEMS: [&str; 3] = ["blip", "sldId", "relIds"];
+const REL_ELEMS: [&str; 4] = ["blip", "sldId", "relIds", "chart"];
 /// Most rows and columns of a table that are drawn, and most cells.
 const MAX_TABLE_LINE: usize = 500;
 const MAX_TABLE_CELLS: usize = 10_000;
@@ -712,6 +714,8 @@ struct Pass<'a> {
     /// The cached drawings of the slide's SmartArt diagrams, by the relationship id of the
     /// diagram's data part (the one the frame names in `dgm:relIds`).
     diagrams: &'a BTreeMap<String, super::Parsed>,
+    /// The charts of the slide, by the relationship id the frame names in `c:chart`.
+    charts: &'a BTreeMap<String, chart::Chart>,
 }
 
 /// The kind of text style a placeholder takes from the master.
@@ -1090,6 +1094,18 @@ impl<'a> Pass<'a> {
         true
     }
 
+    /// Draws a chart from the values its part caches. `false` if the file has no such chart or it
+    /// is of a kind that is not drawn.
+    fn chart(&mut self, data: &Node, xf: &Xf, parent: &Mat) -> bool {
+        let charts = self.charts;
+        let Some(c) = data.child("chart").and_then(|n| n.rel("id")).and_then(|id| charts.get(id))
+        else {
+            return false;
+        };
+        chart::draw(c, xf.w, xf.h, &shape_mat(xf, parent), self.cv);
+        true
+    }
+
     fn frame(&mut self, gf: &Node, parent: &Mat, layer: bool) {
         let ph = ph_of(gf);
         if layer && ph.is_some() {
@@ -1118,6 +1134,8 @@ impl<'a> Pass<'a> {
                 }
             } else if uri.contains("diagram") && self.diagram(data, &xf, parent) {
                 // drawn from the diagram's cached drawing
+            } else if uri.ends_with("/chart") && self.chart(data, &xf, parent) {
+                // drawn from the values the chart caches
             } else {
                 let label = if uri.contains("chart") {
                     "chart"
@@ -1740,6 +1758,30 @@ fn load_diagrams(
     Ok(out)
 }
 
+/// Most charts drawn on one slide.
+const MAX_CHARTS: usize = 32;
+
+/// The charts of a slide that are drawn, by relationship id.
+fn load_charts(
+    pkg: &mut Package<'_>,
+    slide_part: &str,
+    look: &Look,
+    cv: &mut Canvas,
+) -> Result<BTreeMap<String, chart::Chart>, PreviewError> {
+    let mut out = BTreeMap::new();
+    for rel in pkg.rels_of(slide_part)?.iter().filter(|r| !r.external && r.suffix() == "chart") {
+        if out.len() >= MAX_CHARTS {
+            break;
+        }
+        let Some(part) = opc::resolve(slide_part, &rel.target) else { continue };
+        let Some(tree) = read_tree(pkg, &part, "chartSpace")? else { continue };
+        if let Some(c) = chart::read(&tree.root, look, cv) {
+            out.insert(rel.id.clone(), c);
+        }
+    }
+    Ok(out)
+}
+
 fn load_parts(
     pkg: &mut Package<'_>,
     main: &str,
@@ -2000,6 +2042,7 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
     let mut cv = Canvas::new();
     let (w, h) = slide_size(&pres.root, &mut cv);
     let look = build_look(&loaded, &pres.root);
+    let charts = load_charts(pkg, &slide_part, &look, &mut cv)?;
     cv.push(Prim::Save);
     cv.push(Prim::Clip { x: 0.0, y: 0.0, w: f32c(w), h: f32c(h) });
     match background(&look, &loaded, &tabs, &mut cv) {
@@ -2028,6 +2071,7 @@ pub(super) fn run(pkg: &mut Package<'_>, want: Option<usize>, policy: &PreviewPo
             rels: &tabs[2],
             table_styles: table_styles.as_ref().map(|t| &t.root),
             diagrams: &diagrams,
+            charts: &charts,
         };
         if slide_shows {
             if layout_shows && let Some(t) = master_tree {

@@ -1262,3 +1262,278 @@ fn odp_hostile_input_is_bounded() {
     let p = render(&odp(auto, weird, &[]), 0);
     assert_sane(&p);
 }
+
+// ---- charts --------------------------------------------------------------------------------
+
+const CHART_NS: &str = r#"xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
+
+/// A deck whose only slide holds a chart frame of 400 × 300 pt, with `chart` as the chart part
+/// (`None` leaves the relationship dangling).
+fn chart_deck(chart: Option<&str>) -> Vec<u8> {
+    let frame = format!(
+        r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="c"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId5"/></a:graphicData></a:graphic></p:graphicFrame>"#,
+        e(50.0),
+        e(40.0),
+        e(400.0),
+        e(300.0)
+    );
+    let mut deck = Deck::new(&[frame.as_str()]);
+    deck.slide_rels = rels(&[
+        ("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"),
+        ("rId5", "chart", "../charts/chart1.xml"),
+    ]);
+    match chart {
+        Some(c) => deck.build(&[("ppt/charts/chart1.xml", c)]),
+        None => deck.build(&[]),
+    }
+}
+
+fn chart_part(plot: &str) -> String {
+    format!(
+        r#"<c:chartSpace {CHART_NS}><c:chart><c:autoTitleDeleted val="1"/><c:plotArea>{plot}</c:plotArea></c:chart></c:chartSpace>"#
+    )
+}
+
+fn chart_ser(idx: usize, name: &str, cats: &[&str], vals: &[&str]) -> String {
+    let c: String = cats
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!(r#"<c:pt idx="{i}"><c:v>{t}</c:v></c:pt>"#))
+        .collect();
+    let v: String = vals
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!(r#"<c:pt idx="{i}"><c:v>{t}</c:v></c:pt>"#))
+        .collect();
+    format!(
+        r#"<c:ser><c:idx val="{idx}"/><c:order val="{idx}"/><c:tx><c:strRef><c:f>S!$B$1</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>{name}</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:f>S!$A$2</c:f><c:strCache><c:ptCount val="{}"/>{c}</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>S!$B$2</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="{}"/>{v}</c:numCache></c:numRef></c:val></c:ser>"#,
+        cats.len(),
+        vals.len()
+    )
+}
+
+fn bar_plot(series: &str) -> String {
+    format!(
+        r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{series}<c:gapWidth val="100"/><c:axId val="1"/><c:axId val="2"/></c:barChart><c:catAx><c:axId val="1"/><c:scaling/><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling/><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:crossAx val="1"/></c:valAx>"#
+    )
+}
+
+fn has_placeholder(p: &PageModel) -> bool {
+    p.prims.iter().any(|pr| matches!(pr, Prim::Image { label, .. } if label == "chart"))
+}
+
+#[test]
+fn every_kind_of_chart_in_the_fixture_is_drawn() {
+    let data = fixture("charts.pptx");
+    let first = render_slide_noted(&data, 0, &PreviewPolicy::default()).unwrap();
+    let page = first.page;
+    assert_sane(&page);
+    assert!(
+        !page.truncated && !first.notes.iter().any(|n| n.contains("chart")),
+        "{:?}",
+        first.notes
+    );
+    assert!(!has_placeholder(&page), "no chart is left as a placeholder");
+    assert!(page.prims.iter().all(|p| !matches!(p, Prim::Image { .. })));
+    let t: Vec<String> = texts(&page).into_iter().map(|t| t.0).collect();
+    let has = |s: &str| t.iter().any(|x| x == s);
+    // Titles, legends, categories, axis numbers, data labels, in Latin and Cyrillic.
+    for s in [
+        "Sales by month",
+        "Stacked bars",
+        "Traffic",
+        "Areas",
+        "Share by region",
+        "Doughnut",
+        "Plan",
+        "Fact",
+        "Last year",
+        "Visitors",
+        "Север",
+        "Восток",
+        "Jan",
+        "May",
+        "80",
+        "250",
+        "38%",
+        "27%",
+        "21%",
+        "14%",
+        "38",
+    ] {
+        assert!(has(s), "{s:?} is drawn");
+    }
+    // Four slices of the pie and of the doughnut are told apart by a white line.
+    let slices = paths(&page).iter().filter(|p| p.1 == 0xFFFF_FFFF).count();
+    assert_eq!(slices, 8);
+}
+
+/// The height of the rectangle drawn with `fill`, as `(top, bottom)`.
+fn bars_of(p: &PageModel, fill: u32) -> Vec<(f32, f32)> {
+    paths(p)
+        .into_iter()
+        .filter(|(f, s, pts)| *f == fill && *s == 0 && pts.len() == 4)
+        .map(|(_, _, pts)| {
+            let ys = pts.iter().map(|p| p.1);
+            (ys.clone().fold(f32::INFINITY, f32::min), ys.fold(f32::NEG_INFINITY, f32::max))
+        })
+        .collect()
+}
+
+#[test]
+fn bars_stand_on_the_zero_line_in_proportion_to_their_values() {
+    let page = render(&fixture("charts.pptx"), 1);
+    assert_sane(&page);
+    let bars = bars_of(&page, 0xFF70_AD47);
+    // Profit: 12.5, -4.2, 8.8, -1.5, 15.1; the axis is fixed to -10..20.
+    assert_eq!(bars.len(), 5);
+    let values = [12.5f32, -4.2, 8.8, -1.5, 15.1];
+    let zero = bars[0].1;
+    let per_unit = (bars[0].1 - bars[0].0) / 12.5;
+    assert!(per_unit > 1.0, "{per_unit}");
+    for (&(top, bottom), v) in bars.iter().zip(values) {
+        if v >= 0.0 {
+            assert!((bottom - zero).abs() < 0.01, "a positive bar stands on the zero line");
+            assert!(((bottom - top) / v - per_unit).abs() < 0.01, "{v}: {top} {bottom}");
+        } else {
+            assert!((top - zero).abs() < 0.01, "a negative bar hangs from the zero line");
+            assert!(((bottom - top) / -v - per_unit).abs() < 0.01, "{v}: {top} {bottom}");
+        }
+    }
+    // The axis of the document: -10, -5, ... 20 and nothing else.
+    let t: Vec<String> = texts(&page).into_iter().map(|t| t.0).collect();
+    for s in ["-10", "-5", "0", "5", "10", "15", "20", "12.5", "-4.2", "Profit, M"] {
+        assert!(t.iter().any(|x| x == s), "{s:?}");
+    }
+    assert!(!t.iter().any(|x| x == "25"));
+}
+
+#[test]
+fn a_percent_axis_and_stacks_fill_the_plot() {
+    let page = render(&fixture("charts.pptx"), 1);
+    let t: Vec<String> = texts(&page).into_iter().map(|t| t.0).collect();
+    for s in ["0%", "50%", "100%", "Month", "Share of sales"] {
+        assert!(t.iter().any(|x| x == s), "{s:?}");
+    }
+    // Five stacks of three: every stack reaches the top of the plot (100%).
+    let tops: Vec<f32> = [0xFF44_72C4u32, 0xFFED_7D31, 0xFFA5_A5A5]
+        .iter()
+        .flat_map(|c| bars_of(&page, *c))
+        .map(|b| b.0)
+        .collect();
+    let top = tops.iter().copied().fold(f32::INFINITY, f32::min);
+    assert!(tops.iter().filter(|t| (**t - top).abs() < 0.01).count() >= 5, "{tops:?}");
+}
+
+#[test]
+fn a_chart_without_its_part_stays_a_placeholder() {
+    let p = render(&chart_deck(None), 0);
+    assert!(has_placeholder(&p));
+    // And so does one of a kind that is not drawn.
+    let scatter = chart_part(
+        r#"<c:scatterChart><c:ser><c:idx val="0"/><c:yVal><c:numLit><c:ptCount val="1"/><c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:yVal></c:ser></c:scatterChart>"#,
+    );
+    assert!(has_placeholder(&render(&chart_deck(Some(&scatter)), 0)));
+    // A part that is not a chart at all.
+    assert!(has_placeholder(&render(&chart_deck(Some("<x/>")), 0)));
+    assert!(has_placeholder(&render(&chart_deck(Some("not xml")), 0)));
+}
+
+#[test]
+fn a_three_d_chart_is_drawn_flat_and_says_so() {
+    let plot =
+        bar_plot(&chart_ser(0, "A", &["x", "y"], &["3", "5"])).replace("barChart", "bar3DChart");
+    let r = render_slide_noted(&chart_deck(Some(&chart_part(&plot))), 0, &PreviewPolicy::default())
+        .unwrap();
+    assert!(!has_placeholder(&r.page));
+    assert!(r.page.approximate && r.notes.iter().any(|n| n.contains("3-D")), "{:?}", r.notes);
+}
+
+#[test]
+fn literal_values_are_drawn_like_cached_ones() {
+    let lit = r#"<c:ser><c:idx val="0"/><c:order val="0"/><c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>a</c:v></c:pt><c:pt idx="1"><c:v>b</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>2</c:v></c:pt><c:pt idx="1"><c:v>4</c:v></c:pt></c:numLit></c:val></c:ser>"#;
+    let p = render(&chart_deck(Some(&chart_part(&bar_plot(lit)))), 0);
+    assert_eq!(bars_of(&p, 0xFF4F_81BD).len(), 2, "the accent of the theme colours the series");
+    let h: Vec<f32> = bars_of(&p, 0xFF4F_81BD).iter().map(|b| b.1 - b.0).collect();
+    assert!((h[1] / h[0] - 2.0).abs() < 0.01, "{h:?}");
+}
+
+#[test]
+fn a_series_colour_of_the_document_wins_over_the_palette() {
+    let ser = chart_ser(0, "A", &["x"], &["3"]).replace(
+        "<c:cat>",
+        r#"<c:spPr><a:solidFill><a:srgbClr val="112233"/></a:solidFill></c:spPr><c:cat>"#,
+    );
+    let p = render(&chart_deck(Some(&chart_part(&bar_plot(&ser)))), 0);
+    assert_eq!(bars_of(&p, 0xFF11_2233).len(), 1);
+}
+
+#[test]
+fn hostile_chart_numbers_give_a_sane_page() {
+    for vals in [
+        vec!["NaN", "inf", "-inf"],
+        vec!["1e308", "-1e308", "1e-308"],
+        vec!["5", "5", "5"],
+        vec!["-1", "-2", "-3"],
+        vec!["0", "0", "0"],
+        vec!["x", "", "1,5"],
+    ] {
+        for kind in ["barChart", "lineChart", "areaChart"] {
+            let plot =
+                bar_plot(&chart_ser(0, "A", &["a", "b", "c"], &vals)).replace("barChart", kind);
+            let p = render(&chart_deck(Some(&chart_part(&plot))), 0);
+            assert_sane(&p);
+        }
+        let pie =
+            format!("<c:pieChart>{}</c:pieChart>", chart_ser(0, "A", &["a", "b", "c"], &vals));
+        assert_sane(&render(&chart_deck(Some(&chart_part(&pie))), 0));
+    }
+    // An axis that is empty, upside down or absurd.
+    let plot = bar_plot(&chart_ser(0, "A", &["a"], &["1"]))
+        .replace(
+            r#"<c:valAx><c:axId val="2"/><c:scaling/>"#,
+            r#"<c:valAx><c:axId val="2"/><c:scaling><c:max val="-5"/><c:min val="5"/></c:scaling><c:majorUnit val="1e-300"/>"#,
+        );
+    assert_sane(&render(&chart_deck(Some(&chart_part(&plot))), 0));
+}
+
+#[test]
+fn a_huge_chart_is_cut_not_followed() {
+    let cats: Vec<String> = (0..5000).map(|i| format!("c{i}")).collect();
+    let vals: Vec<String> = (0..5000).map(|i| format!("{}", (i * 7) % 101)).collect();
+    let cr: Vec<&str> = cats.iter().map(String::as_str).collect();
+    let vr: Vec<&str> = vals.iter().map(String::as_str).collect();
+    let series: String = (0..60).map(|i| chart_ser(i, "S", &cr, &vr)).collect();
+    for kind in ["barChart", "lineChart", "areaChart"] {
+        let plot = bar_plot(&series).replace("barChart", kind);
+        let p = render(&chart_deck(Some(&chart_part(&plot))), 0);
+        assert_sane(&p);
+        assert!(p.prims.len() < 20_000, "{}", p.prims.len());
+    }
+}
+
+#[test]
+fn damaged_chart_parts_never_panic() {
+    let base =
+        String::from_utf8(zip_member(&fixture("charts.pptx"), "ppt/charts/chart1.xml")).unwrap();
+    let data = fixture("charts.pptx");
+    let mut rng = Lcg::new(23);
+    for _ in 0..fuzz_iterations(200) {
+        let mut b = base.clone().into_bytes();
+        let k = 1 + rng.below(8);
+        rng.mutate(&mut b, k);
+        if let Ok(s) = String::from_utf8(b) {
+            let m = replace_part(&data, "ppt/charts/chart1.xml", &s);
+            if let Ok(p) = render_slide(&m, 0, &PreviewPolicy::default()) {
+                assert_sane(&p);
+            }
+        }
+    }
+}
+
+fn zip_member(pkg: &[u8], name: &str) -> Vec<u8> {
+    let z = arca_container::zip::ZipArchive::parse(pkg, PreviewPolicy::default().zip).unwrap();
+    let mut budget = arca_container::InflateBudget::new(1 << 28, 1000, 16 << 20);
+    let entry = z.entries().iter().find(|e| e.name() == name).unwrap();
+    z.read(entry, &mut budget).unwrap()
+}

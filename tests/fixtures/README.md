@@ -11,6 +11,7 @@ not by Arca's own writers, so the parsers are exercised on layouts they did not 
 | `sheet.xls` `.xlsx` `.ods` `.csv` | a sales sheet with formulas, dates, a percentage, a hidden sheet and Cyrillic text (the cached formula results in these LibreOffice-made copies are errors; the viewer shows what is stored) |
 | `slides.ppt` `.pptx` `.odp` `slides-impress.pdf` | two slides with bullets, a text box and speaker notes |
 | `deck-rich.ppt` `.pptx` | title/bullets/links/table/picture slides, a hidden slide, notes |
+| `charts.pptx` | two slides with eight charts: columns (clustered, stacked, percent, negative values, fixed axis), bars, lines (markers, smooth, a gap), stacked areas, a pie and a doughnut; the values are cached in the chart parts as PowerPoint writes them |
 | `formulas.xlsx` | a workbook as a library writes it (`tools/fixtures/make_formulas.py`, openpyxl): formulas and **no stored results**, so the viewer has to calculate them; one formula (`TODAY()`) cannot be and must stay text |
 | `nested.doc` | Word 97: a table with a table inside one cell, and a two-level numbered list (`tools/fixtures/make_nested.py` + LibreOffice) |
 | `body.rtf` `body.rtf.lzfu` | a 29 kB RTF body in Windows-1251 escapes and the same compressed (RTF-LZ "LZFu", as in Outlook messages) by the independent `compressed_rtf` Python package — the oracle for the decompressor |
