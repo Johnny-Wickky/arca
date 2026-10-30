@@ -55,7 +55,8 @@
     <string name="notice_d_skipped_pdf_objects_beyond_the_first_2000000">PDF objects beyond the first 2000000</string>
     <string name="notice_d_skipped_pictures_and_embedded_objects_are_shown_as_placeholders">pictures and embedded objects are shown as placeholders</string>
     <string name="notice_d_skipped_query_n_no_definition_rows">query %1$s (the file holds no definition of it)</string>
-    <string name="notice_d_skipped_rounded_corners_are_not_drawn">rounded corners are not drawn</string>
+    <string name="notice_d_skipped_rounded_corners_are_drawn_approximately">rounded corners are drawn approximately</string>
+    <string name="notice_d_skipped_theme_styles_are_drawn_with_the_theme_colours_only">theme styles are drawn with the theme colours only</string>
     <string name="notice_d_skipped_rtf_body">the RTF body of a message</string>
     <string name="notice_d_skipped_shadows_are_not_drawn">shadows are not drawn</string>
     <string name="notice_d_skipped_shape_effects_glow_soft_edges_reflection_are_not_drawn">shape effects (glow, soft edges, reflection) are not drawn</string>

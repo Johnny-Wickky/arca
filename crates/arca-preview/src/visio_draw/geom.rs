@@ -558,3 +558,172 @@ fn usize_to_f64(v: usize) -> f64 {
 fn float_to_usize(v: f64) -> usize {
     if v.is_finite() && v >= 0.0 { v.min(1.0e6) as usize } else { 0 }
 }
+
+/// Rounds the corners where two straight lines meet, by `radius` (in the units of the path).
+///
+/// Visio's `Rounding` cell rounds every corner of a polyline (the corner of a closed shape too);
+/// a curve is left as it is. Each corner is cut back by at most `radius` and at most half of
+/// either neighbour, and bridged by a curve through the corner (a quadratic Bézier written as a
+/// cubic: an arc of a circle is approximated, not drawn exactly). A run of segments of other kinds,
+/// a corner of zero length and non-finite numbers are left as they were.
+pub(crate) fn round_corners(segs: &[Seg], radius: f64) -> Vec<Seg> {
+    if !(radius.is_finite() && radius > 0.0) {
+        return segs.to_vec();
+    }
+    let mut out: Vec<Seg> = Vec::with_capacity(segs.len() * 2);
+    let mut i = 0;
+    while i < segs.len() {
+        // A run of `M L L ... L [Z]` is one polyline; anything else is copied.
+        let Some(first) = segs.get(i).copied() else { break };
+        let Seg::M(x0, y0) = first else {
+            out.push(first);
+            i += 1;
+            continue;
+        };
+        let mut pts = vec![(x0, y0)];
+        let mut j = i + 1;
+        let mut closed = false;
+        while let Some(s) = segs.get(j) {
+            match *s {
+                Seg::L(x, y) => pts.push((x, y)),
+                Seg::Z => {
+                    closed = true;
+                    j += 1;
+                    break;
+                }
+                _ => break,
+            }
+            j += 1;
+        }
+        // A path that comes back to its start is closed even without `Z`.
+        let back = pts.len() > 2 && pts.first() == pts.last();
+        if back {
+            pts.pop();
+            closed = true;
+        }
+        let ok = pts.iter().all(|p| p.0.is_finite() && p.1.is_finite());
+        if pts.len() < 3 || !ok {
+            out.extend(segs.get(i..j).unwrap_or_default());
+            i = j;
+            continue;
+        }
+        out.extend(rounded_polyline(&pts, closed, radius));
+        if closed {
+            out.push(Seg::Z);
+        }
+        i = j;
+    }
+    out
+}
+
+fn rounded_polyline(pts: &[(f64, f64)], closed: bool, radius: f64) -> Vec<Seg> {
+    let n = pts.len();
+    let at = |k: usize| pts.get(k % n.max(1)).copied().unwrap_or((0.0, 0.0));
+    let dist = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).hypot(a.1 - b.1);
+    // The two points of corner `k` (cut back along each neighbour), or `None` if it stays sharp.
+    let corner = |k: usize| -> Option<((f64, f64), (f64, f64))> {
+        let (prev, v, next) = (at(k + n - 1), at(k), at(k + 1));
+        let (d1, d2) = (dist(prev, v), dist(v, next));
+        if d1 < 1e-9 || d2 < 1e-9 {
+            return None;
+        }
+        let r = radius.min(d1 / 2.0).min(d2 / 2.0);
+        let a = (v.0 + (prev.0 - v.0) * r / d1, v.1 + (prev.1 - v.1) * r / d1);
+        let b = (v.0 + (next.0 - v.0) * r / d2, v.1 + (next.1 - v.1) * r / d2);
+        Some((a, b))
+    };
+    let corner_of = |k: usize| -> Option<((f64, f64), (f64, f64))> {
+        if closed || (k > 0 && k + 1 < n) { corner(k) } else { None }
+    };
+    let mut out = Vec::with_capacity(n * 2 + 2);
+    // Start: after the cut of the first corner for a closed path, at the first point otherwise.
+    match corner_of(0) {
+        Some((_, b)) => out.push(Seg::M(b.0, b.1)),
+        None => out.push(Seg::M(at(0).0, at(0).1)),
+    }
+    let last = if closed { n } else { n - 1 };
+    for k in 1..=last {
+        let v = at(k);
+        match corner_of(k % n) {
+            Some((a, b)) => {
+                out.push(Seg::L(a.0, a.1));
+                let c1 = (a.0 + (v.0 - a.0) * 2.0 / 3.0, a.1 + (v.1 - a.1) * 2.0 / 3.0);
+                let c2 = (b.0 + (v.0 - b.0) * 2.0 / 3.0, b.1 + (v.1 - b.1) * 2.0 / 3.0);
+                out.push(Seg::C([c1.0, c1.1, c2.0, c2.1, b.0, b.1]));
+            }
+            None => out.push(Seg::L(v.0, v.1)),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod round_tests {
+    use super::*;
+
+    fn square() -> Vec<Seg> {
+        vec![
+            Seg::M(0.0, 0.0),
+            Seg::L(2.0, 0.0),
+            Seg::L(2.0, 2.0),
+            Seg::L(0.0, 2.0),
+            Seg::L(0.0, 0.0),
+        ]
+    }
+
+    #[test]
+    fn a_square_gets_four_rounded_corners_and_stays_closed() {
+        let out = round_corners(&square(), 0.5);
+        assert_eq!(out.iter().filter(|s| matches!(s, Seg::C(_))).count(), 4);
+        assert!(matches!(out.last(), Some(Seg::Z)));
+        // The path starts where the first corner (at the start point) ends: the radius along the
+        // first edge.
+        assert_eq!(out[0], Seg::M(0.5, 0.0));
+        // Every point stays inside the square.
+        for s in &out {
+            let pts: Vec<f64> = match *s {
+                Seg::M(x, y) | Seg::L(x, y) => vec![x, y],
+                Seg::C(c) => c.to_vec(),
+                Seg::Z => vec![],
+            };
+            assert!(pts.iter().all(|v| (-1e-9..=2.0 + 1e-9).contains(v)), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn the_radius_never_exceeds_half_of_an_edge() {
+        let out = round_corners(&square(), 100.0);
+        // Cut back to the middle of each edge, never past it.
+        assert_eq!(out[0], Seg::M(1.0, 0.0));
+    }
+
+    #[test]
+    fn an_open_polyline_keeps_its_ends_sharp() {
+        let open = vec![Seg::M(0.0, 0.0), Seg::L(2.0, 0.0), Seg::L(2.0, 2.0)];
+        let out = round_corners(&open, 0.5);
+        assert_eq!(out[0], Seg::M(0.0, 0.0));
+        assert_eq!(out.iter().filter(|s| matches!(s, Seg::C(_))).count(), 1);
+        assert_eq!(out.last(), Some(&Seg::L(2.0, 2.0)));
+        assert!(!out.iter().any(|s| matches!(s, Seg::Z)));
+    }
+
+    #[test]
+    fn curves_two_points_and_bad_numbers_are_left_alone() {
+        let curve = vec![Seg::M(0.0, 0.0), Seg::C([1.0, 0.0, 2.0, 1.0, 2.0, 2.0])];
+        assert_eq!(round_corners(&curve, 0.5), curve);
+        let line = vec![Seg::M(0.0, 0.0), Seg::L(1.0, 1.0)];
+        assert_eq!(round_corners(&line, 0.5), line);
+        for r in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(round_corners(&square(), r), square());
+        }
+        let bad = vec![Seg::M(0.0, 0.0), Seg::L(f64::NAN, 1.0), Seg::L(1.0, 0.0)];
+        assert_eq!(round_corners(&bad, 0.5).len(), 3);
+    }
+
+    #[test]
+    fn repeated_points_do_not_divide_by_zero() {
+        let dup = vec![Seg::M(0.0, 0.0), Seg::L(0.0, 0.0), Seg::L(1.0, 0.0), Seg::L(1.0, 1.0)];
+        let out = round_corners(&dup, 0.5);
+        assert!(!out.is_empty());
+    }
+}

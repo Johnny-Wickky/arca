@@ -56,7 +56,8 @@
     <string name="notice_d_skipped_pdf_objects_beyond_the_first_2000000">объекты PDF после первых 2000000</string>
     <string name="notice_d_skipped_pictures_and_embedded_objects_are_shown_as_placeholders">картинки и встроенные объекты показаны заглушками</string>
     <string name="notice_d_skipped_query_n_no_definition_rows">запрос %1$s (в файле нет его определения)</string>
-    <string name="notice_d_skipped_rounded_corners_are_not_drawn">скруглённые углы не показаны</string>
+    <string name="notice_d_skipped_rounded_corners_are_drawn_approximately">скруглённые углы нарисованы приближённо</string>
+    <string name="notice_d_skipped_theme_styles_are_drawn_with_the_theme_colours_only">стили темы нарисованы только цветами темы</string>
     <string name="notice_d_skipped_rtf_body">тело письма в формате RTF</string>
     <string name="notice_d_skipped_shadows_are_not_drawn">тени не показаны</string>
     <string name="notice_d_skipped_shape_effects_glow_soft_edges_reflection_are_not_drawn">эффекты фигур (свечение, мягкие края, отражение) не показаны</string>

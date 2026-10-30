@@ -40,6 +40,12 @@ pub(crate) fn num(cells: &Cells, name: &str) -> Option<f64> {
 
 /// The names of the cells the model keeps; every other cell is dropped while reading.
 const KNOWN: &[&str] = &[
+    "QuickStyleLineColor",
+    "QuickStyleFillColor",
+    "QuickStyleShadowColor",
+    "QuickStyleFontColor",
+    "QuickStyleLineMatrix",
+    "QuickStyleFillMatrix",
     "PinX",
     "PinY",
     "Width",
@@ -370,6 +376,8 @@ pub(crate) struct Doc {
     pub(crate) styles: BTreeMap<u32, Sheet>,
     /// The colour table (index to `0xRRGGBB`), empty if the file has none.
     pub(crate) colors: Vec<u32>,
+    /// The theme: the colours that `Themed` cells stand for.
+    pub(crate) theme: Theme,
     /// The page list was cut by a limit.
     pub(crate) pages_cut: bool,
     /// Layouts that were read but not confirmed against the format description.
@@ -381,6 +389,33 @@ impl Doc {
     pub(crate) fn unverified(&mut self, what: &'static str) {
         if !self.unverified.contains(&what) {
             self.unverified.push(what);
+        }
+    }
+}
+
+/// The colours of the theme of a drawing (`visio/theme/theme1.xml`): what a cell whose value is
+/// `Themed` stands for. A themed shape does not store its colours; it says which slot of the
+/// theme it takes them from (`QuickStyleLineColor`, `QuickStyleFillColor`, ...).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Theme {
+    /// The slots 0 to 8 of those numbers: dark 1, light 1, accents 1 to 6, background.
+    pub(crate) slots: [Option<u32>; 9],
+    /// The colour variations of the theme: seven colours each (the numbers 100 to 106, and 200 to
+    /// 206 for the same colours as a second set).
+    pub(crate) variations: Vec<[Option<u32>; 7]>,
+}
+
+impl Theme {
+    /// The colour that `number` stands for in colour variation `variation` (the first if there is
+    /// no such one); `None` for a number the theme does not give.
+    pub(crate) fn color(&self, number: usize, variation: usize) -> Option<u32> {
+        match number {
+            0..=8 => self.slots.get(number).copied().flatten(),
+            100..=106 | 200..=206 => {
+                let v = self.variations.get(variation).or_else(|| self.variations.first())?;
+                v.get(number % 100).copied().flatten()
+            }
+            _ => None,
         }
     }
 }

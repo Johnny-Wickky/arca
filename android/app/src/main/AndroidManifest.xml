@@ -37,6 +37,8 @@
         android:enableOnBackInvokedCallback="true"
         android:resizeableActivity="true"
         android:largeHeap="false"
+        android:allowNativeHeapPointerTagging="true"
+        android:memtagMode="sync"
         android:name=".App">
 
         <!-- The app zygote that starts the sandbox process preloads the engine library (Android 10+;

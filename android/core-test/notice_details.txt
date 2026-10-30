@@ -41,7 +41,8 @@ Skipped|object stream
 Skipped|older revisions of slides: {}
 Skipped|pictures and embedded objects are shown as placeholders
 Skipped|query {}: no definition rows
-Skipped|rounded corners are not drawn
+Skipped|rounded corners are drawn approximately
+Skipped|theme styles are drawn with the theme colours only
 Skipped|rtf body
 Skipped|shadows are not drawn
 Skipped|shape effects (glow, soft edges, reflection) are not drawn
