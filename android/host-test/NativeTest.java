@@ -149,7 +149,7 @@ public final class NativeTest {
     private static void staticViews() {
         byte[] info = Native.info();
         check(has(info, "\"guestSha256\""), "info has the guest digest");
-        check(has(info, "\"abi\":7"), "info has the ABI version");
+        check(has(info, "\"abi\":8"), "info has the ABI version");
 
         for (int lang = 0; lang <= 1; lang++) {
             byte[] about = Native.about(lang);
