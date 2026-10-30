@@ -6,7 +6,9 @@ use arca_container::zip::ZipArchive;
 use quick_xml::events::BytesStart;
 
 use crate::format::{FileFormat, odf_format_from_mimetype};
-use crate::report::{MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind};
+use crate::report::{
+    MacroIntent, MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind,
+};
 use crate::xmlwalk::{self, Ancestors, NoopVisitor, Visitor};
 use crate::{Abort, Ctx, formulas, macro_analysis, memfind_ci, ooxml, url};
 
@@ -130,9 +132,10 @@ fn scan_package(
                 match lang {
                     Some(lang) => {
                         let src = String::from_utf8_lossy(&bytes);
-                        push_script(ctx, lang, &loc, name, &src);
-                        ctx.report.add(
+                        let intent = push_script(ctx, lang, &loc, name, &src);
+                        ctx.report.add_with(
                             ThreatKind::EmbeddedScript,
+                            intent.macro_severity(),
                             &loc,
                             format!("{lang:?} script embedded in the document"),
                         );
@@ -217,12 +220,30 @@ impl Visitor for ManifestVisitor {
     }
 }
 
-fn push_script(ctx: &mut Ctx<'_>, lang: MacroLanguage, loc: &str, name: &str, src: &str) {
+/// Records a script module and returns what the script does.
+fn push_script(
+    ctx: &mut Ctx<'_>,
+    lang: MacroLanguage,
+    loc: &str,
+    name: &str,
+    src: &str,
+) -> MacroIntent {
     let limit = ctx.policy.max_macro_source_bytes;
-    let analysis = macro_analysis::analyze(src, lang);
+    let analysis = macro_analysis::analyze_module(src, lang, src.len() > limit);
     if !analysis.auto_exec.is_empty() {
-        ctx.report.add(ThreatKind::MacroAutoExec, loc, analysis.auto_exec.join(", "));
+        let severity = if analysis.intent == MacroIntent::Malicious {
+            Severity::Critical
+        } else {
+            Severity::High
+        };
+        ctx.report.add_with(
+            ThreatKind::MacroAutoExec,
+            severity,
+            loc,
+            analysis.auto_exec.join(", "),
+        );
     }
+    let intent = analysis.intent;
     ctx.report.macros.push(MacroModule {
         language: lang,
         location: loc.to_owned(),
@@ -232,7 +253,11 @@ fn push_script(ctx: &mut Ctx<'_>, lang: MacroLanguage, loc: &str, name: &str, sr
         auto_exec: analysis.auto_exec,
         suspicious: analysis.suspicious,
         iocs: analysis.iocs,
+        intent,
+        behaviors: analysis.behaviors,
+        procedures: analysis.procedures,
     });
+    intent
 }
 
 #[derive(Default)]
@@ -260,13 +285,18 @@ fn basic_module(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Result<(), Abort>
     if v.source.trim().is_empty() {
         return Ok(());
     }
-    ctx.report.add(ThreatKind::StarBasicMacros, loc, format!("Basic module {:?}", v.name));
     let name = if v.name.is_empty() {
         loc.rsplit('/').next().unwrap_or(loc).to_owned()
     } else {
         v.name.clone()
     };
-    push_script(ctx, MacroLanguage::StarBasic, loc, &name, &v.source);
+    let intent = push_script(ctx, MacroLanguage::StarBasic, loc, &name, &v.source);
+    ctx.report.add_with(
+        ThreatKind::StarBasicMacros,
+        intent.macro_severity(),
+        loc,
+        format!("Basic module {:?}", v.name),
+    );
     Ok(())
 }
 

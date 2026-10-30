@@ -306,6 +306,173 @@ pub enum MacroLanguage {
 }
 wire_enum!(MacroLanguage { Vba = 0, Xlm = 1, StarBasic = 2, Python = 3, JavaScript = 4, BeanShell = 5 });
 
+/// What a macro module is for, judged from its source text alone (it is never run).
+///
+/// This is a static judgement of what the code *says it does*, not a guarantee: a hostile author
+/// can hide intent. It therefore never changes the verdict (a file with a macro is always at least
+/// [`Verdict::ActiveContentNeutralized`]); it only lets the report say what the code does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MacroIntent {
+    /// Works on the document's own content only: no programs, files, network, registry or other
+    /// components were seen, and nothing looks concealed.
+    Benign,
+    /// Reads its surroundings, starts by itself, hides its text or uses other components, but no
+    /// program start, download, file or registry write was seen.
+    Suspicious,
+    /// Starts programs, downloads or writes files, injects code or modifies the system.
+    Malicious,
+}
+wire_enum!(MacroIntent { Benign = 0, Suspicious = 1, Malicious = 2 });
+
+impl MacroIntent {
+    /// The severity of the finding that reports a macro of this intent.
+    ///
+    /// A macro is active content whatever it says it does, and the verdict treats active content of
+    /// `Medium` severity or more as "neutralised", never "clean": a benign-looking macro keeps the
+    /// floor of `Medium`, so that a misjudged module can never make a file look clean.
+    #[must_use]
+    pub const fn macro_severity(self) -> Severity {
+        match self {
+            Self::Benign => Severity::Medium,
+            Self::Suspicious => Severity::High,
+            Self::Malicious => Severity::Critical,
+        }
+    }
+}
+
+/// One thing a macro does (or says it does), found in its source. The UI turns the kind into
+/// text in the user's language; the core carries no prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BehaviorKind {
+    // ---- ordinary work on the document (benign) --------------------------------------------
+    /// Counts rows, columns, pages, words or paragraphs.
+    CountsContent,
+    /// Formats text or cells (fonts, colours, number formats, borders, widths).
+    FormatsContent,
+    /// Reads or writes cells and ranges of the workbook.
+    EditsCells,
+    /// Reads or writes the text of the document.
+    EditsText,
+    // ---- suspicious ------------------------------------------------------------------------
+    /// Starts by itself when the file is opened, closed or changed.
+    AutoRuns,
+    /// Reads environment variables.
+    ReadsEnvironment,
+    /// Asks for the version of the operating system or the application.
+    ChecksSystemVersion,
+    /// Reads local paths, folders or the user's name.
+    ReadsLocalPaths,
+    /// Creates or gets other components (`CreateObject`, `GetObject`).
+    UsesComObject,
+    /// Builds text from pieces or encodes it so that it cannot be read as written.
+    ObfuscatedCode,
+    /// Runs a procedure or text it names at run time (`Application.Run`, `Eval`, `OnTime`).
+    RunsByName,
+    /// Declares functions of system libraries.
+    CallsNativeApi,
+    /// Sends key presses to other windows.
+    SendsKeys,
+    /// Reads the registry.
+    ReadsRegistry,
+    /// Keeps data in places readers do not look at (document variables and properties).
+    HiddenPayloadStore,
+    /// Contains a web address or an IP address.
+    ContainsAddress,
+    /// Names a program or script file.
+    MentionsProgram,
+    /// Is an Excel 4.0 macro sheet, which runs formulas as code.
+    XlmMacro,
+    /// The source was cut at the limit, so the rest was not read.
+    NotFullyRead,
+    /// Opens an address in the browser or sends data from the document.
+    OpensAddress,
+    // ---- malicious -------------------------------------------------------------------------
+    /// Starts a program or a command shell.
+    RunsProgram,
+    /// Downloads a file or data from the network.
+    DownloadsFile,
+    /// Writes or copies files.
+    WritesFiles,
+    /// Deletes files.
+    DeletesFiles,
+    /// Writes to the registry.
+    WritesRegistry,
+    /// Allocates executable memory or starts threads in it (shellcode).
+    InjectsCode,
+    /// Creates a scheduled task or another way to start again later.
+    ScheduledTask,
+    /// Changes its own code or the macro project at run time.
+    SelfModifiesCode,
+    /// Compiled code is present but the readable source is empty or does not match.
+    SourceMismatch,
+    /// Calls functions of a native library from an Excel 4.0 macro sheet.
+    CallsNativeCode,
+    /// Uses a technique known from exploits of document readers (heap spray, overflow of a
+    /// built-in function).
+    ExploitPrimitive,
+}
+wire_enum!(BehaviorKind {
+    CountsContent = 0, FormatsContent = 1, EditsCells = 2, EditsText = 3,
+    AutoRuns = 10, ReadsEnvironment = 11, ChecksSystemVersion = 12, ReadsLocalPaths = 13,
+    UsesComObject = 14, ObfuscatedCode = 15, RunsByName = 16, CallsNativeApi = 17, SendsKeys = 18,
+    ReadsRegistry = 19, HiddenPayloadStore = 20, ContainsAddress = 21, MentionsProgram = 22,
+    XlmMacro = 23, NotFullyRead = 24, OpensAddress = 25,
+    RunsProgram = 40, DownloadsFile = 41, WritesFiles = 42, DeletesFiles = 43, WritesRegistry = 44,
+    InjectsCode = 45, ScheduledTask = 46, SelfModifiesCode = 47, SourceMismatch = 48,
+    CallsNativeCode = 49, ExploitPrimitive = 50,
+});
+
+impl BehaviorKind {
+    /// The intent this behaviour points to: what a module that does it, and nothing worse, is.
+    #[must_use]
+    pub const fn intent(self) -> MacroIntent {
+        match self {
+            Self::CountsContent | Self::FormatsContent | Self::EditsCells | Self::EditsText => {
+                MacroIntent::Benign
+            }
+            Self::AutoRuns
+            | Self::ReadsEnvironment
+            | Self::ChecksSystemVersion
+            | Self::ReadsLocalPaths
+            | Self::UsesComObject
+            | Self::ObfuscatedCode
+            | Self::RunsByName
+            | Self::CallsNativeApi
+            | Self::SendsKeys
+            | Self::ReadsRegistry
+            | Self::HiddenPayloadStore
+            | Self::ContainsAddress
+            | Self::MentionsProgram
+            | Self::XlmMacro
+            | Self::NotFullyRead
+            | Self::OpensAddress => MacroIntent::Suspicious,
+            Self::RunsProgram
+            | Self::DownloadsFile
+            | Self::WritesFiles
+            | Self::DeletesFiles
+            | Self::WritesRegistry
+            | Self::InjectsCode
+            | Self::ScheduledTask
+            | Self::SelfModifiesCode
+            | Self::SourceMismatch
+            | Self::CallsNativeCode
+            | Self::ExploitPrimitive => MacroIntent::Malicious,
+        }
+    }
+}
+
+/// A behaviour of a macro module: what, in which procedure, and the line that shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroBehavior {
+    /// What it does.
+    pub kind: BehaviorKind,
+    /// The procedure it is in (empty: outside any procedure).
+    pub procedure: String,
+    /// The line of source that shows it, trimmed, display-safe.
+    pub detail: String,
+}
+wire_struct!(MacroBehavior { kind, procedure, detail });
+
 /// A macro module extracted for safe, read-only display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacroModule {
@@ -325,6 +492,12 @@ pub struct MacroModule {
     pub suspicious: Vec<String>,
     /// Indicators of compromise (URLs, IPs, executable names).
     pub iocs: Vec<String>,
+    /// What the module does, judged from its source.
+    pub intent: MacroIntent,
+    /// What it does, one entry per behaviour and procedure, the most serious first.
+    pub behaviors: Vec<MacroBehavior>,
+    /// Names of its procedures (functions), in the order they are written.
+    pub procedures: Vec<String>,
 }
 wire_struct!(MacroModule {
     language,
@@ -334,7 +507,10 @@ wire_struct!(MacroModule {
     truncated,
     auto_exec,
     suspicious,
-    iocs
+    iocs,
+    intent,
+    behaviors,
+    procedures
 });
 
 /// What a reference to an outside resource is for.

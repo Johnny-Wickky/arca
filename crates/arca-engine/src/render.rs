@@ -17,7 +17,9 @@
 //!  "findings":[{"kind":"ExternalImage","cat":"RemoteContent","sev":"Medium",
 //!               "loc":"word/_rels/document.xml.rels","detail":"https://…","blocked":true}],
 //!  "macros":[{"lang":"Vba","loc":"…","name":"…","source":"…","truncated":false,
-//!             "autoExec":[…],"suspicious":[…],"iocs":[…]}],
+//!             "autoExec":[…],"suspicious":[…],"iocs":[…],
+//!             "intent":"Benign|Suspicious|Malicious","procs":[…],
+//!             "behaviors":[{"kind":"RunsProgram","proc":"Document_Open","detail":"…"}]}],
 //!  "refs":[{"target":"…","kind":"Image","class":"Web","loc":"…","auto":true}],
 //!  "meta":[{"key":"Author","name":"…","value":"…","src":"…"}],
 //!  "embedded":[{"loc":"…","kind":"Package","class":"","clsid":"","file":"","size":0,"sha256":"…"}],
@@ -177,6 +179,18 @@ pub fn report_json_within(report: &XRayReport, max_bytes: usize) -> Option<Vec<u
         strings(&mut w, "autoExec", &m.auto_exec);
         strings(&mut w, "suspicious", &m.suspicious);
         strings(&mut w, "iocs", &m.iocs);
+        w.field_name("intent", &m.intent);
+        strings(&mut w, "procs", &m.procedures);
+        w.key("behaviors");
+        w.begin_array();
+        for b in &m.behaviors {
+            w.begin_object();
+            w.field_name("kind", &b.kind);
+            w.field_label("proc", &b.procedure, LABEL_CHARS);
+            w.field_label("detail", &b.detail, DETAIL_CHARS);
+            w.end_object();
+        }
+        w.end_array();
         w.end_object();
     }
     w.end_array();

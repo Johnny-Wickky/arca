@@ -290,6 +290,28 @@ public final class CoreTest {
         eq("a.exe", r.embedded.get(0).file, "embedded file name");
         eq(1234L, r.inflated, "inflated");
 
+        // A macro from an engine that does not say what it does is "suspicious", never "benign".
+        eq("Suspicious", r.macros.get(0).intent, "a missing intent is not benign");
+        check(r.macros.get(0).behaviors.isEmpty() && r.macros.get(0).procs.isEmpty(), "no behaviours without a field");
+
+        // What a macro does: the intent, the procedures and each behaviour with its procedure and line.
+        String withIntent = "{\"macros\":[{\"lang\":\"Vba\",\"name\":\"NewMacros\",\"intent\":\"Benign\","
+            + "\"procs\":[\"CountPages\"],\"behaviors\":[{\"kind\":\"CountsContent\",\"proc\":\"CountPages\","
+            + "\"detail\":\"n = ActiveDocument.ComputeStatistics(2)\"},{\"kind\":\"RunsProgram\",\"proc\":\"\",\"detail\":\"x\"}]},"
+            + "{\"lang\":\"Vba\",\"name\":\"Odd\",\"intent\":\"FromTheFuture\"}]}";
+        Model.Report w = Model.parseReport(withIntent.getBytes(StandardCharsets.UTF_8));
+        Model.MacroModule benign = w.macros.get(0);
+        eq("Benign", benign.intent, "intent");
+        eq(Arrays.asList("CountPages"), benign.procs, "procedures");
+        eq(2, benign.behaviors.size(), "behaviours");
+        eq("CountsContent", benign.behaviors.get(0).kind, "behaviour kind");
+        eq("CountPages", benign.behaviors.get(0).proc, "behaviour procedure");
+        eq("", benign.behaviors.get(1).proc, "outside any procedure");
+        eq(0, benign.intentRank(), "benign ranks lowest");
+        eq(2, Model.intentRank("Malicious"), "malicious ranks highest");
+        eq(1, Model.intentRank("Suspicious"), "suspicious");
+        eq(1, w.macros.get(1).intentRank(), "an intent from a newer engine counts as suspicious");
+
         // Tolerant parsing: an empty object still gives a (non-clean) report.
         Model.Report e = Model.parseReport("{}".getBytes(StandardCharsets.UTF_8));
         eq(Model.Verdict.UNVERIFIED, e.verdict, "a missing verdict is never 'clean'");

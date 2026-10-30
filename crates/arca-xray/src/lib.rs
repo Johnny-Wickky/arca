@@ -53,9 +53,9 @@ use arca_container::zip::{ZipArchive, ZipError, ZipLimits};
 
 pub use format::{Family, FileFormat};
 pub use report::{
-    Category, EmbeddedKind, EmbeddedObject, ExternalReference, Finding, MacroLanguage, MacroModule,
-    MetaKey, MetadataField, RefKind, ScanStats, Severity, TargetClass, ThreatKind, Verdict,
-    XRayReport,
+    BehaviorKind, Category, EmbeddedKind, EmbeddedObject, ExternalReference, Finding,
+    MacroBehavior, MacroIntent, MacroLanguage, MacroModule, MetaKey, MetadataField, RefKind,
+    ScanStats, Severity, TargetClass, ThreatKind, Verdict, XRayReport,
 };
 
 use format::Magic;

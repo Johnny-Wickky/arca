@@ -47,6 +47,9 @@ public struct MacroViewer: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        // What the code is and does, in words
+                        intentSection
+
                         // Indicators / Badges
                         if !macro.autoExec.isEmpty || !macro.suspicious.isEmpty {
                             badgesSection
@@ -84,6 +87,60 @@ public struct MacroViewer: View {
                 }
             }
         }
+    }
+
+    private var intentColor: Color {
+        switch macro.intent {
+        case "Benign": return ArcaTheme.unverifiedSlate
+        case "Malicious": return ArcaTheme.activeRed
+        default: return ArcaTheme.trackerAmber
+        }
+    }
+
+    /// What the code is (everyday automation, suspicious, harmful), what it does and where, and why
+    /// looking at it here is safe. A reading of the text, not a guarantee, and it says so.
+    private var intentSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TagChip(text: MacroBehaviorText.title(intent: macro.intent), color: intentColor)
+
+            Text(MacroBehaviorText.summary(intent: macro.intent))
+                .font(.system(size: 13))
+                .foregroundColor(state.theme.textPrimary)
+
+            if !macro.behaviors.isEmpty {
+                Text("ЧТО ОН ДЕЛАЕТ")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(state.theme.textSecondary)
+
+                ForEach(macro.behaviors) { behavior in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("• " + MacroBehaviorText.text(kind: behavior.kind))
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(state.theme.textPrimary)
+                        Text(MacroBehaviorText.place(module: macro.name, procedure: behavior.proc))
+                            .font(.system(size: 11))
+                            .foregroundColor(state.theme.textSecondary)
+                        if !behavior.detail.isEmpty {
+                            Text(behavior.detail)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(state.theme.textPrimary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+
+            Text(MacroBehaviorText.safeHere)
+                .font(.system(size: 12))
+                .foregroundColor(state.theme.textPrimary)
+            Text(MacroBehaviorText.readingNote)
+                .font(.system(size: 11))
+                .foregroundColor(state.theme.textSecondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(state.theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var badgesSection: some View {

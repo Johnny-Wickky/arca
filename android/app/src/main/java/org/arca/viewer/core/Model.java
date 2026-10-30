@@ -114,6 +114,35 @@ public final class Model {
         public List<String> autoExec = new ArrayList<>();
         public List<String> suspicious = new ArrayList<>();
         public List<String> iocs = new ArrayList<>();
+        /** What the code does, judged from its text: {@code Benign}, {@code Suspicious} or {@code Malicious}. */
+        public String intent = "Suspicious";
+        /** Names of its procedures, as written. */
+        public List<String> procs = new ArrayList<>();
+        /** What it does, the most serious first. */
+        public List<Behavior> behaviors = new ArrayList<>();
+
+        /** The worst intent first: Malicious, Suspicious, Benign (an unknown one counts as Suspicious). */
+        public int intentRank() {
+            return Model.intentRank(intent);
+        }
+    }
+
+    /** One thing a macro does, with the procedure it is in and the line that shows it. */
+    public static final class Behavior {
+        /** The engine's {@code BehaviorKind} name, e.g. {@code RunsProgram}. */
+        public String kind = "";
+        /** The procedure ({@code ""}: outside any procedure). */
+        public String proc = "";
+        /** The line of source that shows it, or a short description. */
+        public String detail = "";
+    }
+
+    /** 2 for Malicious, 1 for Suspicious (and anything the app does not know), 0 for Benign. */
+    public static int intentRank(String intent) {
+        if ("Malicious".equals(intent)) {
+            return 2;
+        }
+        return "Benign".equals(intent) ? 0 : 1;
     }
 
     /** A blocked reference to something outside the file. */
@@ -239,6 +268,16 @@ public final class Model {
             x.autoExec = Json.strings(m, "autoExec");
             x.suspicious = Json.strings(m, "suspicious");
             x.iocs = Json.strings(m, "iocs");
+            x.intent = nonEmpty(Json.str(m, "intent"), "Suspicious");
+            x.procs = Json.strings(m, "procs");
+            for (Object bo : Json.arr(m.get("behaviors"))) {
+                Map<String, Object> bm = Json.obj(bo);
+                Behavior b = new Behavior();
+                b.kind = Json.str(bm, "kind");
+                b.proc = Json.str(bm, "proc");
+                b.detail = Json.str(bm, "detail");
+                x.behaviors.add(b);
+            }
             r.macros.add(x);
         }
         for (Object o : Json.arr(root.get("refs"))) {
