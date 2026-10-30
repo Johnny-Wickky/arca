@@ -15,11 +15,9 @@ on:
     tags: ["v*"]
     paths:
       - "app/**"
-      - "crates/arca-ffi/**"
-      - "crates/arca-engine/**"
-      - "crates/arca-sandbox/**"
-      - "crates/arca-guest-xray/**"
+      - "crates/**"
       - "include/**"
+      - "tests/fixtures/**"
       - "tools/ios/**"
       - "tools/build-guest.sh"
       - "tools/check-unsafe.sh"
@@ -30,16 +28,15 @@ on:
   pull_request:
     paths:
       - "app/**"
-      - "crates/arca-ffi/**"
-      - "crates/arca-engine/**"
-      - "crates/arca-sandbox/**"
-      - "crates/arca-guest-xray/**"
+      - "crates/**"
       - "include/**"
+      - "tests/fixtures/**"
       - "tools/ios/**"
       - "tools/build-guest.sh"
       - "tools/check-unsafe.sh"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 
@@ -54,8 +51,9 @@ env:
 
 jobs:
   ios-suite:
-    name: xcframework · swift tests · invariants
+    name: xcframework · swift tests · app
     runs-on: macos-14
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,18 +67,45 @@ jobs:
           rustup toolchain install
           rustup target add wasm32-unknown-unknown aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
+      - name: Install XcodeGen (makes the Xcode project from app/project.yml)
+        run: brew install xcodegen
+
       - name: Build WebAssembly isolated guest
         run: bash tools/build-guest.sh
 
-      - name: Build XCFramework, compile Swift SDK and run unit tests
+      # Invariants, Swift compile for the Simulator, XCFramework, the Swift tests on a Simulator linked
+      # with the real core, and the app for the Simulator and for a device (unsigned).
+      - name: iOS checks (tools/ios/check-ios.sh)
         run: bash tools/ios/check-ios.sh
 
-      - name: Compress ArcaCore.xcframework
+      - name: Pack the XCFramework
+        if: success()
         run: |
           cd target
-          zip -r -y ArcaCore.xcframework.zip ArcaCore.xcframework
+          zip -qry ArcaCore.xcframework.zip ArcaCore.xcframework
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success()
         with:
           name: ArcaCore.xcframework.zip
           path: target/ArcaCore.xcframework.zip
+
+      # For testers: the app for a Simulator (xcrun simctl install booted Arca.app) and an unsigned
+      # .ipa for a device (to be signed with the tester's own Apple ID). See docs/IOS_TESTING.md.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success()
+        with:
+          name: arca-ios-app
+          path: |
+            target/ios-app/Arca-simulator.app.zip
+            target/ios-app/Arca-unsigned.ipa
+
+      # The whole xcodebuild logs and the test result bundle: what to read when a step above failed.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ios-logs
+          path: |
+            target/ios-logs/
+            target/ios-test.xcresult
+          if-no-files-found: ignore

@@ -29,3 +29,12 @@
 *.key
 *.pem
 /signing/
+
+# iOS (tools/ios): the core as an XCFramework, the Xcode project made from app/project.yml, build output
+/app/Frameworks/
+/app/Xcode/
+/app/App/Info.plist
+/app/.build/
+/app/.swiftpm/
+xcuserdata/
+DerivedData/

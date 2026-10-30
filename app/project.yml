@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# The Xcode project of the Arca app for iPhone and iPad, described for XcodeGen
+# (https://github.com/yonaskolb/XcodeGen). The .xcodeproj itself is not committed: it is made
+# from this file by `tools/ios/build-app.sh project` into app/Xcode/ (a directory of its own, so
+# that `xcodebuild` run in app/ still finds only Package.swift).
+#
+# The app is thin: `@main` in App/Sources, everything else in the ArcaKit Swift package (this
+# directory's Package.swift). The Rust core comes from Frameworks/ArcaCore.xcframework, which
+# `tools/ios/build-xcframework.sh` builds. Signing is left to whoever builds: choose a Team in Xcode
+# (Signing & Capabilities), or pass DEVELOPMENT_TEAM=<id> to xcodebuild.
+name: Arca
+
+options:
+  bundleIdPrefix: org.arca
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.6.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+packages:
+  ArcaKit:
+    path: .
+
+targets:
+  Arca:
+    type: application
+    platform: iOS
+    sources:
+      - path: App/Sources
+    dependencies:
+      - package: ArcaKit
+        product: ArcaKit
+      - framework: Frameworks/ArcaCore.xcframework
+        embed: false
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Arca
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # "Open with Arca" in Files, Mail, AirDrop, the Share Sheet. The type of a document is decided
+        # by the engine from its bytes, never from its name, so the app offers itself for any data file,
+        # as a second choice (it does not take files away from the apps that own the format).
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.data
+        # No network: nothing to declare (no App Transport Security keys, no usage descriptions),
+        # and no encryption of its own beyond what the system provides.
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.arca.viewer
+        PRODUCT_NAME: Arca
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+
+schemes:
+  Arca:
+    build:
+      targets:
+        Arca: all
+    run:
+      config: Debug
+    archive:
+      config: Release
