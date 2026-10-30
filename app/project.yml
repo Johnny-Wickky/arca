@@ -83,6 +83,9 @@ targets:
         PRODUCT_NAME: Arca
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
+        # XcodeGen writes the plist to app/App/Info.plist (next to this file) but puts `App/Info.plist`
+        # in the build settings as is; Xcode resolves it against app/Xcode.
+        INFOPLIST_FILE: $(SRCROOT)/../App/Info.plist
 
 schemes:
   Arca:
