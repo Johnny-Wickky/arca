@@ -431,8 +431,16 @@ fn guest_page_equals_native_page() {
     assert_ne!(out.status, arca_abi::status::OK);
     assert!(decode_page(out.kind, &out.payload).is_err());
 
-    // Only PDF has a page view.
-    let out = run_op(&sandbox, &m, Op::Render, 0, &docx(&[]), &RunOptions::new()).unwrap();
+    // Text documents have pages too (laid out from their reading view), and they equal the native ones.
+    let word = docx(&[]);
+    let out = run_op(&sandbox, &m, Op::Render, 0, &word, &RunOptions::new()).unwrap();
+    assert_eq!(out.status, arca_abi::status::OK);
+    let got = decode_page(out.kind, &out.payload).unwrap();
+    assert_eq!(got, arca_preview::render_page(&word, 0, &policy).unwrap());
+
+    // A format with no page view is a status, not a trap.
+    let out =
+        run_op(&sandbox, &m, Op::Render, 0, b"just some plain text\n", &RunOptions::new()).unwrap();
     assert_eq!(out.status, arca_abi::status::UNSUPPORTED_FORMAT);
 }
 
