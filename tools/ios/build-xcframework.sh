@@ -65,7 +65,9 @@ HEADERS_DIR="target/xcframework-headers"
 rm -rf "$HEADERS_DIR"
 mkdir -p "$HEADERS_DIR"
 cp include/arca.h "$HEADERS_DIR/"
-cp include/module.modulemap "$HEADERS_DIR/"
+# No module.modulemap here: the Clang module `ArcaCore` is defined once, by the Swift package
+# (app/Sources/ArcaCore). A second definition of the same module, from the framework's headers,
+# makes the app target fail with "redefinition of module 'ArcaCore'".
 
 xcodebuild -create-xcframework \
     -library target/aarch64-apple-ios/release/libarca_ffi.a \
@@ -82,9 +84,13 @@ DEVICE_LIB="$OUTPUT_FRAMEWORK/ios-arm64/libarca_ffi.a"
 rustup component add llvm-tools >/dev/null 2>&1 || true
 NM="$(find "$(rustc --print sysroot)/lib/rustlib" -name llvm-nm -type f 2>/dev/null | head -n 1)"
 [ -n "$NM" ] || NM=nm
-SYMBOLS="$("$NM" "$DEVICE_LIB" 2>/dev/null || true)"
+SYMBOLS_FILE="$(mktemp)"
+trap 'rm -f "$SYMBOLS_FILE"' EXIT
+"$NM" "$DEVICE_LIB" >"$SYMBOLS_FILE" 2>/dev/null || true
+# Read the list from a file, not from a pipe: with `pipefail`, `printf | grep -q` fails with
+# "Broken pipe" as soon as grep has matched and left, and a symbol that is there looks missing.
 for sym in arca_init arca_doc_new arca_run arca_buffer_free arca_about; do
-    if ! printf '%s\n' "$SYMBOLS" | grep -Eq "T _?$sym\$"; then
+    if ! grep -Eq "T _?$sym\$" "$SYMBOLS_FILE"; then
         echo "Error: required symbol $sym missing from device library!" >&2
         exit 1
     fi
