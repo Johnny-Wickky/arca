@@ -279,7 +279,7 @@ public struct Notice: Codable, Sendable, Equatable, Identifiable {
 }
 
 /// Top-level metadata for preview navigation.
-public struct PreviewMeta: Codable, Sendable, Equatable {
+public struct PreviewMeta: Decodable, Sendable, Equatable {
     public let format: String
     public let family: String
     public let sections: [SectionInfo]

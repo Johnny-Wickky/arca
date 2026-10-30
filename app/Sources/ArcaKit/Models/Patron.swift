@@ -31,7 +31,7 @@ public struct PatronLink: Codable, Sendable, Equatable, Identifiable {
 }
 
 /// Attribution card for original creators and forks.
-public struct PatronCard: Codable, Sendable, Equatable, Identifiable {
+public struct PatronCard: Decodable, Sendable, Equatable, Identifiable {
     public var id: String { title }
 
     /// Whether this card represents the original upstream creators of Arca.
@@ -65,7 +65,7 @@ public struct PatronCard: Codable, Sendable, Equatable, Identifiable {
 }
 
 /// Patronage screen structure per AGPLv3 section 7(b).
-public struct PatronScreen: Codable, Sendable, Equatable {
+public struct PatronScreen: Decodable, Sendable, Equatable {
     public let lang: String
     public let cards: [PatronCard]
     public let legal: String
@@ -86,14 +86,14 @@ public struct PatronScreen: Codable, Sendable, Equatable {
 }
 
 /// Content of the "About & Support" screen.
-public struct AboutInfo: Codable, Sendable, Equatable {
+public struct AboutInfo: Decodable, Sendable, Equatable {
     public let appName: String
     public let fingerprint: String
     public let screen: PatronScreen
 }
 
 /// Content of the Guardian's Passport ("Паспорт Хранителя").
-public struct PassportInfo: Codable, Sendable, Equatable {
+public struct PassportInfo: Decodable, Sendable, Equatable {
     public let title: String
     public let body: String
     public let callToAction: String
