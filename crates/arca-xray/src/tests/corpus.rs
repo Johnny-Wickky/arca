@@ -35,7 +35,7 @@ macro_rules! sample {
 
 // ---- helpers -----------------------------------------------------------------
 
-fn guid(s: &str) -> [u8; 16] {
+pub(super) fn guid(s: &str) -> [u8; 16] {
     let hex: Vec<u8> = s
         .trim_matches(['{', '}'])
         .chars()
@@ -52,25 +52,25 @@ fn guid(s: &str) -> [u8; 16] {
     g
 }
 
-fn docx_with(f: impl FnOnce(&mut Opc)) -> Vec<u8> {
+pub(super) fn docx_with(f: impl FnOnce(&mut Opc)) -> Vec<u8> {
     let mut o = docx();
     f(&mut o);
     o.build()
 }
 
-fn docx_body(body: &str) -> Vec<u8> {
+pub(super) fn docx_body(body: &str) -> Vec<u8> {
     docx_with(|o| {
         o.set("word/document.xml", document(body));
     })
 }
 
-fn field(instr: &str) -> String {
+pub(super) fn field(instr: &str) -> String {
     format!(
         "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText xml:space=\"preserve\"> {instr} </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r><w:r><w:t>x</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>"
     )
 }
 
-fn external_rel(rel_type: &str, target: &str) -> Vec<u8> {
+pub(super) fn external_rel(rel_type: &str, target: &str) -> Vec<u8> {
     docx_with(|o| {
         o.set(
             "word/_rels/document.xml.rels",
@@ -79,14 +79,14 @@ fn external_rel(rel_type: &str, target: &str) -> Vec<u8> {
     })
 }
 
-fn pdf_text(catalog_extra: &str, objects: &str, trailer_extra: &str) -> Vec<u8> {
+pub(super) fn pdf_text(catalog_extra: &str, objects: &str, trailer_extra: &str) -> Vec<u8> {
     format!(
         "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R {catalog_extra} >> endobj\n2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj\n{objects}\ntrailer << /Root 1 0 R {trailer_extra} >>\n%%EOF\n"
     )
     .into_bytes()
 }
 
-fn rtf_object(class: &str, flags: &str) -> Vec<u8> {
+pub(super) fn rtf_object(class: &str, flags: &str) -> Vec<u8> {
     let mut ole1 = Vec::new();
     ole1.extend_from_slice(&0x0000_0501u32.to_le_bytes());
     ole1.extend_from_slice(&1u32.to_le_bytes());
@@ -102,7 +102,7 @@ fn rtf_object(class: &str, flags: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-fn pptx(slide_attrs: &str, shape: &str) -> Vec<u8> {
+pub(super) fn pptx(slide_attrs: &str, shape: &str) -> Vec<u8> {
     let mut o = Opc::default();
     o.set(
         "[Content_Types].xml",
@@ -120,7 +120,11 @@ fn pptx(slide_attrs: &str, shape: &str) -> Vec<u8> {
     o.build()
 }
 
-fn ods_zip(first_mimetype: bool, extra: &[(&str, &[u8])], manifest_entries: &str) -> Vec<u8> {
+pub(super) fn ods_zip(
+    first_mimetype: bool,
+    extra: &[(&str, &[u8])],
+    manifest_entries: &str,
+) -> Vec<u8> {
     let mut z = ZipWriter::new();
     let mime = b"application/vnd.oasis.opendocument.text";
     if first_mimetype {
@@ -228,14 +232,14 @@ fn orphaned_ole() -> Vec<u8> {
     f
 }
 
-fn ole_with_storage(path: &str, clsid: &str) -> Vec<u8> {
+pub(super) fn ole_with_storage(path: &str, clsid: &str) -> Vec<u8> {
     let mut b = CfbBuilder::new();
     b.add_storage(path, guid(clsid)).unwrap();
     b.add_stream(&format!("{path}/Data"), vec![0x41; 16]).unwrap();
     b.finish().unwrap()
 }
 
-fn pe() -> Vec<u8> {
+pub(super) fn pe() -> Vec<u8> {
     let mut pe = b"MZ\x90\x00\x03\x00\x00\x00".to_vec();
     pe.resize(512, 0);
     pe

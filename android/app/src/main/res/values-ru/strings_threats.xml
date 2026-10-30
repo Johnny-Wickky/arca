@@ -75,7 +75,7 @@
     <string name="threat_external_frame_title">Фрейм из интернета</string>
     <string name="threat_external_frame_text">Фрейм показывает содержимое с удалённого адреса, которое может измениться в любой момент.</string>
     <string name="threat_external_object_link_title">Объект, связанный с удалённым адресом</string>
-    <string name="threat_external_object_link_text">Объект связан с файлом или сервером и обновляется оттуда.</string>
+    <string name="threat_external_object_link_text">Объект в документе связан с удалённым адресом и загружается оттуда при открытии. Страница, загруженная так, может запускать программы на компьютере (приём Follina и CVE-2021-40444). Arca её не загружает.</string>
     <string name="threat_external_workbook_link_title">Ссылка на другую книгу</string>
     <string name="threat_external_workbook_link_text">Книга берёт данные из другого файла или с сервера. Адрес может выдать вашу сеть или подгрузить неожиданные данные.</string>
     <string name="threat_external_data_connection_title">Подключение к данным</string>
@@ -156,14 +156,14 @@
     <string name="threat_unusual_compression_text">В архиве применён вид сжатия, который не создают честные программы.</string>
     <string name="threat_macro_enabled_content_type_title">Тип файла допускает макросы</string>
     <string name="threat_macro_enabled_content_type_text">Файл относится к типу, предназначенному для макросов (например, DOCM или XLSM).</string>
-    <string name="threat_content_type_mismatch_title">Макросы не соответствуют типу файла</string>
-    <string name="threat_content_type_mismatch_text">Файл заявляет, что макросов нет, но содержит проект макросов — или наоборот. Неверно помеченные файлы используют, чтобы обойти фильтры.</string>
+    <string name="threat_content_type_mismatch_title">Тип файла не соответствует содержимому</string>
+    <string name="threat_content_type_mismatch_text">Часть файла помечена как один вид содержимого, а на деле другой, либо метки нет совсем; например, проект макросов в файле, который заявляет, что макросов нет. Неверно помеченные файлы используют, чтобы обойти фильтры.</string>
     <string name="threat_disguised_executable_title">Программа под видом документа</string>
     <string name="threat_disguised_executable_text">Файл — программа, но имя или значок у него как у документа.</string>
     <string name="threat_unsupported_format_title">Неподдерживаемый формат</string>
     <string name="threat_unsupported_format_text">Arca не смогла распознать формат, поэтому не может поручиться за файл.</string>
     <string name="threat_scan_limit_reached_title">Достигнут предел проверки</string>
-    <string name="threat_scan_limit_reached_text">Файл так велик или так глубоко вложен, что проверка остановилась на предохранительном пределе. Остальное не исследовано.</string>
+    <string name="threat_scan_limit_reached_text">Проверка остановилась, не дойдя до конца: файл слишком велик или глубоко вложен, либо часть его — вида, который Arca не разбирает. То, что не проверено, нельзя назвать безопасным.</string>
     <string name="threat_embedded_font_title">Встроенный шрифт</string>
     <string name="threat_embedded_font_text">В файле хранится шрифт. Шрифты читает сложный код, который уже не раз атаковали.</string>
     <string name="threat_compression_bomb_title">«Бомба» распаковки</string>

@@ -126,6 +126,17 @@ pub(crate) fn rec(out: &mut Vec<u8>, id: u16, data: &[u8]) {
 /// Builds the storages/streams of a VBA project under `prefix` (e.g. `""`
 /// for `vbaProject.bin`, `"Macros"` for `.doc`, `"_VBA_PROJECT_CUR"` for `.xls`).
 pub(crate) fn add_vba_project(b: &mut CfbBuilder, prefix: &str, modules: &[(&str, &str, bool)]) {
+    add_vba_project_with(b, prefix, modules, true);
+}
+
+/// Like [`add_vba_project`]; `protected` writes the password-protection lines (`CMG`, `DPB`, `GC`)
+/// of the `PROJECT` stream, which a project nobody locked does not have.
+pub(crate) fn add_vba_project_with(
+    b: &mut CfbBuilder,
+    prefix: &str,
+    modules: &[(&str, &str, bool)],
+    protected: bool,
+) {
     let p = |s: &str| if prefix.is_empty() { s.to_owned() } else { format!("{prefix}/{s}") };
     let mut dir = Vec::new();
     rec(&mut dir, 0x0001, &1u32.to_le_bytes());
@@ -170,7 +181,10 @@ pub(crate) fn add_vba_project(b: &mut CfbBuilder, prefix: &str, modules: &[(&str
             project.push_str(&format!("Module={name}\r\n"));
         }
     }
-    project.push_str("Name=\"VBAProject\"\r\nCMG=\"00\"\r\nDPB=\"0000\"\r\nGC=\"00\"\r\n");
+    project.push_str("Name=\"VBAProject\"\r\n");
+    if protected {
+        project.push_str("CMG=\"00\"\r\nDPB=\"0000\"\r\nGC=\"00\"\r\n");
+    }
     b.add_stream(&p("PROJECT"), project.into_bytes()).unwrap();
 }
 
@@ -203,6 +217,13 @@ pub(crate) fn docm_with_macro() -> Opc {
 pub(crate) fn docm_with_modules(modules: &[(&str, &str, bool)]) -> Opc {
     let mut b = CfbBuilder::new();
     add_vba_project(&mut b, "", modules);
+    docm_with_project(b.finish().unwrap())
+}
+
+/// A `.docm` whose VBA project nobody locked with a password.
+pub(crate) fn docm_with_open_modules(modules: &[(&str, &str, bool)]) -> Opc {
+    let mut b = CfbBuilder::new();
+    add_vba_project_with(&mut b, "", modules, false);
     docm_with_project(b.finish().unwrap())
 }
 
