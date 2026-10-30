@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 use super::Want;
 use super::geom::MAX_ARGS;
 use super::model::{
-    Cells, Connect, Doc, Fmt, Geom, Kind, Layer, Master, PageDef, Piece, Row, RowKind, Sheet, Val,
-    intern, parse_val,
+    Cells, Connect, Doc, Fmt, Geom, Kind, Layer, Master, PageDef, Piece, Row, RowKind, Sheet,
+    Theme, Val, intern, parse_val,
 };
 use crate::opc::Package;
 use crate::xml::{self, Flow, Handler, Tag, XmlError, unescape};
@@ -698,9 +698,109 @@ pub(crate) fn read(
     }
     if want != Want::Count {
         read_document(pkg, policy, &main, &mut doc)?;
+        read_theme(pkg, &main, &mut doc)?;
         read_masters(pkg, policy, &main, &used, &mut doc)?;
     }
     Ok(doc)
+}
+
+/// Most colour variations read from a theme.
+const MAX_VARIATIONS: usize = 16;
+
+/// Reads the colours of a theme part: `a:dk1`, `a:lt1`, `a:accent1` to `a:accent6` and `vt:bkgnd`
+/// (each holding an `a:srgbClr`, or an `a:sysClr` with its `lastClr`), and the `vt:varColor1` to
+/// `vt:varColor7` of every `vt:variationClrScheme`. Only colours are read.
+#[derive(Default)]
+struct ThemeReader {
+    theme: Theme,
+    /// The slot whose colour element comes next: `(false, n)` scheme slot, `(true, n)` variation colour.
+    slot: Option<(bool, usize)>,
+}
+
+impl Handler for ThemeReader {
+    fn start(&mut self, tag: &Tag<'_>, _empty: bool) -> Flow {
+        let local = tag.name.rsplit(':').next().unwrap_or("");
+        match local {
+            "dk1" => self.slot = Some((false, 0)),
+            "lt1" => self.slot = Some((false, 1)),
+            "accent1" => self.slot = Some((false, 2)),
+            "accent2" => self.slot = Some((false, 3)),
+            "accent3" => self.slot = Some((false, 4)),
+            "accent4" => self.slot = Some((false, 5)),
+            "accent5" => self.slot = Some((false, 6)),
+            "accent6" => self.slot = Some((false, 7)),
+            "bkgnd" => self.slot = Some((false, 8)),
+            "variationClrScheme" => {
+                if self.theme.variations.len() < MAX_VARIATIONS {
+                    self.theme.variations.push([None; 7]);
+                }
+            }
+            "varColor1" | "varColor2" | "varColor3" | "varColor4" | "varColor5" | "varColor6"
+            | "varColor7" => {
+                let n = local.bytes().last().map_or(1, |b| usize::from(b - b'0'));
+                self.slot = Some((true, n.saturating_sub(1)));
+            }
+            "srgbClr" | "sysClr" => {
+                let attr = if local == "srgbClr" { "val" } else { "lastClr" };
+                let color = tag
+                    .attr(attr)
+                    .and_then(|v| u32::from_str_radix(v.trim(), 16).ok())
+                    .filter(|c| *c <= 0xFF_FFFF);
+                if let (Some(c), Some((variation, n))) = (color, self.slot) {
+                    if variation {
+                        if let Some(slot) =
+                            self.theme.variations.last_mut().and_then(|v| v.get_mut(n))
+                        {
+                            *slot = Some(c);
+                        }
+                    } else if let Some(slot) = self.theme.slots.get_mut(n) {
+                        *slot = Some(c);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    fn end(&mut self, local: &str) {
+        let local = local.rsplit(':').next().unwrap_or(local);
+        if matches!(
+            local,
+            "dk1"
+                | "lt1"
+                | "accent1"
+                | "accent2"
+                | "accent3"
+                | "accent4"
+                | "accent5"
+                | "accent6"
+                | "bkgnd"
+                | "varColor1"
+                | "varColor2"
+                | "varColor3"
+                | "varColor4"
+                | "varColor5"
+                | "varColor6"
+                | "varColor7"
+        ) {
+            self.slot = None;
+        }
+    }
+
+    fn text(&mut self, _raw: &str, _cdata: bool) -> Result<(), XmlError> {
+        Ok(())
+    }
+}
+
+fn read_theme(pkg: &mut Package<'_>, main: &str, doc: &mut Doc) -> Result<(), PreviewError> {
+    let Some(part) = pkg.rel_target(main, "theme")? else { return Ok(()) };
+    let Some(text) = read_xml(pkg, &part)? else { return Ok(()) };
+    let mut reader = ThemeReader::default();
+    // A broken theme keeps what was read before it.
+    let _ = xml::drive(&text, pkg.limits(), &mut reader);
+    doc.theme = reader.theme;
+    Ok(())
 }
 
 fn read_document(

@@ -71,15 +71,26 @@ public final class SandboxService extends Service {
             case SandboxProtocol.DOC_APPEND: {
                 long doc = in.readLong();
                 byte[] buf = in.createByteArray();
-                out.writeInt(buf == null ? Native.BAD_ARGUMENT : engine.docAppend(doc, buf, 0, buf.length));
+                try {
+                    out.writeInt(buf == null ? Native.BAD_ARGUMENT : engine.docAppend(doc, buf, 0, buf.length));
+                } finally {
+                    if (buf != null) {
+                        // The engine has its own copy; this one is not kept around.
+                        java.util.Arrays.fill(buf, (byte) 0);
+                    }
+                }
                 return true;
             }
             case SandboxProtocol.DOC_SET_PASSWORD: {
                 long doc = in.readLong();
                 byte[] buf = in.createByteArray();
-                int status = buf == null ? Native.BAD_ARGUMENT : engine.docSetPassword(doc, buf, 0, buf.length);
-                if (buf != null) {
-                    java.util.Arrays.fill(buf, (byte) 0);
+                int status;
+                try {
+                    status = buf == null ? Native.BAD_ARGUMENT : engine.docSetPassword(doc, buf, 0, buf.length);
+                } finally {
+                    if (buf != null) {
+                        java.util.Arrays.fill(buf, (byte) 0);
+                    }
                 }
                 out.writeInt(status);
                 return true;
@@ -91,8 +102,7 @@ public final class SandboxService extends Service {
                     out.writeLong(-Native.BAD_ARGUMENT);
                     return true;
                 }
-                // The native side takes ownership of the descriptor and closes it.
-                out.writeLong(engine.docReadFd(doc, pfd.detachFd()));
+                out.writeLong(handOver(pfd, doc, true));
                 return true;
             }
             case SandboxProtocol.DOC_LEN:
@@ -129,7 +139,7 @@ public final class SandboxService extends Service {
                     out.writeLong(-Native.BAD_ARGUMENT);
                     return true;
                 }
-                out.writeLong(engine.sanitizedWriteFd(outcome, pfd.detachFd()));
+                out.writeLong(handOver(pfd, outcome, false));
                 return true;
             }
             case SandboxProtocol.OUTCOME_FREE:
@@ -138,6 +148,43 @@ public final class SandboxService extends Service {
                 return true;
             default:
                 return false;
+        }
+    }
+
+    /**
+     * Gives a descriptor to the native side, which takes ownership of it and closes it. If the call
+     * does not reach the native side (the library is missing, the call is refused with an error
+     * that is thrown), the descriptor is still ours and is closed here: a descriptor is never left
+     * open in a process that holds a document, whatever happens.
+     */
+    private long handOver(ParcelFileDescriptor pfd, long handle, boolean read) {
+        int fd = pfd.detachFd();
+        boolean handed = false;
+        try {
+            long result = read ? engine.docReadFd(handle, fd) : engine.sanitizedWriteFd(handle, fd);
+            handed = true;
+            return result;
+        } finally {
+            if (!handed) {
+                closeFd(fd);
+            }
+        }
+    }
+
+    private static void closeQuietly(ParcelFileDescriptor pfd) {
+        try {
+            pfd.close();
+        } catch (IOException ignored) {
+            // nothing more can be done
+        }
+    }
+
+    /** Closes a detached descriptor that no one else will close. */
+    static void closeFd(int fd) {
+        try {
+            ParcelFileDescriptor.adoptFd(fd).close();
+        } catch (IOException | RuntimeException ignored) {
+            // nothing more can be done
         }
     }
 
@@ -175,23 +222,36 @@ public final class SandboxService extends Service {
             return;
         }
         ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
-        out.writeInt(2);
-        out.writeInt(b.length);
-        out.writeFileDescriptor(pipe[0].getFileDescriptor());
-        pipe[0].close();
         final ParcelFileDescriptor write = pipe[1];
         final byte[] data = b;
-        Thread t = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try (OutputStream os = new ParcelFileDescriptor.AutoCloseOutputStream(write)) {
-                    os.write(data);
-                } catch (IOException ignored) {
-                    // the reader went away; nothing more to deliver
+        boolean started = false;
+        try {
+            out.writeInt(2);
+            out.writeInt(b.length);
+            out.writeFileDescriptor(pipe[0].getFileDescriptor());
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try (OutputStream os = new ParcelFileDescriptor.AutoCloseOutputStream(write)) {
+                        os.write(data);
+                    } catch (IOException ignored) {
+                        // the reader went away; nothing more to deliver
+                    } finally {
+                        // The bytes were pixels or text of the document: not left lying in memory.
+                        java.util.Arrays.fill(data, (byte) 0);
+                    }
                 }
+            }, "arca-sandbox-pipe");
+            t.setDaemon(true);
+            t.start();
+            started = true;
+        } finally {
+            // The parcel holds its own copy of the read end, so ours always goes; the write end goes
+            // too unless the thread that owns it is running (a failure before that must not leak it).
+            closeQuietly(pipe[0]);
+            if (!started) {
+                closeQuietly(write);
             }
-        }, "arca-sandbox-pipe");
-        t.setDaemon(true);
-        t.start();
+        }
     }
 }

@@ -39,6 +39,10 @@ const NEWER_ATTRS: &[&str] = &[
     "windowLightNavigationBar",
     "navigationBarColor",
     "useAppZygote",
+    // Memory tagging for native code on devices that have it (the hardened-allocator practice of
+    // GrapheneOS): a bug that corrupts memory in the native library stops the process at once.
+    "allowNativeHeapPointerTagging",
+    "memtagMode",
 ];
 
 /// Name prefixes that `Labels.java` builds at run time (so those strings are not dead).

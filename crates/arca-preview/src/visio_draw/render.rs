@@ -17,7 +17,7 @@
 
 use std::borrow::Cow;
 
-use super::geom::{Builder, Flags, Seg};
+use super::geom::{Builder, Flags, Seg, round_corners};
 use super::model::{Cells, Doc, Fmt, Geom, Kind, PageDef, Row, Sheet, Val, cell, num};
 use crate::model::IMAGE_NONE;
 use crate::page::{MAX_PATH_NUMBERS, MAX_PRIMS, PageModel, Prim, op, style as pstyle};
@@ -145,13 +145,69 @@ enum Grp {
 
 fn group_of(name: &str) -> Grp {
     match name {
-        "LineWeight" | "LineColor" | "LinePattern" | "LineColorTrans" | "Rounding"
-        | "BeginArrow" | "EndArrow" | "BeginArrowSize" | "EndArrowSize" => Grp::Line,
-        "FillForegnd" | "FillBkgnd" | "FillPattern" | "FillForegndTrans" | "FillBkgndTrans"
-        | "ShdwPattern" => Grp::Fill,
-        "LeftMargin" | "RightMargin" | "TopMargin" | "BottomMargin" | "VerticalAlign"
-        | "TextBkgnd" => Grp::Text,
+        "LineWeight"
+        | "LineColor"
+        | "LinePattern"
+        | "LineColorTrans"
+        | "Rounding"
+        | "BeginArrow"
+        | "EndArrow"
+        | "BeginArrowSize"
+        | "EndArrowSize"
+        | "QuickStyleLineColor"
+        | "QuickStyleLineMatrix" => Grp::Line,
+        "FillForegnd"
+        | "FillBkgnd"
+        | "FillPattern"
+        | "FillForegndTrans"
+        | "FillBkgndTrans"
+        | "ShdwPattern"
+        | "QuickStyleFillColor"
+        | "QuickStyleFillMatrix"
+        | "QuickStyleShadowColor" => Grp::Fill,
+        "LeftMargin"
+        | "RightMargin"
+        | "TopMargin"
+        | "BottomMargin"
+        | "VerticalAlign"
+        | "TextBkgnd"
+        | "QuickStyleFontColor" => Grp::Text,
         _ => Grp::Own,
+    }
+}
+
+/// Whether a cell holds `Themed`: its value comes from the theme, not from the file.
+fn is_themed(v: &Val) -> bool {
+    matches!(v, Val::Text(t) if t == "Themed")
+}
+
+/// The line pattern: the number in the cell; for a themed one, solid if the theme gives the shape
+/// a line and none if it does not.
+fn line_pattern(look: &Look<'_>) -> f64 {
+    match look.cell("LinePattern") {
+        Some(v) if is_themed(v) => {
+            if look.theme_draws("QuickStyleLineMatrix") {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        _ => look.num("LinePattern").unwrap_or(1.0),
+    }
+}
+
+/// The fill pattern: the number in the cell; for a themed one, solid if the theme gives the shape
+/// a fill and none if it does not.
+fn fill_pattern(look: &Look<'_>) -> f64 {
+    match look.cell("FillPattern") {
+        Some(v) if is_themed(v) => {
+            if look.theme_draws("QuickStyleFillMatrix") {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        _ => look.num("FillPattern").unwrap_or(0.0),
     }
 }
 
@@ -218,7 +274,37 @@ impl<'a> Look<'a> {
     }
 
     fn color(&self, name: &str) -> Option<u32> {
-        self.rgb(self.cell(name)?)
+        let v = self.cell(name)?;
+        if is_themed(v) {
+            return self.themed(name);
+        }
+        self.rgb(v)
+    }
+
+    /// The colour a `Themed` cell stands for: the slot of the theme that the shape's quick-style
+    /// cell names (`QuickStyleLineColor` for a line, `QuickStyleFillColor` for a fill, ...).
+    fn themed(&self, name: &str) -> Option<u32> {
+        let quick = match name {
+            "LineColor" => "QuickStyleLineColor",
+            "FillForegnd" | "FillBkgnd" => "QuickStyleFillColor",
+            "ShdwForegnd" => "QuickStyleShadowColor",
+            "Color" => "QuickStyleFontColor",
+            _ => return None,
+        };
+        let number = float_index(self.num(quick)?)?;
+        // Text takes a scheme colour when the number names one, and the ordinary text colour (dark
+        // 1) when it names a colour variation: a variation colour is for lines and fills, and the
+        // files made by Visio store black for the text of an unstyled shape.
+        if name == "Color" && number >= 100 {
+            return self.doc.theme.color(0, 0);
+        }
+        self.doc.theme.color(number, 0)
+    }
+
+    /// Whether the theme gives the shape this kind of look at all: its quick-style matrix cell is
+    /// not 0 (a text-only shape has 0 and draws neither a line nor a fill).
+    fn theme_draws(&self, matrix: &str) -> bool {
+        self.num(matrix).is_some_and(|n| n > 0.0)
     }
 
     /// A colour value: a literal colour, or an index into the colour table.
@@ -559,7 +645,7 @@ impl<'a> Painter<'a> {
         let geoms = Self::merged_geoms(look);
         let line_pt = self.line_width(look);
         let (line_color, line_on) = self.line_color(look);
-        self.pattern = look.num("LinePattern").unwrap_or(1.0);
+        self.pattern = line_pattern(look);
         let (fill_color, fill_on) = self.fill_color(look);
         if !geoms.is_empty() && (line_on || fill_on) {
             self.style_notes(look);
@@ -577,6 +663,11 @@ impl<'a> Painter<'a> {
             b.finish();
             let (segs, flags) = (std::mem::take(&mut b.segs), b.flags);
             self.segs_left = left;
+            // `Rounding` (inches) rounds the corners where straight lines meet.
+            let segs = match look.num("Rounding") {
+                Some(r) if r > 0.0 => round_corners(&segs, r),
+                _ => segs,
+            };
             self.flag_notes(flags);
             let want_fill = fill_on && g.no_fill != Some(true);
             let want_line = line_on && g.no_line != Some(true);
@@ -612,13 +703,18 @@ impl<'a> Painter<'a> {
     }
 
     fn style_notes(&mut self, look: &Look<'_>) {
-        if dash_lengths(look.num("LinePattern").unwrap_or(1.0)).is_some() {
+        if look.cell("FillPattern").is_some_and(is_themed)
+            || look.cell("LineColor").is_some_and(is_themed)
+        {
+            self.note("theme styles are drawn with the theme colours only");
+        }
+        if dash_lengths(line_pattern(look)).is_some() {
             self.note("dash patterns are approximated by regular dashes");
         }
         if look.num("Rounding").is_some_and(|r| r > 0.0) {
-            self.note("rounded corners are not drawn");
+            self.note("rounded corners are drawn approximately");
         }
-        if look.num("FillPattern").is_some_and(|p| p > 1.0) {
+        if fill_pattern(look) > 1.0 {
             self.note("fill patterns and gradients are drawn as flat colours");
         }
     }
@@ -630,7 +726,7 @@ impl<'a> Painter<'a> {
 
     /// The stroke colour with opacity, and whether there is a stroke.
     fn line_color(&self, look: &Look<'_>) -> (u32, bool) {
-        let pattern = look.num("LinePattern").unwrap_or(1.0);
+        let pattern = line_pattern(look);
         let rgb = look.color("LineColor").unwrap_or(0);
         let trans = look.num("LineColorTrans").unwrap_or(0.0).clamp(0.0, 1.0);
         let c = 0xFF00_0000 | rgb;
@@ -638,12 +734,17 @@ impl<'a> Painter<'a> {
     }
 
     fn fill_color(&self, look: &Look<'_>) -> (u32, bool) {
-        let pattern = look.num("FillPattern").unwrap_or(0.0);
+        let pattern = fill_pattern(look);
         if pattern < 1.0 {
             return (0, false);
         }
         let fg = look.color("FillForegnd").unwrap_or(0xFF_FFFF);
-        let bg = look.color("FillBkgnd").unwrap_or(0xFF_FFFF);
+        // A themed background is the foreground colour: the theme gives one fill colour.
+        let bg = if look.cell("FillBkgnd").is_some_and(is_themed) {
+            fg
+        } else {
+            look.color("FillBkgnd").unwrap_or(0xFF_FFFF)
+        };
         let rgb = if pattern > 1.0 && pattern < 25.0 { mix(fg, bg) } else { fg };
         let trans = look.num("FillForegndTrans").unwrap_or(0.0).clamp(0.0, 1.0);
         let c = 0xFF00_0000 | rgb;
@@ -978,7 +1079,10 @@ impl<'a> Painter<'a> {
         if bits & 2 != 0 {
             style |= pstyle::ITALIC;
         }
-        let rgb = look.fmt(false, ix, "Color").and_then(|v| look.rgb(v)).unwrap_or(0);
+        let rgb = look
+            .fmt(false, ix, "Color")
+            .and_then(|v| if is_themed(v) { look.themed("Color") } else { look.rgb(v) })
+            .unwrap_or(0);
         let trans = n("ColorTrans").unwrap_or(0.0).clamp(0.0, 1.0);
         RunFmt { size, style, color: fade(0xFF00_0000 | rgb, 1.0 - trans) }
     }

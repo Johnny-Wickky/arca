@@ -29,3 +29,4 @@ they document how a committed binary fixture was made:
 | `make_formulas.py` | `formulas.xlsx` | openpyxl |
 | `make_nested.py` | `nested.docx` (converted to the committed `nested.doc` with LibreOffice) | python-docx |
 | `make_visio.py` | `drawing.vsdx` (deterministic) | standard library only |
+| `make_heavy_deck.py` | nothing committed: a deck of about 15 MB (picture backgrounds, picture-filled shapes, many photos) for checking "Pictures in the text" on a heavy presentation by hand | python-pptx, Pillow |

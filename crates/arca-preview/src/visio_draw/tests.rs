@@ -26,6 +26,16 @@ pub(super) fn page<'a>(shapes: &'a str) -> TestPage<'a> {
 /// A drawing: pages, extra content of `document.xml` (colours, style sheets) and masters
 /// `(id, xml of the master's shapes)`.
 pub(super) fn drawing(pages: &[TestPage<'_>], document: &str, masters: &[(u32, &str)]) -> Vec<u8> {
+    drawing_themed(pages, document, masters, None)
+}
+
+/// [`drawing`] with a theme part (`visio/theme/theme1.xml`).
+pub(super) fn drawing_themed(
+    pages: &[TestPage<'_>],
+    document: &str,
+    masters: &[(u32, &str)],
+    theme: Option<&str>,
+) -> Vec<u8> {
     let mut list = String::new();
     let mut page_rels = Vec::new();
     let mut parts: Vec<(String, String)> = Vec::new();
@@ -75,6 +85,10 @@ pub(super) fn drawing(pages: &[TestPage<'_>], document: &str, masters: &[(u32, &
         let mr: Vec<(&str, &str, &str)> =
             mrels.iter().map(|(a, b)| (a.as_str(), "master", b.as_str())).collect();
         parts.push(("visio/masters/_rels/masters.xml.rels".into(), rels(&mr)));
+    }
+    if let Some(xml) = theme {
+        doc_rels.push(("rId3", "theme", "theme/theme1.xml"));
+        parts.push(("visio/theme/theme1.xml".into(), xml.to_owned()));
     }
     parts.push(("visio/_rels/document.xml.rels".into(), rels(&doc_rels)));
     parts.push((
@@ -653,4 +667,93 @@ fn mutated_packages_never_panic() {
         let _ = render_visio_page(&m, 0, &PreviewPolicy::default());
         let _ = visio_page_count(&m, &PreviewPolicy::default());
     }
+}
+
+// ---- themes ---------------------------------------------------------------------------------------
+
+const THEME: &str = r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme name="Office"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FEFFFF"/></a:lt1><a:dk2><a:srgbClr val="44546A"/></a:dk2><a:lt2><a:srgbClr val="E7E6E6"/></a:lt2><a:accent1><a:srgbClr val="5B9BD5"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2><a:accent3><a:sysClr val="windowText" lastClr="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="4672C4"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6></a:clrScheme><a:extLst><a:ext uri="{x}"><vt:variationClrSchemeLst xmlns:vt="http://schemas.microsoft.com/office/visio/2012/theme"><vt:variationClrScheme><vt:varColor1><a:srgbClr val="5B9BD5"/></vt:varColor1><vt:varColor2><a:srgbClr val="759FCC"/></vt:varColor2><vt:varColor3><a:srgbClr val="41719C"/></vt:varColor3></vt:variationClrScheme><vt:variationClrScheme><vt:varColor1><a:srgbClr val="A5A5A5"/></vt:varColor1></vt:variationClrScheme></vt:variationClrSchemeLst></a:ext></a:extLst></a:themeElements></a:theme>"#;
+
+/// The shape of `rect`, but themed the way a file made by Visio stores it: the values are the word
+/// `Themed`, and the quick-style cells say which slot of the theme each look takes.
+fn themed_rect(quick: &str) -> String {
+    format!(
+        r##"<Shape ID="1" Type="Shape"><Cell N="PinX" V="3"/><Cell N="PinY" V="4"/><Cell N="Width" V="2"/><Cell N="Height" V="1"/><Cell N="LocPinX" V="1"/><Cell N="LocPinY" V="0.5"/>{quick}
+        <Cell N="LineColor" V="Themed" F="THEMEVAL()"/><Cell N="LinePattern" V="Themed" F="THEMEVAL()"/><Cell N="LineWeight" V="0.02"/>
+        <Cell N="FillForegnd" V="Themed" F="THEMEVAL()"/><Cell N="FillBkgnd" V="Themed" F="THEMEVAL()"/><Cell N="FillPattern" V="Themed" F="THEMEVAL()"/>
+        <Section N="Geometry" IX="0"><Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
+          <Row T="LineTo" IX="2"><Cell N="X" V="2"/><Cell N="Y" V="0"/></Row>
+          <Row T="LineTo" IX="3"><Cell N="X" V="2"/><Cell N="Y" V="1"/></Row>
+          <Row T="LineTo" IX="4"><Cell N="X" V="0"/><Cell N="Y" V="1"/></Row>
+          <Row T="LineTo" IX="5"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row></Section></Shape>"##
+    )
+}
+
+#[test]
+fn themed_cells_take_their_colours_from_the_theme() {
+    // Line: variation colour 3 (100 + 2), fill: accent 1 (slot 2), both with a theme style.
+    let quick = r#"<Cell N="QuickStyleLineColor" V="102"/><Cell N="QuickStyleFillColor" V="2"/><Cell N="QuickStyleLineMatrix" V="100"/><Cell N="QuickStyleFillMatrix" V="100"/>"#;
+    let data = drawing_themed(&[page(&themed_rect(quick))], "", &[], Some(THEME));
+    let p = render(&data);
+    let all = paths(&p);
+    assert_eq!(all.len(), 1, "{all:?}");
+    let (_, fill, stroke, _) = all[0];
+    assert_eq!(stroke, 0xFF41_719C, "variation colour 3 of the first variation");
+    assert_eq!(fill, 0xFF5B_9BD5, "accent 1");
+
+    // A system colour gives its last known value; a scheme number past the table gives nothing
+    // (the shape is drawn with the defaults, never a panic).
+    let quick = r#"<Cell N="QuickStyleLineColor" V="4"/><Cell N="QuickStyleFillColor" V="999"/><Cell N="QuickStyleLineMatrix" V="100"/><Cell N="QuickStyleFillMatrix" V="100"/>"#;
+    let p = render(&drawing_themed(&[page(&themed_rect(quick))], "", &[], Some(THEME)));
+    let (_, fill, stroke, _) = paths(&p)[0];
+    assert_eq!(stroke, 0xFFA5_A5A5, "accent 3 is a system colour: its last colour");
+    assert_eq!(fill >> 24, 0xFF, "an unknown slot still draws a fill, with the default colour");
+}
+
+#[test]
+fn a_theme_that_gives_no_line_or_fill_draws_neither() {
+    // Matrix 0 is what a text-only shape has: the theme gives it no line and no fill.
+    let quick = r#"<Cell N="QuickStyleLineColor" V="102"/><Cell N="QuickStyleFillColor" V="2"/><Cell N="QuickStyleLineMatrix" V="0"/><Cell N="QuickStyleFillMatrix" V="0"/>"#;
+    let p = render(&drawing_themed(&[page(&themed_rect(quick))], "", &[], Some(THEME)));
+    assert!(paths(&p).is_empty(), "nothing to draw: {:?}", paths(&p));
+}
+
+#[test]
+fn the_page_says_when_it_drew_a_theme_without_its_effects() {
+    let quick = r#"<Cell N="QuickStyleLineColor" V="102"/><Cell N="QuickStyleFillColor" V="2"/><Cell N="QuickStyleLineMatrix" V="100"/><Cell N="QuickStyleFillMatrix" V="100"/>"#;
+    let data = drawing_themed(&[page(&themed_rect(quick))], "", &[], Some(THEME));
+    let r = render_visio_page_noted(&data, 0, &PreviewPolicy::default()).unwrap();
+    assert!(r.page.approximate);
+    assert!(r.notes.iter().any(|n| n.contains("theme")), "{:?}", r.notes);
+}
+
+#[test]
+fn a_hostile_theme_is_read_as_far_as_it_goes_and_never_crashes() {
+    let quick = r#"<Cell N="QuickStyleLineColor" V="102"/><Cell N="QuickStyleFillColor" V="2"/><Cell N="QuickStyleLineMatrix" V="100"/><Cell N="QuickStyleFillMatrix" V="100"/>"#;
+    // Broken in the middle, and one with thousands of variations.
+    let many = format!(
+        "<a:theme xmlns:a=\"x\" xmlns:vt=\"y\">{}</a:theme>",
+        "<vt:variationClrScheme><vt:varColor1><a:srgbClr val=\"112233\"/></vt:varColor1></vt:variationClrScheme>".repeat(5_000)
+    );
+    for theme in ["<a:theme><a:accent1><a:srgbClr val=\"5B9B", many.as_str(), "", "<<<"] {
+        let p = render(&drawing_themed(&[page(&themed_rect(quick))], "", &[], Some(theme)));
+        assert!(p.width > 0.0);
+    }
+    // A colour that is not hexadecimal, or out of range, is ignored.
+    let odd = "<a:theme xmlns:a=\"x\"><a:accent1><a:srgbClr val=\"zzzzzz\"/></a:accent1></a:theme>";
+    let p = render(&drawing_themed(&[page(&themed_rect(quick))], "", &[], Some(odd)));
+    assert!(p.width > 0.0);
+}
+
+#[test]
+fn a_shape_with_rounding_is_drawn_with_rounded_corners_and_the_page_says_how() {
+    let data = one(&rect(r#"<Cell N="Rounding" V="0.25"/>"#));
+    let r = render_visio_page_noted(&data, 0, &PreviewPolicy::default()).unwrap();
+    let all = paths(&r.page);
+    assert_eq!(all.len(), 1);
+    let curves = all[0].0.iter().filter(|c| **c == op::CURVE).count();
+    assert_eq!(curves, 4, "a rectangle has four corners");
+    assert!(r.notes.iter().any(|n| n.contains("rounded corners")), "{:?}", r.notes);
+    // Without `Rounding` the corners stay sharp.
+    let plain = render(&one(&rect("")));
+    assert!(paths(&plain)[0].0.iter().all(|c| *c != op::CURVE));
 }
