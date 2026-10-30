@@ -43,7 +43,7 @@ pub mod request;
 pub mod wire;
 
 /// Version of the guest ABI described in this crate.
-pub const ABI_VERSION: i32 = 7;
+pub const ABI_VERSION: i32 = 8;
 
 /// Names of the items a guest must export.
 pub mod exports {

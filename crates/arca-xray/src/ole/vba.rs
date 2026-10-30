@@ -15,7 +15,9 @@ use arca_container::text::{CodePage, decode_codepage, utf16le_lossy};
 use std::collections::BTreeSet;
 
 use crate::macro_analysis;
-use crate::report::{MacroLanguage, MacroModule, Severity, ThreatKind};
+use crate::report::{
+    BehaviorKind, MacroBehavior, MacroIntent, MacroLanguage, MacroModule, Severity, ThreatKind,
+};
 use crate::{Abort, Ctx};
 
 /// Errors of the decompressor / `dir` parser.
@@ -302,6 +304,8 @@ pub(crate) fn extract(
     let mut shared = 0usize;
     let mut seen_streams: BTreeSet<usize> = BTreeSet::new();
     let mut names = Vec::new();
+    // The most serious intent among the modules that were read; it sets the severity of the project.
+    let mut worst = MacroIntent::Benign;
     for m in &info.modules {
         let Some(stream_idx) = cf.child(vba_index, &m.stream) else {
             ctx.report.add(
@@ -350,7 +354,7 @@ pub(crate) fn extract(
                 continue;
             }
         };
-        let analysis = macro_analysis::analyze(&source, MacroLanguage::Vba);
+        let mut analysis = macro_analysis::analyze_module(&source, MacroLanguage::Vba, truncated);
         // VBA stomping: p-code present but the source has no procedures.
         let has_code = source.lines().any(|l| {
             let t = l.trim_start().to_ascii_lowercase();
@@ -360,16 +364,34 @@ pub(crate) fn extract(
                 && !t.starts_with("option ")
         });
         if !has_code && offset > 2048 {
+            let what = format!("compiled p-code ({offset} bytes) without matching source");
             ctx.report.add_with(
                 ThreatKind::VbaMacros,
                 Severity::Critical,
                 &loc,
-                format!("module {:?}: compiled p-code ({offset} bytes) without matching source — possible VBA stomping", m.name),
+                format!("module {:?}: {what} — possible VBA stomping", m.name),
             );
+            analysis.behaviors.insert(
+                0,
+                MacroBehavior {
+                    kind: BehaviorKind::SourceMismatch,
+                    procedure: String::new(),
+                    detail: what,
+                },
+            );
+            analysis.intent = MacroIntent::Malicious;
         }
+        worst = worst.max(analysis.intent);
         if !analysis.auto_exec.is_empty() {
-            ctx.report.add(
+            // Starting by itself is serious (`High`); with a malicious body it is `Critical`.
+            let severity = if analysis.intent == MacroIntent::Malicious {
+                Severity::Critical
+            } else {
+                Severity::High
+            };
+            ctx.report.add_with(
                 ThreatKind::MacroAutoExec,
+                severity,
                 &loc,
                 format!("{}: {}", m.name, analysis.auto_exec.join(", ")),
             );
@@ -384,6 +406,9 @@ pub(crate) fn extract(
             auto_exec: analysis.auto_exec,
             suspicious: analysis.suspicious,
             iocs: analysis.iocs,
+            intent: analysis.intent,
+            behaviors: analysis.behaviors,
+            procedures: analysis.procedures,
         });
     }
     if shared > 0 {
@@ -402,8 +427,15 @@ pub(crate) fn extract(
     }
     let project =
         if info.project.is_empty() { String::from("VBAProject") } else { info.project.clone() };
-    ctx.report.add(
+    // A project none of whose modules could be read cannot be judged: it keeps the default severity.
+    let severity = if names.is_empty() {
+        ThreatKind::VbaMacros.default_severity()
+    } else {
+        worst.macro_severity()
+    };
+    ctx.report.add_with(
         ThreatKind::VbaMacros,
+        severity,
         &loc,
         format!("VBA project {project:?} with {} module(s): {}", names.len(), names.join(", ")),
     );

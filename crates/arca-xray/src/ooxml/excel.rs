@@ -278,7 +278,7 @@ pub(crate) fn scan_macrosheet(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Res
         loc,
         format!("Excel 4.0 macro sheet with {} formula(s)", v.count),
     );
-    let analysis = macro_analysis::analyze(&v.lines, MacroLanguage::Xlm);
+    let analysis = macro_analysis::analyze_module(&v.lines, MacroLanguage::Xlm, v.truncated);
     if !analysis.suspicious.is_empty() {
         ctx.report.add_with(
             ThreatKind::XlmMacroSheet,
@@ -296,6 +296,9 @@ pub(crate) fn scan_macrosheet(ctx: &mut Ctx<'_>, bytes: &[u8], loc: &str) -> Res
         auto_exec: analysis.auto_exec,
         suspicious: analysis.suspicious,
         iocs: analysis.iocs,
+        intent: analysis.intent,
+        behaviors: analysis.behaviors,
+        procedures: analysis.procedures,
     });
     Ok(())
 }

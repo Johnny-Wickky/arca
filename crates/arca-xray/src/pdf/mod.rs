@@ -438,15 +438,32 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileForm
         );
     }
 
+    // What the scripts that could be read do sets the severity of the finding that reports scripts;
+    // a script reference whose text was not found (`scripts` empty) keeps the default.
+    let limit = ctx.policy.max_macro_source_bytes;
+    let analyses: Vec<macro_analysis::Analysis> = scripts
+        .iter()
+        .take(32)
+        .map(|js| macro_analysis::analyze_module(js, MacroLanguage::JavaScript, js.len() > limit))
+        .collect();
     if counts.javascript > 0 {
-        ctx.report.add(
+        let severity = if analyses.is_empty() || analyses.len() < scripts.len() {
+            ThreatKind::PdfJavaScript.default_severity()
+        } else {
+            analyses
+                .iter()
+                .map(|a| a.intent)
+                .max()
+                .map_or(ThreatKind::PdfJavaScript.default_severity(), |i| i.macro_severity())
+        };
+        ctx.report.add_with(
             ThreatKind::PdfJavaScript,
+            severity,
             loc,
             format!("{} JavaScript reference(s)", counts.javascript),
         );
     }
-    for (n, js) in scripts.iter().enumerate().take(32) {
-        let analysis = macro_analysis::analyze(js, MacroLanguage::JavaScript);
+    for (n, (js, analysis)) in scripts.iter().zip(analyses).enumerate() {
         ctx.report.macros.push(MacroModule {
             language: MacroLanguage::JavaScript,
             location: loc.to_owned(),
@@ -457,6 +474,9 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileForm
             auto_exec: analysis.auto_exec,
             suspicious: analysis.suspicious,
             iocs: analysis.iocs,
+            intent: analysis.intent,
+            behaviors: analysis.behaviors,
+            procedures: analysis.procedures,
         });
     }
     if counts.launch > 0 {

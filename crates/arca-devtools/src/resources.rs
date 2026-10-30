@@ -52,6 +52,8 @@ const DYNAMIC_PREFIXES: &[&str] = &[
     "ref_class_",
     "emb_kind_",
     "macro_lang_",
+    "macro_intent_",
+    "behavior_",
     "action_",
     "notice_",
 ];
@@ -736,7 +738,7 @@ fn check_inner(
                 .insert(format!("threat_{}_{suffix}", snake(&kind)), format!("ThreatKind::{kind}"));
         }
     }
-    let groups: [(&str, PathBuf, &str); 10] = [
+    let groups: [(&str, PathBuf, &str); 12] = [
         ("format_", rs.join("arca-xray/src/format.rs"), "pub enum FileFormat {"),
         ("cat_", report.clone(), "pub enum Category {"),
         ("sev_", report.clone(), "pub enum Severity {"),
@@ -745,6 +747,8 @@ fn check_inner(
         ("ref_class_", report.clone(), "pub enum TargetClass {"),
         ("emb_kind_", report.clone(), "pub enum EmbeddedKind {"),
         ("macro_lang_", report.clone(), "pub enum MacroLanguage {"),
+        ("macro_intent_", report.clone(), "pub enum MacroIntent {"),
+        ("behavior_", report.clone(), "pub enum BehaviorKind {"),
         ("action_", rs.join("arca-xray/src/sanitize/mod.rs"), "pub enum ActionKind {"),
         ("notice_", rs.join("arca-preview/src/model.rs"), "pub enum NoticeKind {"),
     ];

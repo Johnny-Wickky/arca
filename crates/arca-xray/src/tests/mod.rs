@@ -18,7 +18,8 @@ use arca_container::cfb::writer::CfbBuilder;
 
 use self::fixtures::*;
 use crate::report::{
-    MacroLanguage, MetaKey, Severity, TargetClass, ThreatKind, Verdict, XRayReport,
+    BehaviorKind, MacroIntent, MacroLanguage, MetaKey, Severity, TargetClass, ThreatKind, Verdict,
+    XRayReport,
 };
 use crate::{FileFormat, ScanPolicy, scan, scan_default};
 
@@ -56,6 +57,68 @@ fn vba_macros_are_extracted_and_triaged() {
     assert!(m.suspicious.contains(&"PowerShell".to_owned()));
     assert!(m.iocs.contains(&"http://198.51.100.23/stage2.exe".to_owned()));
     assert!(r.macros.iter().any(|m| m.name == "Helpers" && m.auto_exec.is_empty()));
+}
+
+fn severity_of(r: &XRayReport, kind: ThreatKind) -> Severity {
+    r.findings.iter().filter(|f| f.kind == kind).map(|f| f.severity).max().expect("finding present")
+}
+
+#[test]
+fn a_macro_that_only_counts_pages_is_reported_as_benign_but_never_as_clean() {
+    let src = "Attribute VB_Name = \"NewMacros\"\r\nSub CountPages()\r\n  n = ActiveDocument.ComputeStatistics(wdStatisticPages)\r\n  MsgBox \"Pages: \" & n\r\nEnd Sub\r\n";
+    let r = scan_default(&docm_with_modules(&[("NewMacros", src, false)]).build());
+    let m = r.macros.iter().find(|m| m.name == "NewMacros").expect("module extracted");
+    assert_eq!(m.intent, MacroIntent::Benign, "{:?}", m.behaviors);
+    assert_eq!(m.procedures, vec!["CountPages".to_owned()]);
+    assert!(
+        m.behaviors
+            .iter()
+            .any(|b| b.kind == BehaviorKind::CountsContent && b.procedure == "CountPages")
+    );
+    // A macro is active content whatever it claims to do: the verdict says so, and the
+    // finding keeps the severity that makes it count (a misjudged module must not look clean).
+    assert_eq!(r.verdict, Verdict::ActiveContentNeutralized, "{:#?}", r.findings);
+    assert_eq!(severity_of(&r, ThreatKind::VbaMacros), Severity::Medium);
+    assert!(!r.findings.iter().any(|f| f.kind == ThreatKind::MacroAutoExec));
+}
+
+#[test]
+fn a_macro_that_starts_by_itself_without_harm_is_high_not_critical() {
+    let src = "Attribute VB_Name = \"ThisWorkbook\"\r\nPrivate Sub Workbook_Open()\r\n  Range(\"A1\").Value = Now\r\nEnd Sub\r\n";
+    let r = scan_default(&docm_with_modules(&[("ThisWorkbook", src, true)]).build());
+    let m = r.macros.iter().find(|m| m.name == "ThisWorkbook").expect("module extracted");
+    assert_eq!(m.intent, MacroIntent::Suspicious, "{:?}", m.behaviors);
+    assert_eq!(severity_of(&r, ThreatKind::MacroAutoExec), Severity::High);
+    assert_eq!(severity_of(&r, ThreatKind::VbaMacros), Severity::High);
+    assert_eq!(r.verdict, Verdict::ActiveContentNeutralized);
+}
+
+#[test]
+fn a_malicious_macro_says_what_it_does_and_is_critical() {
+    let r = scan_default(&docm_with_macro().build());
+    let m = r.macros.iter().find(|m| m.name == "ThisDocument").expect("module extracted");
+    assert_eq!(m.intent, MacroIntent::Malicious);
+    let kinds: Vec<BehaviorKind> = m.behaviors.iter().map(|b| b.kind).collect();
+    for want in [BehaviorKind::RunsProgram, BehaviorKind::DownloadsFile, BehaviorKind::AutoRuns] {
+        assert!(kinds.contains(&want), "{want:?} in {kinds:?}");
+    }
+    let run = m.behaviors.iter().find(|b| b.kind == BehaviorKind::RunsProgram).unwrap();
+    assert_eq!(run.procedure, "Document_Open");
+    assert_eq!(severity_of(&r, ThreatKind::MacroAutoExec), Severity::Critical);
+    assert_eq!(severity_of(&r, ThreatKind::VbaMacros), Severity::Critical);
+    // The harmless helper next to it is judged on its own.
+    assert!(r.macros.iter().any(|m| m.name == "Helpers" && m.intent == MacroIntent::Benign));
+}
+
+#[test]
+fn the_intent_of_a_macro_is_carried_across_the_sandbox_boundary_codec() {
+    let r = scan_default(&docm_with_macro().build());
+    let bytes = wire::to_bytes(&r).unwrap();
+    let back: XRayReport = wire::from_bytes(&bytes, DecodeLimits::default()).unwrap();
+    assert_eq!(back.macros, r.macros);
+    assert!(
+        back.macros.iter().any(|m| m.intent == MacroIntent::Malicious && !m.behaviors.is_empty())
+    );
 }
 
 #[test]

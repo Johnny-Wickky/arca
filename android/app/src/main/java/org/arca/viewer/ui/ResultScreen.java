@@ -467,6 +467,43 @@ public final class ResultScreen extends Screen {
         return col;
     }
 
+    /** The finding kinds that report a macro or script; their cards say what the code does. */
+    private static boolean isMacroKind(String kind) {
+        return "VbaMacros".equals(kind) || "MacroAutoExec".equals(kind) || "StarBasicMacros".equals(kind)
+            || "PdfJavaScript".equals(kind) || "EmbeddedScript".equals(kind) || "XlmMacroSheet".equals(kind);
+    }
+
+    /**
+     * Under a finding that reports a macro: what its code does, from the modules at the same place
+     * in the file (the worst one), so the card says more than "a macro was found".
+     */
+    private void addMacroIntent(LinearLayout card, Model.Finding f) {
+        Model.Report report = Session.get().report();
+        if (report == null || !isMacroKind(f.kind)) {
+            return;
+        }
+        Model.MacroModule worst = null;
+        for (Model.MacroModule m : report.macros) {
+            boolean here = m.location.equals(f.location) || f.location.isEmpty();
+            if (here && (worst == null || m.intentRank() > worst.intentRank())) {
+                worst = m;
+            }
+        }
+        if (worst == null) {
+            return;
+        }
+        card.addView(ui.space(8));
+        card.addView(ui.pill(Labels.macroIntent(act, worst.intent), intentColor(worst.intent), intentContainer(worst.intent)));
+        card.addView(ui.space(4));
+        card.addView(ui.text(Labels.macroIntentText(act, worst.intent), Ui.SMALL));
+        if (!worst.behaviors.isEmpty()) {
+            Model.Behavior b = worst.behaviors.get(0);
+            String where = b.proc.isEmpty() ? Fmt.clip(Fmt.safe(worst.name), 80)
+                : ui.str(R.string.macro_where_function, Fmt.clip(Fmt.safe(worst.name), 80), Fmt.clip(Fmt.safe(b.proc), 80));
+            card.addView(ui.text(Labels.behavior(act, b.kind) + " · " + where, Ui.CAPTION));
+        }
+    }
+
     private View groupHeader(String text) {
         TextView t = ui.heading(text, Ui.LABEL);
         t.setPadding(0, ui.dp(12), 0, ui.dp(6));
@@ -505,6 +542,7 @@ public final class ResultScreen extends Screen {
             l.setMaxLines(2);
             card.addView(l);
         }
+        addMacroIntent(card, f);
         final TextView explain = ui.text(Labels.threatText(act, f.kind), Ui.SMALL);
         explain.setPadding(0, ui.dp(8), 0, 0);
         explain.setVisibility(OPEN.contains(index) ? View.VISIBLE : View.GONE);
@@ -546,6 +584,75 @@ public final class ResultScreen extends Screen {
         return col;
     }
 
+
+    /**
+     * What the code is and what it does, in words: the kind (everyday automation, suspicious,
+     * harmful), each behaviour with the procedure it is in and the line that shows it, and why
+     * looking at it is safe here. A reading of the source text, not a guarantee, and it says so.
+     */
+    private void addIntent(LinearLayout card, Model.MacroModule m) {
+        int fg = intentColor(m.intent);
+        int bg = intentContainer(m.intent);
+        card.addView(ui.space(8));
+        card.addView(ui.pill(Labels.macroIntent(act, m.intent), fg, bg));
+        card.addView(ui.space(6));
+        card.addView(ui.text(Labels.macroIntentText(act, m.intent), Ui.SMALL));
+        if (!m.behaviors.isEmpty()) {
+            card.addView(ui.space(10));
+            card.addView(ui.text(R.string.macro_what, Ui.LABEL));
+            for (Model.Behavior b : m.behaviors) {
+                LinearLayout row = ui.vbox();
+                row.setPadding(0, ui.dp(6), 0, 0);
+                row.addView(ui.text("• " + Labels.behavior(act, b.kind), Ui.BODY));
+                String where = b.proc.isEmpty()
+                    ? ui.str(R.string.macro_where_module, Fmt.clip(Fmt.safe(m.name), 80))
+                    : ui.str(R.string.macro_where_function, Fmt.clip(Fmt.safe(m.name), 80), Fmt.clip(Fmt.safe(b.proc), 80));
+                row.addView(ui.text(where, Ui.CAPTION));
+                if (!b.detail.isEmpty()) {
+                    TextView d = ui.text(Fmt.clip(Fmt.safe(b.detail), 240), Ui.MONO);
+                    d.setTextIsSelectable(true);
+                    row.addView(d);
+                }
+                card.addView(row);
+            }
+        }
+        if (!m.procs.isEmpty()) {
+            card.addView(ui.space(8));
+            card.addView(ui.text(ui.str(R.string.macro_procedures, Fmt.clip(Fmt.safe(joinNames(m.procs)), 300)), Ui.CAPTION));
+        }
+        card.addView(ui.space(8));
+        card.addView(ui.text(R.string.macro_safe_here, Ui.SMALL));
+        card.addView(ui.text(R.string.macro_reading_note, Ui.CAPTION));
+    }
+
+    private static String joinNames(List<String> names) {
+        StringBuilder sb = new StringBuilder();
+        for (String n : names) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(n);
+        }
+        return sb.toString();
+    }
+
+    /** Neutral blue for everyday automation (never green: this is a reading, not a clearance), amber, red. */
+    private static int intentColor(String intent) {
+        switch (Model.intentRank(intent)) {
+            case 2: return R.color.arca_danger;
+            case 0: return R.color.arca_unknown;
+            default: return R.color.arca_warn;
+        }
+    }
+
+    private static int intentContainer(String intent) {
+        switch (Model.intentRank(intent)) {
+            case 2: return R.color.arca_danger_container;
+            case 0: return R.color.arca_unknown_container;
+            default: return R.color.arca_warn_container;
+        }
+    }
+
     private View macroCard(final Model.MacroModule m) {
         LinearLayout card = ui.card();
         LinearLayout.LayoutParams lp = ui.fillWidth();
@@ -553,6 +660,7 @@ public final class ResultScreen extends Screen {
         card.setLayoutParams(lp);
         card.addView(ui.text(Fmt.clip(Fmt.safe(m.name.isEmpty() ? "(unnamed)" : m.name), 120), Ui.TITLE));
         card.addView(ui.text(Labels.macroLang(act, m.language) + " · " + Fmt.clip(Fmt.safe(m.location), 160), Ui.CAPTION));
+        addIntent(card, m);
         if (!m.autoExec.isEmpty()) {
             card.addView(ui.space(8));
             card.addView(ui.text(R.string.macro_autoexec, Ui.LABEL));

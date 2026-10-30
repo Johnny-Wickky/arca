@@ -196,6 +196,17 @@ pub(crate) fn vba_project_bin() -> Vec<u8> {
 
 /// A `.docm` with an auto-executing VBA project.
 pub(crate) fn docm_with_macro() -> Opc {
+    docm_with_project(vba_project_bin())
+}
+
+/// A `.docm` whose VBA project has the given `(name, source, is a document module)` modules.
+pub(crate) fn docm_with_modules(modules: &[(&str, &str, bool)]) -> Opc {
+    let mut b = CfbBuilder::new();
+    add_vba_project(&mut b, "", modules);
+    docm_with_project(b.finish().unwrap())
+}
+
+fn docm_with_project(project: Vec<u8>) -> Opc {
     let mut o = docx();
     o.set(
         "[Content_Types].xml",
@@ -208,7 +219,7 @@ pub(crate) fn docm_with_macro() -> Opc {
             ("/word/vbaProject.bin", "application/vnd.ms-office.vbaProject"),
         ]),
     )
-    .set("word/vbaProject.bin", vba_project_bin())
+    .set("word/vbaProject.bin", project)
     .set(
         "word/_rels/document.xml.rels",
         rels(&[

@@ -77,6 +77,22 @@ public final class Labels {
         return of(c, "macro_lang_", lang);
     }
 
+    /** The name of what a macro is judged to be: everyday automation, suspicious, harmful. */
+    public static String macroIntent(Context c, String intent) {
+        return of(c, "macro_intent_", intent, c.getString(R.string.macro_intent_suspicious));
+    }
+
+    /** One sentence on what a macro of that intent is, in the reader's language. */
+    public static String macroIntentText(Context c, String intent) {
+        return byName(c, "macro_intent_" + Names.snake(intent) + "_text",
+            c.getString(R.string.macro_intent_suspicious_text));
+    }
+
+    /** What a macro does, from the engine's {@code BehaviorKind} name; an unknown kind is shown as it is. */
+    public static String behavior(Context c, String kind) {
+        return of(c, "behavior_", kind);
+    }
+
     public static String sanitizeAction(Context c, String kind) {
         return of(c, "action_", kind);
     }

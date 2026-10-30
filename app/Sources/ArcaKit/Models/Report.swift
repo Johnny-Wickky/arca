@@ -113,6 +113,13 @@ public struct MacroModule: Codable, Sendable, Equatable, Identifiable {
     public let suspicious: [String]
     /// Indicators of Compromise found in the macro code (IPs, domains).
     public let iocs: [String]
+    /// What the code does, judged from its text: "Benign", "Suspicious" or "Malicious".
+    /// A report from an engine that does not say is read as "Suspicious", never as benign.
+    public let intent: String
+    /// Names of the procedures of the module, as written.
+    public let procs: [String]
+    /// What the code does, the most serious first.
+    public let behaviors: [MacroBehavior]
 
     enum CodingKeys: String, CodingKey {
         case language = "lang"
@@ -123,7 +130,37 @@ public struct MacroModule: Codable, Sendable, Equatable, Identifiable {
         case autoExec
         case suspicious
         case iocs
+        case intent
+        case procs
+        case behaviors
     }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        language = try c.decode(String.self, forKey: .language)
+        location = try c.decode(String.self, forKey: .location)
+        name = try c.decode(String.self, forKey: .name)
+        source = try c.decode(String.self, forKey: .source)
+        truncated = try c.decode(Bool.self, forKey: .truncated)
+        autoExec = try c.decode([String].self, forKey: .autoExec)
+        suspicious = try c.decode([String].self, forKey: .suspicious)
+        iocs = try c.decode([String].self, forKey: .iocs)
+        intent = try c.decodeIfPresent(String.self, forKey: .intent) ?? "Suspicious"
+        procs = try c.decodeIfPresent([String].self, forKey: .procs) ?? []
+        behaviors = try c.decodeIfPresent([MacroBehavior].self, forKey: .behaviors) ?? []
+    }
+}
+
+/// One thing a macro does: what, in which procedure, and the line of source that shows it.
+public struct MacroBehavior: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { "\(kind):\(proc):\(detail)" }
+
+    /// The engine's behaviour name, e.g. "RunsProgram".
+    public let kind: String
+    /// The procedure it is in ("" outside any procedure).
+    public let proc: String
+    /// The line of source that shows it, or a short description.
+    public let detail: String
 }
 
 /// Blocked external reference or hyperlink.

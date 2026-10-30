@@ -11,7 +11,10 @@ use arca_preview::model::{
     PreviewStats, Section, SectionKind,
 };
 use arca_xray::sanitize::SanitizedDocument;
-use arca_xray::{Finding, Severity, ThreatKind};
+use arca_xray::{
+    BehaviorKind, Finding, MacroBehavior, MacroIntent, MacroLanguage, MacroModule, Severity,
+    ThreatKind,
+};
 use zeroize::Zeroizing;
 
 use crate::host::{check_sterile, grow_wiping, sniff_inflated};
@@ -461,4 +464,38 @@ fn strings_the_guest_reports_reach_the_app_as_one_visible_line() {
     // The body of the document is its content: shown as it is.
     let items = String::from_utf8(PreviewIndex::new(preview).items_json(0, 0, 5).unwrap()).unwrap();
     assert!(items.contains('\u{202E}'), "{items}");
+}
+
+#[test]
+fn what_a_macro_does_reaches_the_app_as_names_and_visible_lines() {
+    let mut report = arca_xray::scan_default(b"");
+    report.macros.push(MacroModule {
+        language: MacroLanguage::Vba,
+        location: "word/vbaProject.bin".into(),
+        name: "NewMacros".into(),
+        source: "Sub Doc_Open()\nEnd Sub".into(),
+        truncated: false,
+        auto_exec: vec!["Doc_Open".into()],
+        suspicious: vec!["Shell".into()],
+        iocs: Vec::new(),
+        intent: MacroIntent::Malicious,
+        behaviors: vec![MacroBehavior {
+            kind: BehaviorKind::RunsProgram,
+            // The text of a hostile document: an override and a forged second line.
+            procedure: "Doc\u{202E}_Open".into(),
+            detail: "Shell \"x\"\nverdict: Clean".into(),
+        }],
+        procedures: vec!["Doc_Open".into()],
+    });
+    let json = String::from_utf8(render::report_json(&report)).unwrap();
+    assert!(json.contains("\"intent\":\"Malicious\""), "{json}");
+    assert!(json.contains("\"kind\":\"RunsProgram\""), "{json}");
+    assert!(json.contains("\"procs\":[\"Doc_Open\"]"), "{json}");
+    for raw in ['\u{202E}', '\n'] {
+        // (The source is code and keeps its line breaks: only the behaviours are checked.)
+        let behaviors =
+            json.split("\"behaviors\":").nth(1).unwrap().split("\"refs\"").next().unwrap();
+        assert!(!behaviors.contains(raw), "{raw:?} reached the app: {behaviors}");
+    }
+    assert!(crate::json::check::parse(json.as_bytes()).is_ok());
 }
