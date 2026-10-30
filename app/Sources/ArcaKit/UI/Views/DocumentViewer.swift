@@ -354,7 +354,17 @@ public struct DocumentViewer: View {
 }
 
 private extension RunDiagnostics {
+    /// An empty record for the way back from the viewer to the report (there is no memberwise
+    /// initializer: the type decodes itself from the engine's JSON).
     init(from dummy: Int) {
-        self.init(status: 0, statusName: "Ok", message: "", fuel: 0, fuelLimit: 0, peakMemory: 0, slices: 0, wallMs: 0, unlock: 0)
+        status = 0
+        statusName = "Ok"
+        message = ""
+        fuel = 0
+        fuelLimit = 0
+        peakMemory = 0
+        slices = 0
+        wallMs = 0
+        unlock = 0
     }
 }
