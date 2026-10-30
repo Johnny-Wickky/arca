@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
 
+import org.arca.viewer.core.Appearance;
 import org.arca.viewer.core.Breakpoints;
 import org.arca.viewer.core.Bookmarks;
 import org.arca.viewer.core.Capabilities;
@@ -1374,9 +1375,52 @@ public final class CoreTest {
         eq("Orders", NoticeDetails.lookup("Skipped", "table Orders").args[0], "the table name");
     }
 
+    static void appearance() {
+        // The mode decides the group; System follows the system.
+        check(!Appearance.dark(Appearance.MODE_LIGHT, true), "Light stays light in a dark system");
+        check(Appearance.dark(Appearance.MODE_DARK, false), "Dark stays dark in a light system");
+        check(!Appearance.dark(Appearance.MODE_SYSTEM, false), "System follows a light system");
+        check(Appearance.dark(Appearance.MODE_SYSTEM, true), "System follows a dark system");
+        // Whatever the choices remembered for the other group, the palette comes from the group in force.
+        for (int mode = Appearance.MODE_SYSTEM; mode <= Appearance.MODE_DARK; mode++) {
+            for (int system = 0; system < 2; system++) {
+                boolean dark = Appearance.dark(mode, system == 1);
+                for (int light = 0; light < Appearance.PER_GROUP; light++) {
+                    for (int night = 0; night < Appearance.PER_GROUP; night++) {
+                        int p = Appearance.palette(dark, light, night);
+                        check(p >= 0 && p < Appearance.COUNT, "a palette that exists");
+                        check(Appearance.isDarkPalette(p) == dark, "the palette is in the group of the mode");
+                        eq(dark ? Appearance.PER_GROUP + night : light, p, "the group's own choice");
+                    }
+                }
+            }
+        }
+        eq(5, Appearance.PER_GROUP, "five palettes in each group");
+        eq(10, Appearance.COUNT, "ten palettes");
+        // Wild stored numbers are brought back into the group.
+        eq(0, Appearance.choice(-3), "a negative choice");
+        eq(Appearance.PER_GROUP - 1, Appearance.choice(99), "a choice past the end");
+        eq(Appearance.PER_GROUP + 4, Appearance.palette(true, 0, 99), "the last dark palette");
+        // Moving from the single palette of 0.5: what was chosen still looks the same.
+        eq(Arrays.toString(new int[] {Appearance.MODE_DARK, 0, 0}), Arrays.toString(Appearance.fromLegacy(2, Appearance.MODE_SYSTEM)), "Obsidian: dark mode, first dark palette");
+        eq(Arrays.toString(new int[] {Appearance.MODE_LIGHT, 1, 0}), Arrays.toString(Appearance.fromLegacy(3, Appearance.MODE_DARK)), "Cashmere forces light");
+        eq(Arrays.toString(new int[] {Appearance.MODE_LIGHT, 2, 0}), Arrays.toString(Appearance.fromLegacy(4, Appearance.MODE_SYSTEM)), "the old light Sierra becomes Nordic Pearl");
+        eq(Arrays.toString(new int[] {Appearance.MODE_DARK, 0, 3}), Arrays.toString(Appearance.fromLegacy(6, Appearance.MODE_SYSTEM)), "Desert Titanium");
+        eq(Arrays.toString(new int[] {Appearance.MODE_DARK, 0, 2}), Arrays.toString(Appearance.fromLegacy(5, Appearance.MODE_LIGHT)), "Emerald SecOps");
+        eq(Arrays.toString(new int[] {Appearance.MODE_LIGHT, 0, 0}), Arrays.toString(Appearance.fromLegacy(1, Appearance.MODE_DARK)), "Alabaster Studio");
+        eq(Arrays.toString(new int[] {Appearance.MODE_DARK, 0, 0}), Arrays.toString(Appearance.fromLegacy(0, Appearance.MODE_DARK)), "Classic keeps the mode");
+        eq(Arrays.toString(new int[] {Appearance.MODE_SYSTEM, 0, 0}), Arrays.toString(Appearance.fromLegacy(42, Appearance.MODE_SYSTEM)), "an unknown legacy number keeps the mode");
+        // Every legacy palette lands on a palette that exists, in the group its mode names.
+        for (int legacy = 0; legacy <= 6; legacy++) {
+            int[] to = Appearance.fromLegacy(legacy, Appearance.MODE_SYSTEM);
+            int p = Appearance.palette(Appearance.dark(to[0], false), to[1], to[2]);
+            check(p >= 0 && p < Appearance.COUNT, "legacy " + legacy + " maps to a palette");
+        }
+    }
+
     public static void main(String[] args) {
         String[] names = {"json", "fmt", "names", "report", "preview", "other", "pageCache", "breakpoints",
-            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "fold", "documentColours", "pageDrawing", "images", "syntheticText", "noticeDetails"};
+            "capabilities", "chunks", "search", "outlineBookmarksZoom", "numericLooking", "needsPassword", "posture", "fold", "documentColours", "pageDrawing", "images", "syntheticText", "noticeDetails", "appearance"};
         for (String name : names) {
             current = name;
             int before = failures;
@@ -1402,6 +1446,7 @@ public final class CoreTest {
                     case "images": images(); break;
                     case "syntheticText": syntheticText(); break;
                     case "noticeDetails": noticeDetails(); break;
+                    case "appearance": appearance(); break;
                     default: pageCache(); break;
                 }
             } catch (Throwable t) {

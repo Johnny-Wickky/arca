@@ -270,20 +270,25 @@
 
     <!-- Настройки -->
     <string name="settings_appearance">Оформление</string>
-    <string name="settings_theme">Тема</string>
+    <string name="settings_theme">Режим</string>
     <string name="theme_system">Как в системе</string>
     <string name="theme_light">Светлая</string>
     <string name="theme_dark">Тёмная</string>
-    <string name="settings_palette">Цветовая палитра</string>
-    <string name="palette_classic">Классическая</string>
+    <string name="settings_palette_light">Светлые палитры</string>
+    <string name="settings_palette_dark">Тёмные палитры</string>
+    <string name="settings_palette_system_note">В режиме «Как в системе» днём работает светлая палитра, ночью тёмная, как переключается система.</string>
     <string name="palette_alabaster">Alabaster Studio</string>
     <string name="palette_obsidian">Obsidian Vault</string>
     <string name="palette_cashmere">Cashmere &amp; Cappuccino</string>
+    <string name="palette_nordic">Nordic Pearl</string>
+    <string name="palette_sage">Sage &amp; Linen</string>
+    <string name="palette_rose">Rose Quartz Daylight</string>
     <string name="palette_sierra">Sierra Blue &amp; Slate</string>
     <string name="palette_emerald">Emerald SecOps</string>
     <string name="palette_desert">Desert Titanium</string>
+    <string name="palette_amethyst">Midnight Amethyst</string>
     <string name="settings_glass">Жидкое стекло</string>
-    <string name="settings_glass_desc">Полупрозрачные глянцевые панели на мягком цветовом фоне. По умолчанию выключено; меняется только внешний вид приложения.</string>
+    <string name="settings_glass_desc">Материал матового стекла поверх любой выбранной палитры: полупрозрачные панели с глянцем, светлой кромкой и мягкой тенью на размытой подложке из цветов палитры. Палитру не меняет. По умолчанию выключено.</string>
     <string name="settings_language">Язык</string>
     <string name="lang_system">Как в системе</string>
     <string name="settings_text_size">Размер текста в просмотре</string>

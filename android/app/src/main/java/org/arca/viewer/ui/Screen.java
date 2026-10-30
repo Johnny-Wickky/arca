@@ -98,6 +98,9 @@ public abstract class Screen {
         for (View a : actions) {
             row.addView(a);
         }
+        if (ui.glass()) {
+            ui.bar(row, false);
+        }
         return row;
     }
 

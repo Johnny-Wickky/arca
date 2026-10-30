@@ -19,6 +19,12 @@ import org.arca.viewer.Stats;
 
 /** Appearance, language and privacy options. Nothing here leaves the device. */
 public final class SettingsScreen extends Screen {
+    /** The names of the palettes of each group, in the order of {@code ui.Theme}. */
+    private static final int[] LIGHT_NAMES = {R.string.palette_alabaster, R.string.palette_cashmere,
+        R.string.palette_nordic, R.string.palette_sage, R.string.palette_rose};
+    private static final int[] DARK_NAMES = {R.string.palette_obsidian, R.string.palette_sierra,
+        R.string.palette_emerald, R.string.palette_desert, R.string.palette_amethyst};
+
     public SettingsScreen(MainActivity act) {
         super(act);
     }
@@ -31,6 +37,7 @@ public final class SettingsScreen extends Screen {
         LinearLayout look = ui.card();
         look.addView(ui.heading(ui.str(R.string.settings_appearance), Ui.LABEL));
         look.addView(ui.space(8));
+        // Step 1: the mode picks the group of palettes. Step 2: a palette from that group only.
         look.addView(ui.text(R.string.settings_theme, Ui.SMALL));
         look.addView(chips(new int[] {R.string.theme_system, R.string.theme_light, R.string.theme_dark},
             Prefs.theme(act), new Choice() {
@@ -42,20 +49,37 @@ public final class SettingsScreen extends Screen {
                     }
                 }
             }));
-        look.addView(ui.space(12));
-        look.addView(ui.text(R.string.settings_palette, Ui.SMALL));
-        look.addView(chips(new int[] {R.string.palette_classic, R.string.palette_alabaster,
-                R.string.palette_obsidian, R.string.palette_cashmere, R.string.palette_sierra,
-                R.string.palette_emerald, R.string.palette_desert},
-            Prefs.palette(act), new Choice() {
+        int mode = Prefs.theme(act);
+        if (mode != Prefs.THEME_DARK) {
+            look.addView(ui.space(12));
+            look.addView(ui.text(R.string.settings_palette_light, Ui.SMALL));
+            look.addView(chips(LIGHT_NAMES, Prefs.paletteLight(act), new Choice() {
                 @Override
                 public void chosen(int index) {
-                    if (index != Prefs.palette(act)) {
-                        Prefs.setPalette(act, index);
-                        act.recreate(); // a palette is light or dark by itself
+                    if (index != Prefs.paletteLight(act)) {
+                        Prefs.setPaletteLight(act, index);
+                        act.recreate();
                     }
                 }
             }));
+        }
+        if (mode != Prefs.THEME_LIGHT) {
+            look.addView(ui.space(12));
+            look.addView(ui.text(R.string.settings_palette_dark, Ui.SMALL));
+            look.addView(chips(DARK_NAMES, Prefs.paletteDark(act), new Choice() {
+                @Override
+                public void chosen(int index) {
+                    if (index != Prefs.paletteDark(act)) {
+                        Prefs.setPaletteDark(act, index);
+                        act.recreate();
+                    }
+                }
+            }));
+        }
+        if (mode == Prefs.THEME_SYSTEM) {
+            look.addView(ui.text(R.string.settings_palette_system_note, Ui.CAPTION));
+        }
+        look.addView(ui.space(12));
         look.addView(toggle(R.string.settings_glass, R.string.settings_glass_desc, Prefs.glass(act),
             new CompoundButton.OnCheckedChangeListener() {
                 @Override

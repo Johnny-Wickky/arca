@@ -3,8 +3,8 @@
 
 //! Contrast of the colour palettes of the Android app (WCAG 2.x contrast ratio).
 //!
-//! The palettes live in `ui/Theme.java` (six named ones, each overriding sixteen colours of the
-//! resource set it is based on) and `res/values{,-night}/colors.xml` (the colours a palette does not
+//! The palettes live in `ui/Theme.java` (five light and five dark ones, each overriding sixteen
+//! colours of the resource set it is based on) and `res/values{,-night}/colors.xml` (the colours a palette does not
 //! override: verdicts, severities, diff marks). The tests resolve every palette the way
 //! `Theme.color` does and check that no text, badge, secondary caption or divider sinks into the
 //! surface it is drawn on. Reading the Java source as text keeps the check free of a JVM.
@@ -127,8 +127,7 @@ fn palettes() -> Vec<(String, BTreeMap<String, Rgb>)> {
     let mut out = Vec::new();
     for (i, (name, row)) in palette_rows().into_iter().enumerate() {
         assert_eq!(row.len(), keys.len(), "{name}: one colour per key");
-        // The classic palette is index 0; the named ones follow.
-        let is_dark = dark[i + 1];
+        let is_dark = dark[i];
         let base = if is_dark { &night } else { &light };
         let mut map: BTreeMap<String, (u8, Rgb)> = base.clone();
         for (key, colour) in keys.iter().zip(&row) {
@@ -192,11 +191,18 @@ const PAIRS: &[(&str, &str, f64)] = &[
 ];
 
 #[test]
-fn six_named_palettes_are_read() {
+fn five_light_and_five_dark_palettes_are_read() {
     let names: Vec<String> = palettes().into_iter().map(|(n, _)| n).collect();
-    assert_eq!(names.len(), 6, "{names:?}");
-    for want in ["Alabaster", "Obsidian", "Cashmere", "Sierra", "Emerald", "Desert"] {
-        assert!(names.iter().any(|n| n.contains(want)), "{want} in {names:?}");
+    assert_eq!(names.len(), 10, "{names:?}");
+    let dark = dark_flags();
+    assert_eq!(dark.len(), 10, "one flag per palette");
+    assert_eq!(dark.iter().filter(|d| **d).count(), 5, "five dark palettes");
+    // Light palettes come first, then dark ones: the order `Appearance` numbers them in.
+    assert!(dark[..5].iter().all(|d| !*d) && dark[5..].iter().all(|d| *d), "{dark:?}");
+    let light = ["Alabaster", "Cashmere", "Nordic", "Sage", "Rose Quartz"];
+    let night = ["Obsidian", "Sierra", "Emerald", "Desert", "Midnight Amethyst"];
+    for (i, want) in light.iter().chain(night.iter()).enumerate() {
+        assert!(names[i].contains(want), "palette {i} is {} not {want}", names[i]);
     }
 }
 
@@ -232,29 +238,43 @@ fn text_on_a_glass_panel_keeps_its_contrast_over_the_worst_backdrop() {
     let body_dark = glass_constant("GLASS_BODY_DARK");
     let sheen_light = glass_constant("GLASS_SHEEN_LIGHT");
     let sheen_dark = glass_constant("GLASS_SHEEN_DARK");
+    let gloss_light = glass_constant("GLASS_GLOSS_LIGHT");
+    let gloss_dark = glass_constant("GLASS_GLOSS_DARK");
+    let tint = glass_constant("GLASS_TINT") as u8;
+    let wash = glass_constant("GLASS_WASH") as u8;
+    let unpack = |v: u32| ((v >> 24) as u8, [(v >> 16) as u8, (v >> 8) as u8, v as u8]);
     let dark = dark_flags();
     let mut failures = Vec::new();
     for (i, (name, c)) in palettes().into_iter().enumerate() {
-        let is_dark = dark[i + 1];
-        let (alpha, sheen) =
-            if is_dark { (body_dark, sheen_dark) } else { (body_light, sheen_light) };
-        // The window shows a wash of the brand colour (up to 0x66) behind the panels.
-        let backdrop = over((0x66, c["arca_primary"]), c["arca_bg"]);
-        for under in [c["arca_bg"], backdrop] {
-            let body = over((alpha as u8, c["arca_surface"]), under);
-            let sheen_rgb = [(sheen >> 16) as u8, (sheen >> 8) as u8, sheen as u8];
-            let lit = over(((sheen >> 24) as u8, sheen_rgb), body);
-            for panel in [body, lit] {
-                for (fg, min) in [
-                    ("arca_on_surface", 4.5),
-                    ("arca_on_surface_variant", 4.5),
-                    ("arca_primary", 4.5),
-                    ("arca_link", 4.5),
-                    ("arca_hidden_text", 3.0),
-                ] {
-                    let r = ratio(c[fg], panel);
-                    if r < min {
-                        failures.push(format!("{name}: {fg} on glass is {r:.2}:1, need {min}:1"));
+        let is_dark = dark[i];
+        let (alpha, sheen, gloss) = if is_dark {
+            (body_dark, unpack(sheen_dark), unpack(gloss_dark))
+        } else {
+            (body_light, unpack(sheen_light), unpack(gloss_light))
+        };
+        // The window shows washes of the brand and of the link colour behind the panels (up to
+        // `GLASS_WASH`); the panel is the body, the body with the brand tint, the body with the
+        // sheen, and that with the gloss: the lightest it gets is the last.
+        for wash_colour in ["arca_primary", "arca_link"] {
+            let backdrop = over((wash, c[wash_colour]), c["arca_bg"]);
+            for under in [c["arca_bg"], backdrop] {
+                let body = over((alpha as u8, c["arca_surface"]), under);
+                let tinted = over((tint, c["arca_primary"]), body);
+                let lit = over(sheen, body);
+                let glossy = over(gloss, lit);
+                for panel in [body, tinted, lit, glossy] {
+                    for (fg, min) in [
+                        ("arca_on_surface", 4.5),
+                        ("arca_on_surface_variant", 4.5),
+                        ("arca_primary", 4.5),
+                        ("arca_link", 4.5),
+                        ("arca_hidden_text", 3.0),
+                    ] {
+                        let r = ratio(c[fg], panel);
+                        if r < min {
+                            failures
+                                .push(format!("{name}: {fg} on glass is {r:.2}:1, need {min}:1"));
+                        }
                     }
                 }
             }

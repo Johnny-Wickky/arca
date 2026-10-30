@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.util.Base64;
 
+import org.arca.viewer.core.Appearance;
 import org.arca.viewer.core.ReminderRules;
 
 import java.util.Locale;
@@ -32,7 +33,10 @@ public final class Prefs {
 
     private static final String FILE = "arca";
     private static final String K_THEME = "theme";
+    /** The single palette of 0.5 and earlier: read once by {@link #migrateAppearance}, then deleted. */
     private static final String K_PALETTE = "palette";
+    private static final String K_PALETTE_LIGHT = "palette_light";
+    private static final String K_PALETTE_DARK = "palette_dark";
     private static final String K_GLASS = "glass";
     private static final String K_LANG = "lang";
     private static final String K_TEXT = "text_scale";
@@ -58,21 +62,51 @@ public final class Prefs {
         return c.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
     }
 
+    /**
+     * One time: the single palette setting of 0.5 becomes the mode and one palette per group (see
+     * {@link Appearance#fromLegacy}), so that what a person had chosen still looks the same.
+     */
+    private static void migrateAppearance(SharedPreferences p) {
+        if (!p.contains(K_PALETTE)) {
+            return;
+        }
+        int[] now = Appearance.fromLegacy(p.getInt(K_PALETTE, 0),
+            clamp(p.getInt(K_THEME, THEME_SYSTEM), THEME_SYSTEM, THEME_DARK));
+        p.edit().putInt(K_THEME, now[0]).putInt(K_PALETTE_LIGHT, now[1]).putInt(K_PALETTE_DARK, now[2])
+            .remove(K_PALETTE).apply();
+    }
+
+    /** The mode: {@link #THEME_SYSTEM}, {@link #THEME_LIGHT} or {@link #THEME_DARK}. */
     public static int theme(Context c) {
-        return clamp(sp(c).getInt(K_THEME, THEME_SYSTEM), THEME_SYSTEM, THEME_DARK);
+        SharedPreferences p = sp(c);
+        migrateAppearance(p);
+        return clamp(p.getInt(K_THEME, THEME_SYSTEM), THEME_SYSTEM, THEME_DARK);
     }
 
     public static void setTheme(Context c, int v) {
         sp(c).edit().putInt(K_THEME, v).apply();
     }
 
-    /** The colour palette: 0 is the classic light / dark pair, 1 to 6 the named palettes of {@code ui.Theme}. */
-    public static int palette(Context c) {
-        return clamp(sp(c).getInt(K_PALETTE, 0), 0, 6);
+    /** The palette chosen among the light ones ({@code 0 .. Appearance.PER_GROUP - 1}, see {@code ui.Theme}). */
+    public static int paletteLight(Context c) {
+        SharedPreferences p = sp(c);
+        migrateAppearance(p);
+        return Appearance.choice(p.getInt(K_PALETTE_LIGHT, 0));
     }
 
-    public static void setPalette(Context c, int v) {
-        sp(c).edit().putInt(K_PALETTE, v).apply();
+    /** The palette chosen among the dark ones ({@code 0 .. Appearance.PER_GROUP - 1}). */
+    public static int paletteDark(Context c) {
+        SharedPreferences p = sp(c);
+        migrateAppearance(p);
+        return Appearance.choice(p.getInt(K_PALETTE_DARK, 0));
+    }
+
+    public static void setPaletteLight(Context c, int choice) {
+        sp(c).edit().putInt(K_PALETTE_LIGHT, Appearance.choice(choice)).apply();
+    }
+
+    public static void setPaletteDark(Context c, int choice) {
+        sp(c).edit().putInt(K_PALETTE_DARK, Appearance.choice(choice)).apply();
     }
 
     /** Whether the translucent "liquid glass" panels are on (off by default). */
@@ -168,8 +202,7 @@ public final class Prefs {
     public static Context wrap(Context base) {
         int theme = theme(base);
         int lang = lang(base);
-        int palette = palette(base);
-        if (theme == THEME_SYSTEM && lang == LANG_SYSTEM && palette == 0) {
+        if (theme == THEME_SYSTEM && lang == LANG_SYSTEM) {
             return base;
         }
         // Only the fields that are overridden, as a delta: the platform merges it onto the live
@@ -177,11 +210,8 @@ public final class Prefs {
         // orientation and density of this very moment, and the layout would stop following
         // rotation, folding and split-screen. (An unset field is 0 / "undefined" here.)
         Configuration conf = new Configuration();
-        Boolean paletteDark = org.arca.viewer.ui.Theme.dark(palette);
-        if (paletteDark != null) {
-            // A named palette is light or dark by itself; the system widgets follow it.
-            conf.uiMode = paletteDark.booleanValue() ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO;
-        } else if (theme != THEME_SYSTEM) {
+        if (theme != THEME_SYSTEM) {
+            // The mode decides the group of palettes and, through the night bits, the system widgets.
             conf.uiMode = theme == THEME_DARK ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO;
         }
         if (lang != LANG_SYSTEM) {

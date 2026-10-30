@@ -73,9 +73,7 @@ public final class Ui {
     }
 
     private boolean nightMode() {
-        return (context.getResources().getConfiguration().uiMode
-            & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
-            == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        return Theme.dark(context);
     }
 
     public String str(int res) {
@@ -221,7 +219,7 @@ public final class Ui {
     public LinearLayout card() {
         LinearLayout l = vbox();
         if (glass()) {
-            l.setBackground(Theme.glassPanel(context, color(R.color.arca_surface), nightMode(), dp(22), dp(1)));
+            Theme.applyGlass(l, color(R.color.arca_surface), color(R.color.arca_primary), nightMode(), dp(22), true);
         } else {
             l.setBackground(rounded(color(R.color.arca_surface), color(R.color.arca_outline), 16));
         }
@@ -230,11 +228,24 @@ public final class Ui {
         return l;
     }
 
+    /**
+     * Gives a bar that sits against the edge of the screen (the header, the bottom bar of a reader)
+     * its material: flat surface colour, or glass without the light edge all around.
+     */
+    public void bar(View v, boolean raised) {
+        if (glass()) {
+            Theme.applyGlass(v, color(R.color.arca_surface), color(R.color.arca_primary), nightMode(),
+                raised ? dp(18) : 0, false);
+        } else {
+            v.setBackgroundColor(color(R.color.arca_surface));
+        }
+    }
+
     /** A card with custom fill and no outline (verdict banners). */
     public LinearLayout banner(int fillColorRes) {
         LinearLayout l = vbox();
         if (glass()) {
-            l.setBackground(Theme.glassPanel(context, color(fillColorRes), nightMode(), dp(24), dp(1)));
+            Theme.applyGlass(l, color(fillColorRes), color(R.color.arca_primary), nightMode(), dp(24), true);
         } else {
             l.setBackground(rounded(color(fillColorRes), 0, 20));
         }
