@@ -329,7 +329,7 @@ public final class PreviewScreen extends Screen {
         final long total = Math.max(1L, sec.items);
         final int max = (int) Math.max(0L, Math.min(total - 1, Integer.MAX_VALUE));
         LinearLayout bar = ui.vbox();
-        bar.setBackgroundColor(ui.color(R.color.arca_surface));
+        ui.bar(bar, true);
         bar.setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(6));
 
         LinearLayout top = ui.hbox();

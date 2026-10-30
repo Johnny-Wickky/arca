@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.Toast;
@@ -80,11 +81,9 @@ public final class MainActivity extends Activity implements Session.Listener, En
         Compat.noAutofill(this);
 
         root = new FrameLayout(this);
-        if (Prefs.glass(this)) {
-            root.setBackground(org.arca.viewer.ui.Theme.glassBackdrop(
-                org.arca.viewer.ui.Theme.color(this, R.color.arca_bg),
-                org.arca.viewer.ui.Theme.color(this, R.color.arca_primary)));
-        } else {
+        // The screen itself is transparent over the backdrop when Liquid Glass is on, and flat otherwise.
+        boolean glass = org.arca.viewer.ui.Theme.glass(this);
+        if (!glass) {
             root.setBackgroundColor(org.arca.viewer.ui.Theme.color(this, R.color.arca_bg));
         }
         root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -109,7 +108,20 @@ public final class MainActivity extends Activity implements Session.Listener, En
                 return insets;
             }
         });
-        setContentView(root);
+        if (glass) {
+            // The backdrop is not a child of the root: the root is emptied and refilled on every screen.
+            FrameLayout window = new FrameLayout(this);
+            window.addView(new org.arca.viewer.ui.GlassBackdrop(this,
+                    org.arca.viewer.ui.Theme.color(this, R.color.arca_bg),
+                    org.arca.viewer.ui.Theme.color(this, R.color.arca_primary),
+                    org.arca.viewer.ui.Theme.color(this, R.color.arca_link)),
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            window.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+            setContentView(window);
+        } else {
+            setContentView(root);
+        }
 
         if (ROUTES.isEmpty()) {
             ROUTES.add(Route.HOME);

@@ -272,20 +272,25 @@
 
     <!-- Settings -->
     <string name="settings_appearance">Appearance</string>
-    <string name="settings_theme">Theme</string>
+    <string name="settings_theme">Mode</string>
     <string name="theme_system">System</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
-    <string name="settings_palette">Colour palette</string>
-    <string name="palette_classic">Classic</string>
+    <string name="settings_palette_light">Light palettes</string>
+    <string name="settings_palette_dark">Dark palettes</string>
+    <string name="settings_palette_system_note">With “System” the light palette is used by day and the dark one at night, as the system switches.</string>
     <string name="palette_alabaster">Alabaster Studio</string>
     <string name="palette_obsidian">Obsidian Vault</string>
     <string name="palette_cashmere">Cashmere &amp; Cappuccino</string>
+    <string name="palette_nordic">Nordic Pearl</string>
+    <string name="palette_sage">Sage &amp; Linen</string>
+    <string name="palette_rose">Rose Quartz Daylight</string>
     <string name="palette_sierra">Sierra Blue &amp; Slate</string>
     <string name="palette_emerald">Emerald SecOps</string>
     <string name="palette_desert">Desert Titanium</string>
+    <string name="palette_amethyst">Midnight Amethyst</string>
     <string name="settings_glass">Liquid Glass</string>
-    <string name="settings_glass_desc">Translucent glossy panels over a soft colour wash. Off by default; turning it on changes only how the app looks.</string>
+    <string name="settings_glass_desc">A frosted-glass material laid over whichever palette you chose: translucent panels with a gloss, a light edge and a soft shadow, over a blurred wash of the palette’s colours. It never changes the palette. Off by default.</string>
     <string name="settings_language">Language</string>
     <string name="lang_system">System</string>
     <string name="lang_ru" translatable="false">Русский</string>

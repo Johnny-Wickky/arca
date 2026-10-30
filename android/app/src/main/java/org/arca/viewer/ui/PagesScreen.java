@@ -134,7 +134,7 @@ public final class PagesScreen extends Screen {
      */
     private View bottomBar(final Session s, final Session.PageState st, final int pages) {
         LinearLayout bar = ui.vbox();
-        bar.setBackgroundColor(ui.color(R.color.arca_surface));
+        ui.bar(bar, true);
         bar.setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(8));
 
         LinearLayout top = ui.hbox();
