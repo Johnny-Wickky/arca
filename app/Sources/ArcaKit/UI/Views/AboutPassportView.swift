@@ -260,9 +260,12 @@ public struct AboutPassportView: View {
     private var legalSection: some View {
         VStack(spacing: 12) {
             Button {
-                if let lic = try? state.engine.licenseText(which: 0) {
-                    licenseText = lic
-                    isLicenseSheetPresented = true
+                // The engine is an actor: asking it for the text is asynchronous.
+                Task {
+                    if let lic = try? await state.engine.licenseText(which: 0) {
+                        licenseText = lic
+                        isLicenseSheetPresented = true
+                    }
                 }
             } label: {
                 Text("Лицензия GNU AGPLv3 и дополнительные условия")

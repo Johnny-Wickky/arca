@@ -45,7 +45,7 @@ public actor PatronStore {
             return arca_passport_update(base, ptr.count, today, Int32(trackers), Int32(active), &buf)
         }
 
-        guard status == ARCA_STATUS_OK.rawValue, let dataPtr = buf.data, buf.len == 36 else {
+        guard status == ArcaStatusCode.ok, let dataPtr = buf.data, buf.len == 36 else {
             arca_buffer_free(buf)
             return
         }

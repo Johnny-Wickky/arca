@@ -4,8 +4,11 @@
 import SwiftUI
 
 /// Root visual navigation coordinator of the Arca iOS application.
+///
+/// The state is the one the scene owns and injects: "Open with Arca" (`onOpenURL`) and the screens
+/// must talk to the same `AppState`, so the view does not create its own.
 public struct RootView: View {
-    @StateObject private var state = AppState()
+    @EnvironmentObject private var state: AppState
 
     public init() {}
 
