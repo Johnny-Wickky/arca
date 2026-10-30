@@ -21,9 +21,17 @@
 #                             installs, but cannot be updated by a later build. Marked as such.
 #
 # Output: $ARCA_OUT/arca-<version>.apk, its SHA-256 and a report of what was verified.
+#
+# The unsigned, aligned package (everything but the signature) is reproducible: its SHA-256 is
+# written next to the APK as arca-<version>.unsigned.sha256, so that two builds of one commit, in
+# any directory, can be compared without the signature (tools/android/check-reproducible-apk.sh).
+# What makes that so: every file that goes into the archive gets the time SOURCE_DATE_EPOCH, the time
+# zone is UTC, and the entries are added in a fixed (sorted) order.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
+export TZ=UTC LC_ALL=C
 APP="$ROOT/android/app/src/main"
 OUT="${ARCA_OUT:-$ROOT/dist}"
 MIN_SDK=26
@@ -87,8 +95,8 @@ mkdir -p "$WORK/gen"
 
 # ---- 2. Java -----------------------------------------------------------------------------------
 step "2. Java sources -> classes"
-find "$APP/java" -name '*.java' > "$WORK/sources.txt"
-find "$WORK/gen" -name '*.java' >> "$WORK/sources.txt"
+find "$APP/java" -name '*.java' | sort > "$WORK/sources.txt"
+find "$WORK/gen" -name '*.java' | sort >> "$WORK/sources.txt"
 mkdir -p "$WORK/classes"
 javac -nowarn -Xlint:-options -source 8 -target 8 -encoding UTF-8 \
     -bootclasspath "$ANDROID_JAR" -d "$WORK/classes" @"$WORK/sources.txt"
@@ -97,7 +105,7 @@ echo "$(find "$WORK/classes" -name '*.class' | wc -l) classes"
 # ---- 3. dex ------------------------------------------------------------------------------------
 step "3. dex (d8, min-api $MIN_SDK)"
 mkdir -p "$WORK/dex"
-find "$WORK/classes" -name '*.class' -print0 | xargs -0 "$D8" --release --min-api "$MIN_SDK" \
+find "$WORK/classes" -name '*.class' -print0 | sort -z | xargs -0 "$D8" --release --min-api "$MIN_SDK" \
     --lib "$ANDROID_JAR" --output "$WORK/dex"
 [ -f "$WORK/dex/classes.dex" ] || die "d8 produced no classes.dex"
 ls -l "$WORK/dex"
@@ -105,17 +113,24 @@ ls -l "$WORK/dex"
 # ---- 4. assemble -------------------------------------------------------------------------------
 step "4. assemble: resources + dex + native libraries (stored, page aligned)"
 cp "$WORK/base.apk" "$WORK/unaligned.apk"
-(cd "$WORK/dex" && zip -X -q "$WORK/unaligned.apk" classes.dex)
 for abi in "${ABIS[@]}"; do
     mkdir -p "$WORK/pkg/lib/$abi"
     cp "$NATIVE/$abi/libarca_jni.so" "$WORK/pkg/lib/$abi/"
 done
+# The archive records the time of each file: the same fixed time for all of them.
+find "$WORK/dex" "$WORK/pkg" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+(cd "$WORK/dex" && zip -X -q "$WORK/unaligned.apk" classes.dex)
 # -0: store without compression, so the system maps the library straight out of the APK
-# (android:extractNativeLibs="false") and zipalign can page-align it.
-(cd "$WORK/pkg" && zip -X -q -0 -r -D "$WORK/unaligned.apk" lib)
+# (android:extractNativeLibs="false") and zipalign can page-align it. The entries are added in sorted
+# order, whatever order the file system lists them in.
+(cd "$WORK/pkg" && find lib -type f | sort | zip -X -q -0 -D "$WORK/unaligned.apk" -@)
 # 16 KiB alignment of the stored .so files: required by Android 15+ devices with 16 KiB pages
 # and by Google Play for apps targeting Android 15 and later.
 "$ZIPALIGN" -f -P 16 4 "$WORK/unaligned.apk" "$WORK/aligned.apk"
+# Everything but the signature: the part of the package that must be the same in every honest build.
+UNSIGNED_SHA="$(sha256sum "$WORK/aligned.apk" | cut -d' ' -f1)"
+echo "unsigned package SHA-256: $UNSIGNED_SHA"
+printf '%s  arca-%s.unsigned.apk\n' "$UNSIGNED_SHA" "$VERSION_NAME" > "$OUT/arca-$VERSION_NAME.unsigned.sha256"
 
 # ---- 5. sign -----------------------------------------------------------------------------------
 step "5. sign (APK Signature Scheme v2/v3; minSdk $MIN_SDK makes the v1 JAR signature unnecessary)"
