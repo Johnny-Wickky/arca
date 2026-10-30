@@ -42,7 +42,8 @@ if [[ ! -d app/Frameworks/ArcaCore.xcframework ]]; then
 fi
 
 echo "=== Writing app/Xcode/Arca.xcodeproj from app/project.yml ==="
-xcodegen generate --spec app/project.yml --project app/Xcode --quiet
+mkdir -p app/Xcode
+xcodegen generate --spec app/project.yml --project app/Xcode
 
 if [[ "$MODE" == "project" ]]; then
     echo "Open app/Xcode/Arca.xcodeproj in Xcode, set the Team of the Arca target, choose the iPhone, Run."
