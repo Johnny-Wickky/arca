@@ -7,8 +7,8 @@ import ArcaCore
 // Thin bindings of the platform-neutral statistics and reminder rules of the Rust core
 // (arca_engine::stats and arca_engine::schedule). They hold no state and call no network:
 // the app keeps the opaque counter blob (flat all-time totals, no dates) in its own protected
-// storage, only while the person has switched the optional counter on. These files are not built
-// in this repository's CI; they mirror what the Android app does through JNI.
+// storage, only while the person has switched the optional counter on. They mirror what the
+// Android app does through JNI.
 
 /// The flat totals of the optional counter.
 public struct StatsTotals: Codable, Sendable, Equatable {
@@ -86,7 +86,7 @@ public enum ArcaStats {
             body(raw.baseAddress?.assumingMemoryBound(to: UInt8.self), raw.count, &buf)
         }
         defer { arca_buffer_free(buf) }
-        guard status == ARCA_STATUS_OK.rawValue else { throw ArcaError(code: status) }
+        guard status == ArcaStatusCode.ok else { throw ArcaError(code: status) }
         guard let ptr = buf.data, buf.len > 0 else { return Data() }
         return Data(bytes: ptr, count: buf.len)
     }
@@ -122,7 +122,7 @@ public enum ArcaReminderRules {
             ms, offset, last, enabled ? 1 : 0, canPost ? 1 : 0,
             Int32.random(in: Int32.min...Int32.max), &buf)
         defer { arca_buffer_free(buf) }
-        guard status == ARCA_STATUS_OK.rawValue, let ptr = buf.data else {
+        guard status == ArcaStatusCode.ok, let ptr = buf.data else {
             throw ArcaError(code: status)
         }
         return try JSONDecoder().decode(ReminderDecision.self, from: Data(bytes: ptr, count: buf.len))
@@ -138,7 +138,7 @@ public enum ArcaReminderRules {
         let status = arca_reminder_on_start(
             next, ms, offset, enabled ? 1 : 0, Int32.random(in: Int32.min...Int32.max), &buf)
         defer { arca_buffer_free(buf) }
-        guard status == ARCA_STATUS_OK.rawValue, let ptr = buf.data else {
+        guard status == ArcaStatusCode.ok, let ptr = buf.data else {
             throw ArcaError(code: status)
         }
         return try JSONDecoder().decode(ReminderDecision.self, from: Data(bytes: ptr, count: buf.len))

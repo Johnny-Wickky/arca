@@ -117,6 +117,27 @@ public struct XRayReportView: View {
 
     private var actionButtons: some View {
         VStack(spacing: 12) {
+            // An encrypted file is reported, not refused (status OK, `needsPassword`): the way in is
+            // here, as in the Android result screen. Some files (a PDF that protects only against
+            // editing) open without a password too, so the report stays and the lock is a choice.
+            if report.needsPassword {
+                Button {
+                    state.isPasswordPromptVisible = true
+                    ArcaHaptics.selection()
+                } label: {
+                    HStack(spacing: 8) {
+                        ArcaGlyph(.lock, size: 18, color: .white)
+                        Text("Ввести пароль")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(state.theme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+            }
+
             Button {
                 state.proceedToViewer(report: report)
             } label: {

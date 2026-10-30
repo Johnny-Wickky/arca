@@ -83,7 +83,7 @@ public actor ArcaEngine {
             limits.scanTimeoutSecs,
             limits.previewTimeoutSecs
         )
-        guard status == ARCA_STATUS_OK.rawValue else {
+        guard status == ArcaStatusCode.ok else {
             throw ArcaError(code: status)
         }
         isInitialized = true
@@ -107,12 +107,12 @@ public actor ArcaEngine {
         let session = DocumentSession(handle: docHandle)
         let appendStatus = data.withUnsafeBytes { ptr -> Int32 in
             guard let base = ptr.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return ARCA_STATUS_BAD_ARGUMENT.rawValue
+                return ArcaStatusCode.badArgument
             }
             return arca_doc_append(docHandle, base, ptr.count)
         }
 
-        guard appendStatus == ARCA_STATUS_OK.rawValue else {
+        guard appendStatus == ArcaStatusCode.ok else {
             throw ArcaError(code: appendStatus)
         }
         return session
@@ -189,7 +189,7 @@ public actor ArcaEngine {
         password: String? = nil
     ) async throws -> PreviewMeta {
         try applyPassword(password, to: document)
-        let outcome = try await runOperation(op: ARCA_OP_PREVIEW, flags: ARCA_FLAG_PREVIEW_ALL, document: document)
+        let outcome = try await runOperation(op: ARCA_OP_PREVIEW, flags: ArcaFlag.previewAll, document: document)
         defer { arca_outcome_free(outcome) }
 
         let metaData = try fetchBufferData { arca_outcome_preview_meta(outcome, $0) }
@@ -203,7 +203,7 @@ public actor ArcaEngine {
         from: UInt64,
         count: UInt32
     ) async throws -> [PreviewItem] {
-        let outcome = try await runOperation(op: ARCA_OP_PREVIEW, flags: ARCA_FLAG_PREVIEW_ALL, document: document)
+        let outcome = try await runOperation(op: ARCA_OP_PREVIEW, flags: ArcaFlag.previewAll, document: document)
         defer { arca_outcome_free(outcome) }
 
         let itemsData = try fetchBufferData {
@@ -221,11 +221,11 @@ public actor ArcaEngine {
     /// Produces a sterile copy of the document with active content and trackers removed.
     public func sanitize(
         document: DocumentSession,
-        flags: UInt32 = ARCA_FLAG_SANITIZE_ALL,
+        flags: Int32 = ArcaFlag.sanitizeAll,
         password: String? = nil
     ) async throws -> SanitizedDocument {
         try applyPassword(password, to: document)
-        let outcome = try await runOperation(op: ARCA_OP_SANITIZE, flags: Int32(flags), document: document)
+        let outcome = try await runOperation(op: ARCA_OP_SANITIZE, flags: flags, document: document)
         defer { arca_outcome_free(outcome) }
 
         let infoData = try fetchBufferData { arca_outcome_sanitized_info(outcome, $0) }
@@ -239,7 +239,7 @@ public actor ArcaEngine {
 
     /// Renders vector drawing primitives of a single page as JSON.
     public func renderPage(document: DocumentSession, pageNumber: UInt32) async throws -> String {
-        let flags = Int32(pageNumber & ARCA_FLAG_PAGE_MASK)
+        let flags = Int32(pageNumber & ArcaFlag.pageMask)
         let outcome = try await runOperation(op: ARCA_OP_RENDER, flags: flags, document: document)
         defer { arca_outcome_free(outcome) }
 
@@ -318,7 +318,7 @@ public actor ArcaEngine {
             guard let base = ptr.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
             return arca_doc_set_password(document.handle, base, ptr.count)
         }
-        guard status == ARCA_STATUS_OK.rawValue else {
+        guard status == ArcaStatusCode.ok else {
             throw ArcaError(code: status)
         }
     }
@@ -345,7 +345,7 @@ public actor ArcaEngine {
                     throw ArcaError(handleOrCode: outcome)
                 }
                 let outcomeStatus = arca_outcome_status(outcome)
-                guard outcomeStatus == ARCA_STATUS_OK.rawValue else {
+                guard outcomeStatus == ArcaStatusCode.ok else {
                     arca_outcome_free(outcome)
                     throw ArcaError(code: outcomeStatus)
                 }
@@ -363,7 +363,7 @@ public actor ArcaEngine {
         let status = call(&buf)
         defer { arca_buffer_free(buf) }
 
-        guard status == ARCA_STATUS_OK.rawValue else {
+        guard status == ArcaStatusCode.ok else {
             throw ArcaError(code: status)
         }
         guard let ptr = buf.data, buf.len > 0 else {

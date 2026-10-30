@@ -3,9 +3,12 @@
 
 import SwiftUI
 
-/// Main entry point of the Arca iOS document viewer application.
-@main
-public struct ArcaApp: App {
+/// The scene of the Arca document viewer.
+///
+/// The app target (`app/App/ArcaAppMain.swift`) owns the `@main` entry point and shows this scene;
+/// the entry point is not in this library so that it stays linkable into tests and other hosts.
+@MainActor
+public struct ArcaScene: Scene {
     @StateObject private var state = AppState()
 
     public init() {}
