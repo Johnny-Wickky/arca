@@ -42,7 +42,8 @@ targets:
     dependencies:
       - package: ArcaKit
         product: ArcaKit
-      - framework: Frameworks/ArcaCore.xcframework
+      # Like the package above: resolved against app/Xcode, where the project is written.
+      - framework: ../Frameworks/ArcaCore.xcframework
         embed: false
     info:
       path: App/Info.plist
