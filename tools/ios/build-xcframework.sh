@@ -76,8 +76,15 @@ xcodebuild -create-xcframework \
 
 echo "=== 8. Validating symbols in XCFramework ==="
 DEVICE_LIB="$OUTPUT_FRAMEWORK/ios-arm64/libarca_ffi.a"
+# The objects are written by the LLVM of the pinned Rust, which is newer than the one in Xcode: its
+# `nm` cannot read them ("Unknown attribute kind") and the symbol would look missing. The Rust
+# toolchain's own llvm-nm reads them; Xcode's `nm` is only the fallback.
+rustup component add llvm-tools >/dev/null 2>&1 || true
+NM="$(find "$(rustc --print sysroot)/lib/rustlib" -name llvm-nm -type f 2>/dev/null | head -n 1)"
+[ -n "$NM" ] || NM=nm
+SYMBOLS="$("$NM" "$DEVICE_LIB" 2>/dev/null || true)"
 for sym in arca_init arca_doc_new arca_run arca_buffer_free arca_about; do
-    if ! nm "$DEVICE_LIB" | grep -q "T _$sym"; then
+    if ! printf '%s\n' "$SYMBOLS" | grep -Eq "T _?$sym\$"; then
         echo "Error: required symbol $sym missing from device library!" >&2
         exit 1
     fi
