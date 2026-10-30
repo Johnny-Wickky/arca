@@ -9,8 +9,8 @@
      not BROWSABLE (a web page cannot start the app) and accept content:// only. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.arca.viewer"
-    android:versionCode="5000"
-    android:versionName="0.5.0">
+    android:versionCode="6000"
+    android:versionName="0.6.0">
 
     <!-- The supported API range is stated explicitly: aapt2 (build-tools 36) no longer writes a
          default sdkVersion into the package when <uses-sdk> is absent, so the built APK would carry

@@ -6,7 +6,7 @@
 # with the permanent release key, verifies it and writes its SHA-256. The password is read from
 # the environment (ARCA_KEYSTORE_PASS) or asked for on the terminal; it is never printed or kept.
 #
-#   tools/android/sign-release.sh dist/arca-0.5.0-throwaway-signed.apk dist/arca-0.5.0.apk
+#   tools/android/sign-release.sh dist/arca-0.6.0-throwaway-signed.apk dist/arca-0.5.0.apk
 #
 # Environment: ARCA_KEYSTORE (default ../arca-keys/arca-release.p12), ARCA_KEY_ALIAS (default
 # arca), ARCA_KEY_PASS (default: the keystore password), ARCA_BUILD_TOOLS_DIR (directory with

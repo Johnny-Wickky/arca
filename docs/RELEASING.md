@@ -83,10 +83,10 @@ Environment secrets*. Окружение создайте заранее (имя
 ```sh
 export ARCA_RELEASE=1 ARCA_KEYSTORE=../arca-keys/arca-release.p12 ARCA_KEY_ALIAS=arca
 read -rs ARCA_KEYSTORE_PASS && export ARCA_KEYSTORE_PASS   # пароль вводится, а не записывается
-bash tools/android/build-local.sh                           # гость -> библиотеки -> dist/arca-0.5.0.apk
-apksigner verify --verbose --print-certs dist/arca-0.5.0.apk
+bash tools/android/build-local.sh                           # гость -> библиотеки -> dist/arca-0.6.0.apk
+apksigner verify --verbose --print-certs dist/arca-0.6.0.apk
 # пакет, собранный без ключа (одноразовая подпись), подписывается постоянным ключом отдельно:
-bash tools/android/sign-release.sh dist/arca-0.5.0-throwaway-signed.apk dist/arca-0.5.0.apk
+bash tools/android/sign-release.sh dist/arca-0.6.0-throwaway-signed.apk dist/arca-0.6.0.apk
 ```
 
 Файлы ключей (`.p12`, `.pfx`, `.jks`, `.keystore`, `.key`, `.pem`) запрещены в репозитории:
@@ -201,3 +201,21 @@ ANDROID_HOME=... ARCA_NATIVE_DIR=$PWD/native ARCA_THROWAWAY_KEY=1 bash tools/and
 хэши сравнивают между сборками с одинаковыми флагами. Хэш Wasm-гостя (он печатается в журнале
 сборки, в «Диагностике» приложения и в заметках релиза) — то, что можно сравнивать между сборками
 одного коммита.
+
+### С 0.6.0: неподписанный пакет и библиотеки сравниваются тоже
+
+* `tools/android/build-native.sh` собирает три `libarca_jni.so` одним скриптом (линкер NDK,
+  выравнивание 16 КиБ, RELRO, `--remap-path-prefix`); задания `package*` используют его же.
+* `tools/android/build-apk.sh` собирает **детерминированный** архив: время каждой записи —
+  `SOURCE_DATE_EPOCH` (UTC), записи, классы и исходники отсортированы. SHA-256 неподписанного
+  выровненного пакета пишется в `arca-<версия>.unsigned.sha256`: подпись добавляется позже, поэтому
+  именно этот хэш сравнивают между сборками.
+* `tools/android/check-reproducible-apk.sh` и задание `reproducible-apk` (workflow `android`): гость,
+  каждая из трёх библиотек и неподписанный пакет из двух копий дерева в разных каталогах должны
+  совпасть. Зелёный прогон на `e3a76bb` — первое подтверждение.
+* `package-release` собирает гость дважды перед упаковкой (расхождение — релиза нет), кладёт хэш
+  неподписанного пакета к остальным контрольным суммам и пишет в заметках релиза, что сравнивалось.
+* Проверить самому: `git checkout vX.Y.Z`, `bash tools/android/build-local.sh`, сравнить
+  `dist/arca-X.Y.Z.unsigned.sha256` с файлом из релиза. **Сверка «моя машина ↔ CI» пока не выполнялась**
+  (она в чек-листе Issue «Ручная проверка на устройствах»); заявление «побитово воспроизводимо» относится
+  к двум сборкам в CI, а не ко всем окружениям.
