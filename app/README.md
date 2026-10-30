@@ -37,8 +37,11 @@
 
 ```text
 app/
-├── Package.swift                    # Swift Package Manager манифест
+├── Package.swift                    # Swift Package Manager манифест (ArcaKit)
+├── project.yml                      # проект Xcode для XcodeGen: приложение Arca (iPhone/iPad)
 ├── README.md                        # этот файл
+├── App/
+│   └── Sources/ArcaAppMain.swift    # @main приложения; Info.plist пишет XcodeGen из project.yml
 ├── Sources/
 │   ├── ArcaCore/                    # C ABI интерфейс
 │   │   ├── arca_core.c
@@ -58,5 +61,8 @@ app/
 │           └── PatronStore.swift    # Локальное хранилище статистики
 └── Tests/
     └── ArcaKitTests/
-        └── ArcaKitTests.swift       # Тесты моделей, декодирования и инвариантов безопасности
+        ├── ArcaKitTests.swift       # Тесты моделей, декодирования и инвариантов безопасности
+        └── ArcaEngineTests.swift    # Настоящее ядро на симуляторе: запуск, самотест, документы, пароль
 ```
+
+Запуск на iPhone и порядок проверки — в [`docs/IOS_TESTING.md`](../docs/IOS_TESTING.md).

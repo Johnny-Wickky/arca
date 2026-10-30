@@ -798,18 +798,28 @@ Notification service, APNs), Arca полностью изолирована от
   | ├── ios-arm64_x86_64-simulator/               (Универсальный срез для симуляторов)    |
   | │   └── libarca_ffi.a                                                                 |
   | └── Headers/                                  (C-ABI интерфейс)                       |
-  |     ├── arca.h                                                                        |
-  |     └── module.modulemap                                                              |
+  |     └── arca.h        (модуль Clang ArcaCore задаёт Swift-пакет, не XCFramework)      |
   +───────────────────────────────────────────────────────────────────────────────────────+
 ```
 
 ### Архитектура скриптов автоматизации:
-* `tools/ios/build-xcframework.sh` автоматизирует кросс-компиляцию для всех целевых платформ,
-  проверяет выравнивание памяти и генерирует итоговый `ArcaCore.xcframework`.
-* `tools/ios/check-ios.sh` производит статический аудит кода:
-  1. Запрет вызовов небезопасных сетевых API (`URLSession`, `CFNetwork`).
-  2. Валидация политики безопасности unsafe-блоков (`tools/check-unsafe.sh`).
-  3. Проверка отсутствия упоминаний SF Symbols в исходном коде.
+* `tools/ios/build-xcframework.sh` собирает `libarca_ffi.a` для устройства и симуляторов, склеивает срез
+  симулятора (`lipo`), собирает `ArcaCore.xcframework` и проверяет, что нужные точки входа C в нём есть
+  (таблицу символов читает `llvm-nm` из Rust: `nm` из Xcode не понимает объекты свежего LLVM).
+* `tools/ios/build-app.sh` делает `app/Xcode/Arca.xcodeproj` из `app/project.yml` (XcodeGen) и собирает
+  приложение для симулятора и для устройства (неподписанный `.ipa`).
+* `tools/ios/check-ios.sh` — полный прогон на macOS:
+  1. Запрет сетевых и телеметрических API в исходниках Swift (`URLSession`, `NWConnection`, `WKWebView`,
+     SDK аналитики и т. п.; комментарии не считаются).
+  2. Компиляция пакета `ArcaKit` под симулятор iOS (без Rust, поэтому ошибки Swift видны первыми).
+  3. Сборка `ArcaCore.xcframework`.
+  4. Тесты Swift на симуляторе, скомпонованные с настоящим ядром (`ArcaEngineTests`: запуск ядра и Wasm-гостя,
+     самотест, документы из `tests/fixtures`, пароль, стерильная копия).
+  5. Сборка приложения (симулятор и устройство).
+* Валидация политики `unsafe` — `tools/check-unsafe.sh` (отдельный шаг CI); проверки «нет SF Symbols» в
+  скриптах нет, это правило ревью.
+
+Порядок первого запуска на iPhone — в [`docs/IOS_TESTING.md`](IOS_TESTING.md).
 
 ---
 

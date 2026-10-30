@@ -1,0 +1,58 @@
+name: "iOS: баг живого прогона"
+description: Что не так при запуске Arca на iPhone, iPad или в симуляторе (см. docs/IOS_TESTING.md)
+labels: ["bug"]
+body:
+  - type: input
+    id: device
+    attributes:
+      label: Устройство и iOS
+      description: Модель и версия iOS; симулятор или устройство.
+      placeholder: iPhone 13, iOS 17.5 (устройство)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия Arca
+      description: "`git rev-parse --short HEAD` или номер прогона CI и имя артефакта."
+      placeholder: 0.6.0, f884885
+    validations:
+      required: true
+  - type: input
+    id: file
+    attributes:
+      label: Файл
+      description: Имя из tests/fixtures (или как получен), формат, размер.
+      placeholder: enc-agile.docx
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги
+      description: Что нажимали по порядку.
+      placeholder: |
+        1. Файлы ▸ enc-agile.docx ▸ Поделиться ▸ Arca
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Что ожидали и что получилось
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Тяжесть
+      options:
+        - Блокер (падение при запуске или при открытии любого файла, «чистый» вердикт у опасного файла)
+        - Серьёзная (формат не открывается, функция не работает)
+        - Мелочь (вид, текст, неудобство)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Консоль Xcode и отчёт о падении
+      description: Текст из консоли (Debug area или Console.app) и/или файл Arca-….ips. Скриншоты можно приложить к задаче после создания.
+      render: text
