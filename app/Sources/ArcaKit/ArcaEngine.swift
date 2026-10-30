@@ -37,7 +37,7 @@ public struct EngineLimits: Sendable {
 /// when deallocated (RAII).
 public final class DocumentSession: Sendable {
     public let handle: Int64
-    private let isClosed = OSAllocatedUnfairLock(initial: false)
+    private let isClosed = OSAllocatedUnfairLock(initialState: false)
 
     init(handle: Int64) {
         self.handle = handle

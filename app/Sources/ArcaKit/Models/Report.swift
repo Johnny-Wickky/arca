@@ -239,7 +239,7 @@ public struct EmbeddedObject: Codable, Sendable, Equatable, Identifiable {
 }
 
 /// Threat X-Ray report produced by Arca core.
-public struct Report: Codable, Sendable, Equatable {
+public struct Report: Decodable, Sendable, Equatable {
     /// Detected document format (e.g. "Docx", "Pdf", "Xlsx").
     public let format: String
     /// High-level format family (e.g. "Text", "Spreadsheet", "Presentation").

@@ -4,7 +4,7 @@
 import Foundation
 
 /// Technical diagnostics and resource utilization metrics for an executed run.
-public struct RunDiagnostics: Codable, Sendable, Equatable {
+public struct RunDiagnostics: Decodable, Sendable, Equatable {
     public let status: Int
     public let statusName: String
     public let message: String
