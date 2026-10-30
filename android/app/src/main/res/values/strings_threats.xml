@@ -75,7 +75,7 @@
     <string name="threat_external_frame_title">Frame loaded from the internet</string>
     <string name="threat_external_frame_text">A frame displays content from a remote address that can change at any time.</string>
     <string name="threat_external_object_link_title">Object linked to a remote address</string>
-    <string name="threat_external_object_link_text">An object is linked to a file or a server and is refreshed from there.</string>
+    <string name="threat_external_object_link_text">An object in the document is linked to a remote address and is fetched from there when the document opens. A page loaded this way can start programs on the computer (the technique of Follina and CVE-2021-40444). Arca never fetches it.</string>
     <string name="threat_external_workbook_link_title">Link to another workbook</string>
     <string name="threat_external_workbook_link_text">The workbook pulls data from another file or server. The address can reveal your network or load data you did not expect.</string>
     <string name="threat_external_data_connection_title">Data connection</string>
@@ -156,14 +156,14 @@
     <string name="threat_unusual_compression_text">The archive uses a compression setting that honest programs do not produce.</string>
     <string name="threat_macro_enabled_content_type_title">Macro-enabled file type</string>
     <string name="threat_macro_enabled_content_type_text">The file is of a type built to carry macros (such as DOCM or XLSM).</string>
-    <string name="threat_content_type_mismatch_title">Macros do not match the file type</string>
-    <string name="threat_content_type_mismatch_text">The file says it has no macros but contains a macro project, or the other way round. Mislabelled files are used to slip past filters.</string>
+    <string name="threat_content_type_mismatch_title">File type does not match its content</string>
+    <string name="threat_content_type_mismatch_text">A part of the file is labelled as one kind of content but is another, or has no label at all; for example a macro project in a file that says it has none. Mislabelled files are used to slip past filters.</string>
     <string name="threat_disguised_executable_title">Program disguised as a document</string>
     <string name="threat_disguised_executable_text">The file is a program but has the name or icon of a document.</string>
     <string name="threat_unsupported_format_title">Unsupported format</string>
     <string name="threat_unsupported_format_text">Arca could not recognise the format, so it cannot vouch for the file.</string>
     <string name="threat_scan_limit_reached_title">Inspection limit reached</string>
-    <string name="threat_scan_limit_reached_text">The file is so large or so deeply nested that the inspection stopped at its safety limit. The rest was not examined.</string>
+    <string name="threat_scan_limit_reached_text">The inspection stopped before the end: the file is too large or too deeply nested, or a part of it is of a kind Arca does not interpret. What was not examined cannot be called safe.</string>
     <string name="threat_embedded_font_title">Embedded font</string>
     <string name="threat_embedded_font_text">A font is stored in the file. Fonts are read by complex code that has been attacked before.</string>
     <string name="threat_compression_bomb_title">Decompression bomb</string>

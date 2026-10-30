@@ -17,7 +17,7 @@
 - Heredocs with quotes in the Bash tool sometimes mis-parse; write scripts with the Write tool and run them.
 - Fast loop: `cargo check --workspace`. Run the full chain (`tools/build-guest.sh`, `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked`, `tools/check-unsafe.sh`,
-  `tools/android/check-android.sh`) once, before the release commit.
+  `tools/check-malware-lab.sh`, `tools/android/check-android.sh`) once, before the release commit.
 
 ## Line endings
 

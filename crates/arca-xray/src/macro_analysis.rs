@@ -261,6 +261,9 @@ const PDF_JS_SUSPICIOUS: &[Rule] = &[
     ("importdataobject", "importDataObject", BehaviorKind::UsesComObject),
     ("unescape(", "unescape (obfuscation, heap spray)", BehaviorKind::ObfuscatedCode),
     ("fromcharcode", "String.fromCharCode (obfuscation)", BehaviorKind::ObfuscatedCode),
+    ("app.viewerversion", "app.viewerVersion", BehaviorKind::ChecksSystemVersion),
+    ("app.viewertype", "app.viewerType", BehaviorKind::ChecksSystemVersion),
+    ("app.platform", "app.platform", BehaviorKind::ChecksSystemVersion),
     ("util.printf", "util.printf (exploit primitive)", BehaviorKind::ExploitPrimitive),
     (
         "collab.collectemailinfo",

@@ -11,7 +11,9 @@ mod syntax;
 
 use crate::format::FileFormat;
 use crate::macro_analysis;
-use crate::report::{MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind};
+use crate::report::{
+    MacroIntent, MacroLanguage, MacroModule, MetaKey, RefKind, Severity, ThreatKind,
+};
 use crate::{Abort, Ctx, memfind, ooxml};
 
 #[derive(Debug, Default)]
@@ -376,8 +378,10 @@ fn streams(
                 );
                 break 'streams;
             }
-            // Each stream may expand at most to what the budget still allows.
-            let cap = usize::try_from(ctx.budget.remaining().min(64 << 20)).unwrap_or(64 << 20);
+            // Each stream may expand at most to what the budget still allows, and never past
+            // `STREAM_CAP`.
+            let cap = usize::try_from(ctx.budget.remaining().min(STREAM_CAP as u64))
+                .unwrap_or(STREAM_CAP);
             let mut produced = 0u64;
             let result = filters::decode_chain(raw, &dict, cap, |out, input| {
                 produced = produced.saturating_add(out as u64);
@@ -418,6 +422,16 @@ fn streams(
     Ok(())
 }
 
+/// The most one decoded PDF stream may hold when it is scanned.
+///
+/// The decoder doubles its buffer as it grows, and in the linear memory of the sandbox the old
+/// buffer and the new one exist together for a moment: a stream allowed 64 MiB needs 96 MiB at the
+/// step from 32 to 64, which is the whole memory limit of a scan, so a decompression bomb ended as
+/// "the guest ran out of memory" instead of "this is a bomb". At 32 MiB the peak is 48 MiB. A stream
+/// that decodes to more is treated as a bomb (a scan of ordinary text, scripts and actions never
+/// needs that much; a lossless picture of that size is not read for its text anyway).
+const STREAM_CAP: usize = 32 << 20;
+
 /// Scans a PDF.
 pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileFormat, Abort> {
     ctx.identified(FileFormat::Pdf);
@@ -446,6 +460,10 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileForm
         .take(32)
         .map(|js| macro_analysis::analyze_module(js, MacroLanguage::JavaScript, js.len() > limit))
         .collect();
+    // Every script was read and every one is ordinary form scripting (number formats, sums).
+    let scripts_benign = !analyses.is_empty()
+        && analyses.len() == scripts.len()
+        && analyses.iter().all(|a| a.intent == MacroIntent::Benign);
     if counts.javascript > 0 {
         let severity = if analyses.is_empty() || analyses.len() < scripts.len() {
             ThreatKind::PdfJavaScript.default_severity()
@@ -488,16 +506,20 @@ pub(crate) fn scan(ctx: &mut Ctx<'_>, data: &[u8], loc: &str) -> Result<FileForm
         );
     }
     if counts.open_action + counts.aa > 0 {
-        // An automatic action only matters if there is something to run.
-        let sev = if counts.javascript > 0 || counts.launch > 0 {
+        // An automatic action only matters if there is something to run. Form scripting that only
+        // formats and adds numbers is "run" too, but not worth a High: Medium is the floor that keeps
+        // the file from being called clean.
+        let sev = if counts.launch > 0 || (counts.javascript > 0 && !scripts_benign) {
             Severity::High
-        } else if counts.submit_form
+        } else if counts.javascript
+            + counts.submit_form
             + counts.import_data
             + counts.goto_r
             + counts.goto_e
             + counts.uri
             > 0
         {
+            // (Script that is only form scripting, or an action that reaches outside.)
             Severity::Medium
         } else {
             Severity::Low

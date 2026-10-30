@@ -40,6 +40,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets $LOCKED
       - run: cargo test --workspace $LOCKED
+      - name: malware lab (50 defanged attack samples, expected types, verdicts and texts)
+        # Already part of `cargo test --workspace`; named on its own so that a failure here is
+        # read as "an attack is no longer recognised or explained as pinned" at a glance.
+        run: cargo test -p arca-xray malware_lab $LOCKED
       - name: fork attribution path (example file)
         run: ARCA_FORK_ATTRIBUTION="$PWD/fork_attribution.example.toml" cargo test -p arca-attribution $LOCKED
       - name: release gate
@@ -67,6 +71,10 @@ jobs:
           export ARCA_GUEST_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm"
           export ARCA_GUEST_XRAY_WASM="$ARCA_GUEST_WASM"
           cargo test --release -p arca-guest-xray --test e2e_sandbox $LOCKED -- --nocapture
+          # The malware lab: the same fifty attack samples through the real guest in the sandbox.
+          # The native tests write them out; the sandbox test needs every one to give the pinned report.
+          ARCA_LAB_OUT="$PWD/target/lab" cargo test -p arca-xray malware_lab $LOCKED
+          ARCA_LAB_DIR="$PWD/target/lab" cargo test --release -p arca-guest-xray --test malware_lab_sandbox $LOCKED -- --nocapture
           # The engine and the JNI layer, with the real guest embedded.
           cargo test --release -p arca-engine -p arca-jni $LOCKED
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

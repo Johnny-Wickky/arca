@@ -9,6 +9,7 @@ mod corpus;
 pub(crate) mod fixtures;
 mod hardening;
 mod images;
+mod malware_lab;
 mod mutation;
 mod references;
 mod verdict;

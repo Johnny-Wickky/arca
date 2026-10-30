@@ -20,6 +20,10 @@ quick-xml.workspace = true
 
 [dev-dependencies]
 arca-container = { workspace = true, features = ["test-support"] }
+# The malware lab runs every sample through the guest's own request path (the code that runs in
+# the sandbox). A dev-dependency cycle is allowed: the guest depends on this crate, not the other
+# way round, for anything that ships.
+arca-guest-xray.workspace = true
 
 [lints]
 workspace = true
