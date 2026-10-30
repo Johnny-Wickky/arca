@@ -119,31 +119,7 @@ jobs:
       - name: build the wasm guest
         run: bash tools/build-guest.sh
       - name: native libraries for the three ABIs (16 KiB page size)
-        run: |
-          set -euo pipefail
-          export ARCA_GUEST_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm"
-          bin="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          api="$ANDROID_API_MIN"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android$api-clang"
-          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$bin/armv7a-linux-androideabi$api-clang"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android$api-clang"
-          # Shared libraries are laid out for 16 KiB pages (Android 15+ devices, Google Play).
-          align="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
-          harden="-C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack"
-          remap="--remap-path-prefix=$PWD=/arca --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
-          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $harden $remap"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
-          mkdir -p native
-          for entry in aarch64-linux-android:arm64-v8a:aarch64 armv7-linux-androideabi:armeabi-v7a:arm x86_64-linux-android:x86_64:x86_64; do
-            IFS=: read -r triple abi machine <<<"$entry"
-            cargo build --release --locked -p arca-jni --target "$triple"
-            mkdir -p "native/$abi"
-            cp "target/$triple/release/libarca_jni.so" "native/$abi/"
-            # Every PT_LOAD segment must be 16 KiB aligned, and the machine must be the right one.
-            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --harden --machine "$machine"
-          done
-          sha256sum native/*/libarca_jni.so target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm | tee native/SHA256SUMS
+        run: bash tools/android/build-native.sh
       - name: signing key
         id: sign
         run: |
@@ -164,6 +140,36 @@ jobs:
           name: arca-apk
           path: dist/
           if-no-files-found: error
+
+  # Two independent builds of this commit (two copies of the tree in directories with different
+  # names): the Wasm guest, the three native libraries and the unsigned, aligned package must have
+  # the same SHA-256 in both. The signature is the only thing that is allowed to differ.
+  reproducible-apk:
+    name: reproducible package (guest, three libraries, unsigned APK; two directories)
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Android SDK (platform, build-tools, NDK linker)
+        run: |
+          sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkm" --licenses >/dev/null || true
+          "$sdkm" --install "platforms;android-$ANDROID_API_TARGET" "build-tools;$ANDROID_BUILD_TOOLS"
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+            "$sdkm" --install "ndk;$NDK_FALLBACK"
+            ndk="$ANDROID_HOME/ndk/$NDK_FALLBACK"
+          fi
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+      - name: build twice and compare
+        env:
+          ARCA_BUILD_TOOLS: ${{ env.ANDROID_BUILD_TOOLS }}
+        run: bash tools/android/check-reproducible-apk.sh
 
   # Version tags only. The signing secrets belong to the `release` environment (configure its
   # protection rules, e.g. required reviewers and a tag-only deployment rule, in the repository
@@ -199,36 +205,16 @@ jobs:
         run: bash tools/build-guest.sh
       - name: release gate (attribution must be real before a tag is released)
         run: ARCA_RELEASE=1 cargo build -p arca-attribution --release --locked
+      - name: the guest is built the same twice (two copies of the tree, two directories)
+        # The hash that goes into the release notes must be one that two independent builds of this
+        # very tag agree on; if they do not, no release is made.
+        run: ARCA_REPRO_GUEST_ONLY=1 bash tools/check-reproducible.sh | tee "$RUNNER_TEMP/guest-reproducible.txt"
       - name: native libraries for the three ABIs (16 KiB page size)
         env:
           # The libraries themselves are built as release builds: the attribution crate refuses
           # placeholder URLs, and the app reports itself as a release build.
           ARCA_RELEASE: "1"
-        run: |
-          set -euo pipefail
-          export ARCA_GUEST_WASM="$PWD/target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm"
-          bin="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          api="$ANDROID_API_MIN"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android$api-clang"
-          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$bin/armv7a-linux-androideabi$api-clang"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android$api-clang"
-          # Shared libraries are laid out for 16 KiB pages (Android 15+ devices, Google Play).
-          align="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
-          harden="-C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack"
-          remap="--remap-path-prefix=$PWD=/arca --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
-          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-D warnings $align $harden $remap"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-D warnings $align $harden $remap"
-          mkdir -p native
-          for entry in aarch64-linux-android:arm64-v8a:aarch64 armv7-linux-androideabi:armeabi-v7a:arm x86_64-linux-android:x86_64:x86_64; do
-            IFS=: read -r triple abi machine <<<"$entry"
-            cargo build --release --locked -p arca-jni --target "$triple"
-            mkdir -p "native/$abi"
-            cp "target/$triple/release/libarca_jni.so" "native/$abi/"
-            # Every PT_LOAD segment must be 16 KiB aligned, and the machine must be the right one.
-            cargo run --quiet --locked -p arca-devtools -- elf-check "native/$abi/libarca_jni.so" --align 16384 --harden --machine "$machine"
-          done
-          sha256sum native/*/libarca_jni.so target/wasm32-unknown-unknown/guest/arca_guest_xray.wasm | tee native/SHA256SUMS
+        run: bash tools/android/build-native.sh
       - name: signing key
         id: sign
         env:
@@ -331,8 +317,13 @@ jobs:
             echo
             echo "## Контрольные суммы / Checksums (SHA-256)"
             echo '```'
-            (cd dist && cat ./*.apk.sha256 native.SHA256SUMS)
+            (cd dist && cat ./*.apk.sha256 ./*.unsigned.sha256 native.SHA256SUMS)
             echo '```'
+            echo
+            echo "## Воспроизводимость / Reproducibility"
+            echo
+            echo "Хэш Wasm-гостя в списке выше совпал на двух независимых сборках этого тега (две копии дерева в каталогах с разными именами) в этом запуске; без этого релиз не создаётся. Файл \`*.unsigned.sha256\` это хэш пакета без подписи: пересобрав тег (\`tools/android/check-reproducible-apk.sh\`), вы получите тот же. / The hash of the Wasm guest listed above was the same in two independent builds of this tag (two copies of the tree in directories with different names) in this run; without that no release is made. \`*.unsigned.sha256\` is the hash of the package without its signature: build the tag again (\`tools/android/check-reproducible-apk.sh\`) and you get the same."
+            echo
             echo
             echo "## Сертификат подписи / Signing certificate"
             echo '```'
@@ -341,7 +332,7 @@ jobs:
           } > "$body"
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Arca ${tag#v}" \
             --notes-file "$body" --prerelease --verify-tag \
-            dist/arca-*.apk dist/arca-*.apk.sha256 dist/arca-*.verify.txt dist/native.SHA256SUMS
+            dist/arca-*.apk dist/arca-*.apk.sha256 dist/arca-*.unsigned.sha256 dist/arca-*.verify.txt dist/native.SHA256SUMS
 
   emulators:
     name: emulator API ${{ matrix.api }} · phone, tablet, foldable and flip sizes
